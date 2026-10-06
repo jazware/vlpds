@@ -1347,8 +1347,8 @@ impl Firehose {
     }
 }
 
-/// One subscriber's progress, for an operator's view of who is connected
-/// (opt-in: [`Firehose::upgrade_tracked`]). Updated once per batch written.
+/// One subscriber's progress, for [`Firehose::subscribers`]. Updated once
+/// per batch written.
 #[derive(Default)]
 pub struct ConnStats {
     /// Events written to the subscriber.
@@ -1624,6 +1624,14 @@ impl Firehose {
             })
             .collect();
         (live, gone)
+    }
+
+    /// Disconnects connected subscriber `conn` (its [`SubscriberView::conn`])
+    /// at once, even an idle one; false if it isn't connected.
+    pub fn kick(&self, conn: u64) -> bool {
+        let Some(e) = self.subs.lock().get(&conn).cloned() else { return false };
+        e.stats.kick();
+        true
     }
 }
 
@@ -2908,6 +2916,29 @@ mod tests {
         assert!(live.is_empty());
         assert_eq!((gone[0].conn.as_str(), gone[0].reason.as_deref()), ("7", Some("client_gone")));
         assert!(gone[0].disconnected_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn kick_reaches_a_listed_subscriber_only() {
+        let fh = Firehose::new(Options::default());
+        let (conn, _series) = tracked(&fh, "192.0.2.45", None);
+        let entry = SubscriberEntry {
+            id: 9,
+            labelled: false,
+            ip: None,
+            user_agent: String::new(),
+            relay: None,
+            connected_at_ms: now_ms(),
+            cursor: None,
+            shard: None,
+            stats: conn.clone(),
+        };
+        let listed = Listed::new(&fh, entry);
+        assert!(!fh.kick(10), "unknown conn");
+        assert!(fh.kick(9));
+        tokio::time::timeout(Duration::from_secs(1), conn.kick.notified()).await.expect("kick delivered");
+        drop(listed);
+        assert!(!fh.kick(9), "gone");
     }
 
     /// A stalled log holds the min watermark back while another keeps
