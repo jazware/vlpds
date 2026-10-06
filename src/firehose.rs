@@ -395,6 +395,11 @@ pub struct Options {
     /// Connections with their own `vlpds_firehose_subscriber_*` series; the
     /// rest share `conn="other"`.
     pub max_labelled: usize,
+    /// None: seqs are log keys (time-based) and the stream starts at the
+    /// clock. Some(f): seqs are a plain counter (vlRelay's quorum log) and
+    /// the stream starts above `f`; a cursor past the head then gets the
+    /// counted stream's grace instead of a comparison with the clock.
+    pub start_floor: Option<i64>,
 }
 
 impl Default for Options {
@@ -409,6 +414,7 @@ impl Default for Options {
             write_idle: DEFAULT_WRITE_IDLE,
             runtime: None,
             max_labelled: DEFAULT_MAX_LABELLED,
+            start_floor: None,
         }
     }
 }
@@ -493,11 +499,13 @@ pub struct Firehose {
     /// `max_labelled`.
     labelled: AtomicUsize,
     max_labelled: usize,
+    /// Seqs are a counter, not time (`Options::start_floor`).
+    counted: bool,
 }
 
 impl Firehose {
     pub fn new(opts: Options) -> Arc<Firehose> {
-        let floor = crate::nodelog::seq_floor(crate::tid::now_micros());
+        let floor = opts.start_floor.unwrap_or_else(|| crate::nodelog::seq_floor(crate::tid::now_micros()));
         Arc::new(Firehose {
             head: watch::channel(0).0,
             ring: RwLock::new(VecDeque::new()),
@@ -530,6 +538,7 @@ impl Firehose {
             gone: Default::default(),
             labelled: AtomicUsize::new(0),
             max_labelled: opts.max_labelled,
+            counted: opts.start_floor.is_some(),
         })
     }
 
@@ -818,8 +827,10 @@ impl Firehose {
                 STATS.firehose_events.fetch_add(batch.events.len() as u64, Ordering::Relaxed);
                 metrics::FIREHOSE_EVENTS.inc_by(batch.events.len() as u64);
                 metrics::FIREHOSE_BATCH.observe(batch.events.len() as f64);
-                metrics::FIREHOSE_EMIT_DELAY
-                    .observe(crate::tid::now_micros().saturating_sub((batch.key(0) >> 8) as u64) as f64 / 1e6);
+                if !fh.counted {
+                    metrics::FIREHOSE_EMIT_DELAY
+                        .observe(crate::tid::now_micros().saturating_sub((batch.key(0) >> 8) as u64) as f64 / 1e6);
+                }
                 fh.push(batch);
             }
         }));
@@ -1038,7 +1049,7 @@ impl Firehose {
             // current clock can't have been issued by us. Renumbered seqs
             // aren't: another node's stream may just be ahead of ours (an
             // edge trails the cores), so give ours a moment to get there.
-            let future = if self.renumbered() {
+            let future = if self.renumbered() || self.counted {
                 let deadline = tokio::time::Instant::now() + FUTURE_CURSOR_GRACE;
                 while c > self.last_emitted.load(Ordering::Acquire) && tokio::time::Instant::now() < deadline {
                     tokio::select! {
@@ -2939,6 +2950,38 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), conn.kick.notified()).await.expect("kick delivered");
         drop(listed);
         assert!(!fh.kick(9), "gone");
+    }
+
+    /// A counted stream (`Options::start_floor`) starts above its floor
+    /// rather than the clock: small seqs are emitted, in order, up to the
+    /// watermark, and nothing at or below the floor is.
+    #[tokio::test]
+    async fn counted_stream_starts_at_its_floor() {
+        let fh = Firehose::new(Options { start_floor: Some(100), ..Options::default() });
+        assert_eq!(fh.position(), 100);
+        let (floor, wm) = fh.add_remote("q");
+        assert_eq!(floor, 100);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut sub = fh.subscribe();
+        let mut last = 100;
+        fh.spawn_merger(rx);
+        let ev = |s: i64| (s, Bytes::from(vec![s as u8; 8]));
+        tx.send(LogBatch { log_id: "q".into(), ordinal: 0, events: (99..=103).map(ev).collect() }).unwrap();
+        wm.store(102, Ordering::Release);
+        let got: Vec<i64> = next_batches(&fh, &mut sub, &mut last)
+            .await
+            .iter()
+            .flat_map(|b| b.events.iter().map(|(s, _)| *s))
+            .collect();
+        assert_eq!(got, vec![101, 102], "held at the watermark, nothing at or below the floor");
+        wm.store(103, Ordering::Release);
+        let got: Vec<i64> = next_batches(&fh, &mut sub, &mut last)
+            .await
+            .iter()
+            .flat_map(|b| b.events.iter().map(|(s, _)| *s))
+            .collect();
+        assert_eq!(got, vec![103]);
+        assert_eq!(fh.last_emitted.load(Ordering::Acquire), 103);
     }
 
     /// A stalled log holds the min watermark back while another keeps

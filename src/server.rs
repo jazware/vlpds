@@ -418,6 +418,7 @@ pub async fn build(cfg: Config) -> anyhow::Result<Arc<xrpc::App>> {
         write_idle: crate::firehose::DEFAULT_WRITE_IDLE,
         runtime: (cfg.firehose_threads > 0).then(|| crate::firehose::runtime(cfg.firehose_threads)),
         max_labelled: crate::firehose::DEFAULT_MAX_LABELLED,
+        start_floor: None,
     });
     firehose.set_max_queue_bytes(cfg.firehose_merge_queue_bytes.max(1));
     let (merger_tx, merger_rx) = tokio::sync::mpsc::unbounded_channel();
