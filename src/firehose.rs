@@ -1279,7 +1279,10 @@ impl Firehose {
                     Err(e) => {
                         failures += 1;
                         if failures >= BACKFILL_ATTEMPTS {
-                            tracing::warn!(after = *last, "firehose backfill: the local tail failed, disconnecting: {e:#}");
+                            tracing::warn!(
+                                after = *last,
+                                "firehose backfill: the local tail failed, disconnecting: {e:#}"
+                            );
                             out.close(1011).await;
                             return Err("backfill_failed");
                         }

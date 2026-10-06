@@ -33,20 +33,32 @@ pub fn component(prefix: &str, path: &str) -> &'static str {
         "cluster" => "ctl_version",
         "handle" | "email" => "account_index",
         "blob" | "blob-gc" | "blob-tmp" => "blob",
+        // vlrelay's quorum log: its manifest and leader record, and its
+        // state's SlateDB at `qlog/state` (or a recovery's `qlog/state-e{n}`)
+        "qlog" => match it.next().unwrap_or("") {
+            "manifest" => "qlog_manifest",
+            "leader" => "qlog_leader",
+            s if s.starts_with("state") => state_component(it.next().unwrap_or("")),
+            _ => "other",
+        },
         "state" => {
             let _shard = it.next();
-            match it.next().unwrap_or("") {
-                "manifest" => "state_manifest",
-                "compacted" => "state_sst",
-                "wal" => "state_wal",
-                "compactions" => "state_compactions",
-                // SlateDB's GC boundary files (`gc/manifest.boundary`, ...):
-                // read on every latest-manifest/compactions read
-                "gc" => "state_gc_boundary",
-                _ => "state_other",
-            }
+            state_component(it.next().unwrap_or(""))
         }
         _ => "other",
+    }
+}
+
+fn state_component(dir: &str) -> &'static str {
+    match dir {
+        "manifest" => "state_manifest",
+        "compacted" => "state_sst",
+        "wal" => "state_wal",
+        "compactions" => "state_compactions",
+        // SlateDB's GC boundary files (`gc/manifest.boundary`, ...):
+        // read on every latest-manifest/compactions read
+        "gc" => "state_gc_boundary",
+        _ => "state_other",
     }
 }
 
@@ -367,6 +379,11 @@ mod tests {
         assert_eq!(component("vlpds", "vlpds/nodes/n1"), "ctl_lease");
         assert_eq!(component("vlpds", "vlpds/blob/did/cid"), "blob");
         assert_eq!(component("vlpds", "vlpds/state/005/gc/manifest.boundary"), "state_gc_boundary");
+        assert_eq!(component("r", "r/qlog/manifest"), "qlog_manifest");
+        assert_eq!(component("r", "r/qlog/leader"), "qlog_leader");
+        assert_eq!(component("r", "r/qlog/state/compacted/01J.sst"), "state_sst");
+        assert_eq!(component("r", "r/qlog/state-e7/manifest/00000000000000000001.manifest"), "state_manifest");
+        assert_eq!(component("r", "r/log/qlog/000000000003.seg"), "log_segment");
     }
 
     fn n(op: &str, comp: &str, result: &str) -> u64 {
