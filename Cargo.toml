@@ -179,10 +179,13 @@ required-features = ["test-level"]
 # 7. SafeSender: a send into a channel whose receiving task was dropped
 #    without a recorded close result (a runtime shut down under an open DB)
 #    returns BackgroundTaskCancelled instead of panicking.
+# 8. SplitCache::fetch_block/fetch_index clamp the loaded entry to its own
+#    allocation, as insert does: an uncompressed block was a slice of the
+#    HTTP read buffer and pinned all of it (vlRelay's seeds: ~1 GB uncounted).
 [patch.crates-io]
-slatedb = { git = "https://github.com/jazware/slatedb", rev = "11b27b89caeff4b6fd788fab4919aa835fe04f03" }
+slatedb = { git = "https://github.com/jazware/slatedb", rev = "9bbeb849e6ead04556c831c50078568ca118903c" }
 # the same rev, so the metrics recorder (crates/slate-metrics) and slatedb share one slatedb-common
-slatedb-common = { git = "https://github.com/jazware/slatedb", rev = "11b27b89caeff4b6fd788fab4919aa835fe04f03" }
+slatedb-common = { git = "https://github.com/jazware/slatedb", rev = "9bbeb849e6ead04556c831c50078568ca118903c" }
 
 # Fat LTO + 1 codegen unit: ~4 min of a release build is this crate's
 # single-threaded optimization and LTO, but cheaper settings cost runtime
