@@ -204,9 +204,9 @@ impl Stage {
                         ..Default::default()
                     };
                 }
-                Item::Done { root, records, nodes, path } => {
+                Item::Done { root, records, nodes, bytes, path } => {
                     metrics::IMPORT_REPO_PARSES.with_label_values(&[path]).inc();
-                    return self.commit(app, root, records, nodes).await;
+                    return self.commit(app, root, records, nodes, bytes).await;
                 }
             }
         }
@@ -306,7 +306,14 @@ impl Stage {
         Ok(())
     }
 
-    async fn commit(&mut self, app: &Arc<App>, root: Bytes, records: u64, nodes: u64) -> XResult<()> {
+    async fn commit(
+        &mut self,
+        app: &Arc<App>,
+        root: Bytes,
+        records: u64,
+        nodes: u64,
+        bytes: state::RepoBytes,
+    ) -> XResult<()> {
         let t = self.ticket(app).await?;
         self.drain().await?;
         let p = app.partition(&self.did)?;
@@ -316,7 +323,8 @@ impl Stage {
         let colls_add = self.colls.difference(&old).cloned().collect();
         let colls_del = old.difference(&self.colls).cloned().collect();
         let root = (!root.is_empty()).then_some(root);
-        let stats = state::RepoStats { records, nodes, blobs };
+        let stats = state::RepoStats { records, nodes, blobs, bytes: Some(bytes) };
+
         step(
             app,
             &self.did,

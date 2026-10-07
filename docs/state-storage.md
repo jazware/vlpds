@@ -51,9 +51,9 @@ a log segment, and applied to the shard's memtable before it's acknowledged.
 | A new owner opening a shard in a fraction of a second | opening reads a manifest and copies nothing to the node |
 | Cheap split and merge | a clone references the parent's SSTs instead of copying them |
 
-vlpds uses SlateDB as a sorted key-value store. It builds SlateDB 0.17 from a fork
-(`jazware/slatedb`) that carries four patches: a fix for merging shards that share inherited SSTs,
-a fix for forced compactions, a faster scan path and metadata-cache seeding for compaction output.
+vlpds uses SlateDB as a sorted key-value store. It builds SlateDB from a fork
+(`jazware/slatedb`): upstream `main` plus four patches, a fix for forced compactions, a faster scan
+path, metadata-cache seeding for compaction output and a cheaper cache hit.
 
 ## Key layout
 

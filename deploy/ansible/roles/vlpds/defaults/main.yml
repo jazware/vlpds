@@ -254,11 +254,18 @@ vlpds_mod_service_did: ""
 vlpds_resolve_lexicons: false
 
 # Email. Required in production (verification, password reset, 2FA codes)
-# unless vlpds_email_required is false (mail is then only logged).
+# unless vlpds_email_required is false (mail is then only logged). Set one
+# transport: SMTP (vlpds_email_smtp_url) or, where the provider blocks
+# outbound SMTP, Cloudflare Email Sending's REST API (vlpds_email_api_url +
+# vlpds_email_api_token).
 vlpds_email_required: true
 vlpds_email_smtp_url: "" # smtps://user:pass@host:465 or smtp://...:587 (secret)
+vlpds_email_api_url: "" # https://api.cloudflare.com/client/v4/accounts/<account_id>/email/sending/send
+vlpds_email_api_token: "" # API token with Email Sending: Edit (secret)
 vlpds_email_from_address: "" # "Name <addr@host>"
 vlpds_moderation_email_smtp_url: "" # secret; empty = the main mailer
+vlpds_moderation_email_api_url: "" # empty = the main mailer
+vlpds_moderation_email_api_token: "" # secret; empty = vlpds_email_api_token
 vlpds_moderation_email_address: ""
 vlpds_email_brand_name: "" # default "{hostname} PDS"
 vlpds_email_home_url: ""

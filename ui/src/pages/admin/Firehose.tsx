@@ -1,352 +1,462 @@
-import { useRef } from 'react'
-import { CopyValue, Empty, ErrorNotice, Loading, Notice, Panel, Status } from '../../components/ui'
-import { fmtBytes, fmtNum, fmtSi, relTime, seqMillis } from '../../lib/format'
-import { useLoad } from '../../lib/hooks'
-import { admin } from '../../lib/xrpc'
+import { useState } from 'react'
+import type { Col } from '../../components/console/DataTable'
+import { DataTable } from '../../components/console/DataTable'
+import { FormDialog, openDialog } from '../../components/console/dialogs'
+import { Banners, Chip, ErrorState, Loading, PageHead, Panel, Sec, Spark, Src, Swatch, Tiles, type BannerSpec } from '../../components/console/kit'
+import { LiveTail } from '../../components/console/LiveTail'
+import { openPanel } from '../../components/console/nav'
+import { registerPalette } from '../../components/console/Palette'
+import { toast } from '../../components/console/toast'
+import { useClusterView } from '../../lib/console/cluster'
+import { ago, dur, fmtBytes, fmtMs, fmtNum, fmtSi, plural, seqMillis, seqWriter } from '../../lib/console/fmt'
+import { isSlow, isThisBrowser, subscribersPoll, type Subscriber } from '../../lib/console/polls'
+import { crawlersPoll, maxLatest, requestCrawl, setCrawlers, subKey, useNodeMetrics, useSubRates, worstSeries, type CrawlResult, type Relay } from '../../lib/console/sys'
 
-type Subscriber = {
-  node: string
-  conn: string
-  /** False past the per-node labelled cap: its metrics count under conn="other". */
-  labelled: boolean
-  ip: string | null
-  /** Reverse DNS; only `ptrVerified` names resolve back to the address. */
-  ptr: string | null
-  ptrVerified: boolean
-  asn: number | null
-  asName: string | null
-  asCountry: string | null
-  userAgent: string
-  relay: string | null
-  connectedAt: number
-  cursor: string | null
-  shard: string | null
-  state: 'live' | 'backfilling'
-  lastSeq: string
-  events: number
-  bytes: number
-  lagBytes: number | null
-  lagMs: number | null
-  lagEvents: number | null
-  disconnectedAt?: number
-  reason?: string
-}
+// Firehose & relays: every subscribeRepos connection on every node with its rate against the
+// PDS's, the relays asked to crawl, recent disconnects, and the merged live tail.
 
-type NodeRow = {
-  node: string
-  self: boolean
-  reachable: boolean
-  subscribers?: number
-  backfilling?: number
-  eventsEmitted?: number
-  bytesSent?: number
-}
-
-type SubscriberList = {
-  node: string
-  total: number
-  live: number
-  backfilling: number
-  subscribers: Subscriber[]
-  recentDisconnects: Subscriber[]
-  nodes: NodeRow[]
-  unreachableNodes?: string[]
-  time: number
-}
-
-type Sample = { t: number; events: number; bytes: number }
-
-const REFRESH_MS = 5000
-
-const REASONS: Record<string, string> = {
+export const REASONS: Record<string, string> = {
   client_gone: 'Connection dropped',
   client_closed: 'Client closed it',
   too_slow: 'Too slow (fell behind)',
   write_stalled: 'Stopped reading',
-  future_cursor: 'Cursor in the future',
-  backfill_failed: 'Backfill failed',
-  kicked: 'Disconnected by the server',
   shutdown: 'Server shut down',
+  kicked: 'Kicked from the console',
+}
+export const reasonText = (r?: string) => (r ? (REASONS[r] ?? r) : 'gone')
+
+const shortNode = (n: string) => n.replace(/^vlpds-/, '')
+const lastOf = (xs?: number[]) => (xs?.length ? xs[xs.length - 1] : 0)
+
+/** Asks relays to crawl and reports each answer as a toast. */
+export async function crawlNow(relays: string[]) {
+  try {
+    const r = await requestCrawl(relays)
+    crawlersPoll.refresh()
+    const bad = r.results.filter((x) => !x.ok)
+    if (!bad.length) toast(`Asked ${plural(r.results.length, 'relay')} to crawl: accepted`)
+    else toast(bad.map((x: CrawlResult) => `${x.relay}: ${x.status ?? ''} ${x.error ?? 'refused'}`).join(' · '), { err: true, ms: 8000 })
+  } catch (e) {
+    toast(e instanceof Error ? e.message : String(e), { err: true })
+  }
 }
 
-function dur(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000))
-  if (s < 60) return `${s}s`
-  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`
-  if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
-  return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`
+export function addRelayDialog() {
+  openDialog((close) => <AddRelay close={close} />)
 }
-
-function lag(s: Subscriber): string {
-  if (s.lagMs != null) return s.lagMs < 1000 ? 'caught up' : `${dur(s.lagMs)} behind`
-  if (s.lagEvents != null) return s.lagEvents === 0 ? 'caught up' : `${fmtNum(s.lagEvents)} events behind`
-  return '—'
-}
-
-/** A time-based seq reads as when it was assigned; small ones (0, renumbered streams) as they are. */
-function Cursor({ seq }: { seq: string }) {
-  const ms = seq.length > 12 ? seqMillis(seq) : undefined
-  return <span title={seq}>{ms !== undefined ? `from ${relTime(ms)}` : seq}</span>
-}
-
-/** IP · AS · verified PTR on one line; an unverified PTR is only a claim, so it stays in the tooltip. */
-/** Client, Network and Reverse DNS cells: one line, each column aligned, full detail in tooltips. */
-function ClientCells({ s }: { s: Subscriber }) {
-  const as = s.asn != null ? `AS${s.asn}${s.asName ? ` ${s.asName}` : ''}${s.asCountry ? ` (${s.asCountry})` : ''}` : undefined
-  const ptrTip = s.ptr ? (s.ptrVerified ? s.ptr : `${s.ptr} (unverified)`) : undefined
+function AddRelay({ close }: { close: () => void }) {
+  const [v, setV] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<unknown>()
+  const list = crawlersPoll.get().data?.relays.map((r) => r.relay) ?? []
   return (
-    <>
-      <td>
-        {s.ip ? <CopyValue text={s.ip} label={`Copy IP ${s.ip}`} /> : <span className="mono">unknown</span>}
-        {s.relay && <span className="pill accent">{s.relay}</span>}
-      </td>
-      <td className="net" title={as}>
-        {s.asn != null ? (
-          <>
-            <a href={`https://bgp.tools/as/${s.asn}`} target="_blank" rel="noreferrer" className="mono">
-              AS{s.asn}
-            </a>
-            {s.asName && <span className="trunc">{s.asName}</span>}
-          </>
-        ) : (
-          <span className="muted">—</span>
-        )}
-      </td>
-      <td className="ptr" title={ptrTip}>
-        {s.ptr && s.ptrVerified ? (
-          <CopyValue text={s.ptr} label={`Copy reverse DNS ${s.ptr}`} title={ptrTip} className="trunc muted" />
-        ) : (
-          <span className="muted">—</span>
-        )}
-      </td>
-    </>
+    <FormDialog
+      title="Add a relay"
+      call={`vlpds.admin.setCrawlers {"relays": [… "${v.trim() || 'host'}"]}`}
+      action="Add relay"
+      busy={busy}
+      disabled={!v.trim()}
+      error={error}
+      onCancel={close}
+      onSubmit={async () => {
+        setBusy(true)
+        setError(undefined)
+        try {
+          await setCrawlers({ relays: [...list, v.trim()] })
+          crawlersPoll.refresh()
+          toast(`Added ${v.trim()}`)
+          close()
+        } catch (e) {
+          setError(e)
+        } finally {
+          setBusy(false)
+        }
+      }}
+    >
+      <label className="cx-lbl" htmlFor="relay-host">
+        A hostname (asked over https) or an http(s):// origin
+      </label>
+      <input id="relay-host" className="cx-inp mono" autoFocus autoComplete="off" spellCheck={false} placeholder="relay.example.com" value={v} onChange={(e) => setV(e.target.value)} />
+      <p className="muted sm" style={{ margin: 0 }}>
+        The list is stored in the bucket for the whole cluster and overrides <span className="mono">--crawlers</span>.
+      </p>
+    </FormDialog>
   )
 }
 
-function UserAgent({ ua }: { ua: string }) {
-  return ua ? <CopyValue text={ua} label={`Copy user agent ${ua}`} title={ua} mono={false} /> : <span className="muted">none</span>
+export function intervalDialog() {
+  openDialog((close) => <Interval close={close} />)
+}
+function Interval({ close }: { close: () => void }) {
+  const d = crawlersPoll.get().data
+  const [v, setV] = useState(d ? String(d.intervalSecs / 60) : '20')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<unknown>()
+  const secs = Math.round(Number(v) * 60)
+  const ok = Number.isFinite(secs) && secs >= 1 && secs <= 7 * 24 * 3600
+  const save = async (intervalSecs: number | null) => {
+    setBusy(true)
+    setError(undefined)
+    try {
+      await setCrawlers({ intervalSecs })
+      crawlersPoll.refresh()
+      toast(intervalSecs === null ? 'Back to --crawl-interval-secs' : `Crawl interval set to ${v} min`)
+      close()
+    } catch (e) {
+      setError(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <FormDialog title="Minimum crawl interval" icon="◷" call={`vlpds.admin.setCrawlers {"intervalSecs": ${ok ? secs : '…'}}`} action="Save" busy={busy} disabled={!ok} error={error} onCancel={close} onSubmit={() => save(secs)}>
+      <label className="cx-lbl" htmlFor="crawl-int">
+        Minutes between requests to one relay
+      </label>
+      <div className="cx-form-row">
+        <input id="crawl-int" className="cx-inp mono" inputMode="decimal" autoFocus value={v} onChange={(e) => setV(e.target.value)} />
+        {d?.intervalSource === 'stored' && (
+          <button type="button" className="cx-btn" disabled={busy} onClick={() => save(null)}>
+            Use the flag ({d.flagIntervalSecs / 60} min)
+          </button>
+        )}
+      </div>
+      <p className="muted sm" style={{ margin: 0 }}>
+        The reference PDS uses 20 minutes. Stored for the cluster; overrides <span className="mono">--crawl-interval-secs</span>.
+      </p>
+    </FormDialog>
+  )
 }
 
-const key = (s: Subscriber) => `${s.node}/${s.conn}`
+export function RelayResult({ r }: { r: Relay }) {
+  const s = r.status
+  if (!s) return <Chip k="idle">not asked yet</Chip>
+  if (s.ok) return <Chip k="ok">accepted{s.httpStatus ? ` (${s.httpStatus})` : ''}</Chip>
+  return <Chip k="err">{s.httpStatus ? `rejected (${s.httpStatus})` : 'unreachable'}</Chip>
+}
 
-/** Per-second rates from the previous poll's counters (undefined on the first poll or after a reset). */
-function useRates(d?: SubscriberList) {
-  const prev = useRef<{ subs: Map<string, Sample>; nodes: Map<string, Sample> }>({ subs: new Map(), nodes: new Map() })
-  const out = useRef<{ at?: number; subs: Map<string, number>; pds?: number; sendBytes?: number }>({ subs: new Map() })
-  if (!d || out.current.at === d.time) return out.current
-  const rate = (p: Sample | undefined, now: Sample, f: (s: Sample) => number) =>
-    p && now.t > p.t && f(now) >= f(p) ? ((f(now) - f(p)) * 1000) / (now.t - p.t) : undefined
-  const subs = new Map<string, Sample>()
-  const subRates = new Map<string, number>()
-  for (const s of d.subscribers) {
-    const now = { t: d.time, events: s.events, bytes: s.bytes }
-    subs.set(key(s), now)
-    const r = rate(prev.current.subs.get(key(s)), now, (x) => x.events)
-    if (r !== undefined) subRates.set(key(s), r)
-  }
-  const nodes = new Map<string, Sample>()
-  let pds: number | undefined
-  let sendBytes: number | undefined
-  for (const n of d.nodes) {
-    if (!n.reachable || n.eventsEmitted == null || n.bytesSent == null) continue
-    const now = { t: d.time, events: n.eventsEmitted, bytes: n.bytesSent }
-    nodes.set(n.node, now)
-    const p = prev.current.nodes.get(n.node)
-    // every node emits the whole merged stream: the PDS's rate is any one node's
-    const e = rate(p, now, (x) => x.events)
-    if (e !== undefined) pds = Math.max(pds ?? 0, e)
-    const b = rate(p, now, (x) => x.bytes)
-    if (b !== undefined) sendBytes = (sendBytes ?? 0) + b
-  }
-  prev.current = { subs, nodes }
-  out.current = { at: d.time, subs: subRates, pds, sendBytes }
-  return out.current
+registerPalette({
+  items: () => {
+    const out = [
+      { group: 'Actions', title: 'Request a crawl from every relay', desc: 'requestCrawl', glyph: '↻', run: () => crawlNow([]) },
+      { group: 'Actions', title: 'Add a relay…', desc: 'setCrawlers', glyph: '+', run: addRelayDialog },
+    ]
+    const subs = subscribersPoll.get().data?.subscribers ?? []
+    const relays = crawlersPoll.get().data?.relays ?? []
+    return [
+      ...out,
+      ...relays.map((r) => ({ group: 'Firehose', title: `Relay ${r.relay}`, desc: r.status ? (r.status.ok ? 'accepted' : 'rejected') : 'not asked', glyph: '⇄', run: () => openPanel('relay', r.relay) })),
+      ...subs.map((s) => ({
+        group: 'Firehose',
+        title: `#${s.conn} on ${s.node}`,
+        desc: s.relay ?? s.ip ?? s.userAgent.slice(0, 40),
+        hay: `${s.ip ?? ''} ${s.ptr ?? ''} ${s.userAgent}`,
+        glyph: '≋',
+        run: () => openPanel('sub', subKey(s)),
+      })),
+    ]
+  },
+})
+
+function lagText(s: Subscriber) {
+  if (s.state === 'backfilling') return <span className="s-info">◆ {s.lagMs != null ? `${dur(s.lagMs)} behind` : s.lagEvents != null ? `${fmtNum(s.lagEvents)} events` : 'backfilling'}</span>
+  if (s.lagMs != null && s.lagMs >= 1000) return isSlow(s) ? <span className="s-warn">▲ {dur(s.lagMs)} behind</span> : <span>{dur(s.lagMs)} behind</span>
+  if (s.lagEvents) return <span>{fmtNum(s.lagEvents)} events</span>
+  return <span className="muted">caught up</span>
+}
+
+function stateChip(s: Subscriber) {
+  if (s.state === 'backfilling') return <Chip k="info">backfilling</Chip>
+  return isSlow(s) ? <Chip k="warn">live · slow</Chip> : <Chip k="ok">live</Chip>
 }
 
 export function Firehose() {
-  const c = useLoad<SubscriberList & { fetchedAt: number }>(
-    async () => ({ ...(await admin('vlpds.admin.listFirehoseSubscribers')), fetchedAt: Date.now() }),
-    [],
-    REFRESH_MS,
-  )
-  const d = c.data
-  const rates = useRates(d)
-  const live = !!d && Date.now() - d.fetchedAt < REFRESH_MS * 2 && !c.error
-  if (!d)
-    return (
-      <>
-        <ErrorNotice error={c.error} />
-        {!c.error && <Loading />}
-      </>
-    )
-  const multi = d.nodes.length > 1
+  const { view } = useClusterView()
+  const { subs, rates } = useSubRates()
+  const m = useNodeMetrics()
+  const cr = crawlersPoll.use()
+  const d = subs.data
+  const color = (node: string) => view?.nodes.find((n) => n.node === node)?.color
+  const pdsNow = rates.pds[rates.pds.length - 1]
+  const seq = view?.raw.firehose.lastEmitted
+  const sms = seqMillis(seq)
+  const w = seqWriter(seq)
+  const writer = view?.single ? view.self : view?.nodes.find((n) => n.writer === w)?.node
+  const emit = maxLatest(m.nodes, 'emitP99Ms')
+  const slow = d?.subscribers.filter(isSlow) ?? []
+  const failing = cr.data?.relays.filter((r) => r.status && !r.status.ok) ?? []
+
+  const banners: BannerSpec[] = []
+  if (d?.unreachableNodes?.length)
+    banners.push({ id: 'unreach', tone: 'warn', title: `${plural(d.unreachableNodes.length, 'node')} didn't answer`, desc: `Not listed: the subscribers of ${d.unreachableNodes.join(', ')}.` })
+  if (slow.length)
+    banners.push({
+      id: 'slow',
+      tone: 'warn',
+      title: `${plural(slow.length, 'live subscriber')} more than 30 s behind`,
+      desc: 'Past --firehose-max-lag-mb unsent it gets ConsumerTooSlow and is dropped.',
+      right: slow.map((s) => `#${s.conn}`).join(' '),
+    })
+  if (failing.length)
+    banners.push({ id: 'relays', tone: 'warn', title: `${plural(failing.length, 'relay')} refused the last crawl request`, desc: failing.map((r) => r.relay).join(', ') })
+
+  const cols: Col<Subscriber>[] = [
+    {
+      id: 'conn',
+      label: 'Conn',
+      sort: (a, b) => a.connectedAt - b.connectedAt,
+      render: (s) => (
+        <span className="cx-cellid">
+          <Swatch color={color(s.node)} title={s.node} />
+          <span className="mono">#{s.conn}</span>
+          <span className="muted mono sm">{shortNode(s.node)}</span>
+        </span>
+      ),
+    },
+    {
+      id: 'client',
+      label: 'Client',
+      render: (s) => (
+        <span className="cx-cellid">
+          <span className="mono">{s.ip ?? '—'}</span>
+          {s.relay ? <Chip k="acc">{s.relay}</Chip> : isThisBrowser(s) ? <span className="muted sm">this browser</span> : null}
+        </span>
+      ),
+    },
+    {
+      id: 'net',
+      label: 'Network',
+      render: (s) =>
+        s.asn != null ? (
+          <span className="t2 trunc" style={{ maxWidth: 200, display: 'inline-block', verticalAlign: 'middle' }} title={`AS${s.asn} ${s.asName ?? ''}`}>
+            <span className="mono">AS{s.asn}</span> {s.asName}
+          </span>
+        ) : (
+          <span className="muted">—</span>
+        ),
+    },
+    { id: 'state', label: 'State', sort: (a, b) => (a.state === b.state ? 0 : a.state === 'live' ? 1 : -1), render: stateChip },
+    { id: 'lag', label: 'Lag', r: true, sort: (a, b) => (a.lagMs ?? 0) - (b.lagMs ?? 0), render: lagText },
+    {
+      id: 'rate',
+      label: 'Events/s vs PDS',
+      title: 'This connection (solid) against what the PDS emits (dashed)',
+      sort: (a, b) => lastOf(rates.conns.get(subKey(a))) - lastOf(rates.conns.get(subKey(b))),
+      render: (s) => {
+        const h = rates.conns.get(subKey(s)) ?? []
+        const v = h[h.length - 1]
+        return (
+          <span className="cx-cellid">
+            {h.length < 2 ? <span className="muted sm" style={{ width: 72, display: 'inline-block' }}>measuring…</span> : <Spark size="inline" data={h} l2={rates.pds.slice(-h.length)} color={isSlow(s) ? 'warn' : s.state === 'backfilling' ? 'info' : 'accent'} />}
+            <span className="mono sm">{v === undefined ? '—' : fmtSi(v)}</span>
+          </span>
+        )
+      },
+    },
+    { id: 'since', label: 'Connected', r: true, sort: (a, b) => b.connectedAt - a.connectedAt, render: (s) => dur(Date.now() - s.connectedAt) },
+    { id: 'cursor', label: 'Cursor', render: (s) => (s.cursor ? <span className="mono sm">{s.cursor}</span> : <span className="muted">none</span>) },
+    {
+      id: 'ua',
+      label: 'User agent',
+      render: (s) => (
+        <span className="t2 sm trunc" style={{ maxWidth: 200, display: 'inline-block', verticalAlign: 'middle' }} title={s.userAgent}>
+          {s.userAgent || '—'}
+        </span>
+      ),
+    },
+    { id: 'sent', label: 'Sent', r: true, sort: (a, b) => a.bytes - b.bytes, render: (s) => <span className="mono">{fmtBytes(s.bytes)}</span> },
+  ]
+
+  const discCols: Col<Subscriber>[] = [
+    {
+      id: 'conn',
+      label: 'Conn',
+      render: (s) => (
+        <span className="cx-cellid">
+          <Swatch color={color(s.node)} title={s.node} />
+          <span className="mono">#{s.conn}</span>
+          <span className="muted mono sm">{shortNode(s.node)}</span>
+        </span>
+      ),
+    },
+    { id: 'client', label: 'Client', render: (s) => <span className="mono">{s.relay ?? s.ip ?? '—'}</span> },
+    { id: 'reason', label: 'Reason', render: (s) => (s.reason === 'too_slow' ? <Chip k="err">{reasonText(s.reason)}</Chip> : s.reason === 'kicked' ? <Chip k="warn">{reasonText(s.reason)}</Chip> : <Chip k="idle">{reasonText(s.reason)}</Chip>) },
+    { id: 'left', label: 'Left', r: true, sort: (a, b) => (a.disconnectedAt ?? 0) - (b.disconnectedAt ?? 0), render: (s) => (s.disconnectedAt ? ago(s.disconnectedAt) : '—') },
+    { id: 'stayed', label: 'Stayed', r: true, render: (s) => dur((s.disconnectedAt ?? Date.now()) - s.connectedAt) },
+    { id: 'events', label: 'Events', r: true, render: (s) => <span className="mono">{fmtNum(s.events)}</span> },
+  ]
+
+  const disc = d ? [...d.recentDisconnects].sort((a, b) => (b.disconnectedAt ?? 0) - (a.disconnectedAt ?? 0)) : []
+  const tooSlow = disc.filter((x) => x.reason === 'too_slow').length
+  const nodesWithSubs = d ? new Set(d.subscribers.map((s) => s.node)).size : 0
+
   return (
     <>
-      <div className="console-head">
-        <h1>Firehose subscribers</h1>
-        <span className={`live${live ? '' : ' stale'}`} aria-live="polite">
-          <i aria-hidden="true" />
-          {live ? 'Live, every 5 s' : 'Not updating'}
-        </span>
-      </div>
-      <ErrorNotice error={c.error} />
-      {d.unreachableNodes && (
-        <Notice kind="warn">
-          Not listed: the subscribers of {d.unreachableNodes.join(', ')}, which didn't answer.
-        </Notice>
-      )}
-      <div className="tiles">
-        <div className="tile">
-          <div className="v">{fmtNum(d.total)}</div>
-          <div className="k">Subscribers{multi ? `, ${d.nodes.length} nodes` : ''}</div>
-        </div>
-        <div className="tile">
-          <div className="v">
-            {fmtNum(d.live)}
-            <small>/ {fmtNum(d.backfilling)}</small>
-          </div>
-          <div className="k">Live / backfilling</div>
-        </div>
-        <div className="tile" title="Events this PDS adds to its firehose: a caught-up subscriber gets the same rate">
-          <div className="v">
-            {rates.pds !== undefined ? fmtSi(rates.pds) : '—'}
-            <small>events/s</small>
-          </div>
-          <div className="k">This PDS's firehose</div>
-        </div>
-        <div className="tile" title="Websocket bytes written to every subscriber, all nodes">
-          <div className="v">{rates.sendBytes !== undefined ? `${fmtBytes(rates.sendBytes)}/s` : '—'}</div>
-          <div className="k">Sent to subscribers</div>
-        </div>
-      </div>
-
-      <Panel
-        title="Connected"
-        desc={
+      <PageHead
+        title="Firehose & relays"
+        sub={
           <>
-            Oldest first{d.total > d.subscribers.length ? `, the first ${fmtNum(d.subscribers.length)} of ${fmtNum(d.total)}` : ''}. <b>Relay</b> names a
-            configured relay whose hostname resolves to the client's address, appears in its user agent, or holds the client's verified
-            reverse DNS name. The client's AS and verified reverse DNS follow its address once looked up. <b>#conn</b> is the{' '}
-            <span className="mono">conn</span> label on <span className="mono">vlpds_firehose_subscriber_events_total</span>.
+            <span>{d ? `${plural(d.total, 'subscriber')} on ${plural(Math.max(nodesWithSubs, d.nodes.length), 'node')}` : '…'}</span>
+            <span>merged by watermark, no global sequencer</span>
+            {cr.data && <span>relays told about {cr.data.hostname}</span>}
           </>
         }
-        flush
+        actions={
+          <button type="button" className="cx-btn" disabled={!cr.data?.relays.length} onClick={() => crawlNow([])} title="com.atproto.sync.requestCrawl to every relay">
+            Request crawl from all
+          </button>
+        }
+      />
+      <Banners items={banners} />
+      <Tiles
+        boxed
+        tiles={[
+          {
+            label: 'Last emitted seq',
+            right: sms ? `writer ${w}${writer ? ` · ${shortNode(writer)}` : ''}` : undefined,
+            value: <span className="mono" style={{ fontSize: 15 }}>{seq && seq !== '0' ? seq : '—'}</span>,
+            title: 'unix µs × 256 + the writer byte of the log that assigned it',
+          },
+          {
+            label: "This PDS's events / s",
+            right: 'every node emits the whole stream',
+            value: pdsNow === undefined ? '—' : fmtSi(pdsNow),
+            spark: <Spark data={rates.pds} color="accent" />,
+          },
+          {
+            label: 'Subscribers',
+            right: d ? `${fmtNum(d.live)} live · ${fmtNum(d.backfilling)} backfilling` : undefined,
+            value: d ? fmtNum(d.total) : '—',
+            sec: slow.length ? `${slow.length} slow` : undefined,
+          },
+          {
+            label: 'Sent to subscribers',
+            right: 'all nodes',
+            value: rates.sent.length ? `${fmtBytes(rates.sent[rates.sent.length - 1])}/s` : '—',
+            spark: <Spark data={rates.sent} color="c2" />,
+          },
+          {
+            label: 'Emit delay p99',
+            right: 'worst node · alert at 2 s',
+            value: m.status === 'unsupported' ? '—' : fmtMs(emit),
+            spark: <Spark data={worstSeries(m.nodes, 'emitP99Ms')} color="violet" th={2000} />,
+          },
+        ]}
+      />
+      <Panel
+        className="cx-mt"
+        title="Connected"
+        src={<Src>vlpds.admin.listFirehoseSubscribers · 5 s</Src>}
+        right={<span className="muted sm">{d && d.total > d.subscribers.length ? `first ${fmtNum(d.subscribers.length)} of ${fmtNum(d.total)} · ` : ''}oldest first</span>}
       >
-        {d.subscribers.length === 0 ? (
-          <Empty title="No subscribers">Nobody is connected to subscribeRepos{multi ? ' on any node' : ''} right now.</Empty>
+        {d ? (
+          <DataTable
+            rows={d.subscribers}
+            cols={cols}
+            rowKey={subKey}
+            open={(s) => ({ type: 'sub', id: subKey(s) })}
+            empty={<div className="cx-empty">No one is subscribed to this PDS right now.</div>}
+            label="Firehose subscribers"
+          />
+        ) : subs.error ? (
+          <ErrorState error={subs.error} retry={subscribersPoll.refresh} />
         ) : (
-          <div className="table-wrap">
-            <table className="data compact firehose-subs">
-              <thead>
-                <tr>
-                  <th>Conn</th>
-                  <th>Client</th>
-                  <th>Network</th>
-                  <th>Reverse DNS</th>
-                  <th>State</th>
-                  <th className="num">Lag</th>
-                  <th className="num" title="Events sent per second, against this PDS's firehose rate">
-                    Events/s{rates.pds !== undefined && <span className="muted"> (PDS {fmtSi(rates.pds)})</span>}
-                  </th>
-                  <th className="num">Connected</th>
-                  <th>Cursor</th>
-                  <th>User agent</th>
-                  <th className="num">Events</th>
-                  <th className="num">Bytes</th>
-                </tr>
-              </thead>
-              <tbody>
-                {d.subscribers.map((s) => {
-                  const r = rates.subs.get(key(s))
-                  const slow = s.state === 'live' && !s.shard && r !== undefined && rates.pds !== undefined && rates.pds > 1 && r < rates.pds * 0.9
-                  return (
-                    <tr key={key(s)}>
-                      <td>
-                        <span className="mono">#{s.conn}</span>
-                        {!s.labelled && (
-                          <span className="pill" title="Past the per-node cap: counted under conn=&quot;other&quot;">
-                            other
-                          </span>
-                        )}
-                        {multi && <span className="muted mono small"> {s.node}</span>}
-                      </td>
-                      <ClientCells s={s} />
-                      <td>{s.state === 'live' ? <Status kind="ok">Live</Status> : <Status kind="warn">Backfilling</Status>}</td>
-                      <td className="num">
-                        {lag(s)}
-                        {s.lagBytes ? <span className="muted small"> · {fmtBytes(s.lagBytes)} unsent</span> : null}
-                      </td>
-                      <td className="num">
-                        {r !== undefined ? <span className={slow ? 'slow' : undefined}>{fmtSi(r)}</span> : '—'}
-                      </td>
-                      <td className="num" title={new Date(s.connectedAt).toLocaleString()}>
-                        {dur(d.time - s.connectedAt)}
-                      </td>
-                      <td className="mono">
-                        {s.cursor == null ? <span className="muted">none</span> : <Cursor seq={s.cursor} />}
-                        {s.shard && <span className="muted small"> · shard {s.shard}</span>}
-                      </td>
-                      <td className="ua" title={s.userAgent}>
-                        <UserAgent ua={s.userAgent} />
-                      </td>
-                      <td className="num">{fmtNum(s.events)}</td>
-                      <td className="num">{fmtBytes(s.bytes)}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
+          <Loading />
         )}
       </Panel>
-
-      <Panel title="Recently disconnected" desc={`The last ${multi ? '50 per node' : '50'}, newest first, with why they went.`} flush>
-        {d.recentDisconnects.length === 0 ? (
-          <Empty title="None yet">No subscriber has disconnected since the {multi ? 'nodes' : 'node'} started.</Empty>
-        ) : (
-          <div className="table-wrap">
-            <table className="data compact firehose-subs">
-              <thead>
-                <tr>
-                  <th>Conn</th>
-                  <th>Client</th>
-                  <th>Network</th>
-                  <th>Reverse DNS</th>
-                  <th>Reason</th>
-                  <th className="num">Left</th>
-                  <th className="num">Stayed</th>
-                  <th className="num">Events</th>
-                  <th>User agent</th>
-                </tr>
-              </thead>
-              <tbody>
-                {d.recentDisconnects.map((s) => (
-                  <tr key={key(s)}>
-                    <td>
-                      <span className="mono">#{s.conn}</span>
-                      {multi && <span className="muted mono small"> {s.node}</span>}
-                    </td>
-                    <ClientCells s={s} />
-                    <td>
-                      {s.reason == 'too_slow' || s.reason === 'write_stalled' || s.reason === 'backfill_failed' ? (
-                        <Status kind="bad">{REASONS[s.reason]}</Status>
-                      ) : (
-                        <Status kind="idle">{REASONS[s.reason ?? ''] ?? s.reason}</Status>
-                      )}
-                    </td>
-                    <td className="num">{s.disconnectedAt ? relTime(s.disconnectedAt) : '—'}</td>
-                    <td className="num">{dur((s.disconnectedAt ?? d.time) - s.connectedAt)}</td>
-                    <td className="num">{fmtNum(s.events)}</td>
-                    <td className="ua" title={s.userAgent}>
-                      <UserAgent ua={s.userAgent} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
+      <div className="cx-grid2 cx-mt">
+        <div className="cx-stack">
+          <Panel
+            title="Relays"
+            src={<Src>getCrawlers · setCrawlers · requestCrawl</Src>}
+            right={
+              cr.data && (
+                <>
+                  <button type="button" className="cx-btn sm quiet" onClick={intervalDialog} title="Change the minimum interval">
+                    every ≥ {cr.data.intervalSecs % 60 ? `${cr.data.intervalSecs} s` : `${cr.data.intervalSecs / 60} min`}
+                  </button>
+                  <button type="button" className="cx-btn sm" onClick={addRelayDialog}>
+                    Add relay…
+                  </button>
+                </>
+              )
+            }
+            foot={
+              cr.data && (
+                <span>
+                  Sent by the owner of slot 0 ({cr.data.sender ? 'this node, ' : ''}
+                  <span className="mono">{cr.data.node}</span>).{' '}
+                  {cr.data.relaysSource === 'stored' ? (
+                    <>
+                      Stored in the bucket; overrides <span className="mono">--crawlers</span>
+                      {cr.data.updatedAt ? `, changed ${ago(Date.parse(cr.data.updatedAt))}` : ''}.{' '}
+                      <button
+                        type="button"
+                        className="cx-linklike"
+                        onClick={async () => {
+                          try {
+                            await setCrawlers({ relays: null })
+                            crawlersPoll.refresh()
+                            toast('Back to --crawlers')
+                          } catch (e) {
+                            toast(e instanceof Error ? e.message : String(e), { err: true })
+                          }
+                        }}
+                      >
+                        Use --crawlers ({cr.data.flagRelays.join(', ') || 'none'})
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      From <span className="mono">--crawlers</span>. Changing the list here stores it for the cluster.
+                    </>
+                  )}
+                </span>
+              )
+            }
+          >
+            {cr.data ? (
+              <DataTable
+                compact
+                rows={cr.data.relays}
+                rowKey={(r) => r.relay}
+                open={(r) => ({ type: 'relay', id: r.relay })}
+                empty={<div className="cx-empty">No relays: nothing is told about this PDS until one is added.</div>}
+                cols={[
+                  { id: 'relay', label: 'Relay', render: (r) => <span className="mono">{r.relay}</span> },
+                  { id: 'res', label: 'Last result', render: (r) => <RelayResult r={r} /> },
+                  { id: 'asked', label: 'Asked', render: (r) => (r.status ? ago(r.status.lastAttemptMs) : <span className="muted">—</span>) },
+                  { id: 'ok', label: 'Accepted', render: (r) => (r.status?.lastSuccessMs ? ago(r.status.lastSuccessMs) : <span className="muted">—</span>) },
+                  {
+                    id: 'act',
+                    label: '',
+                    r: true,
+                    render: (r) => (
+                      <button type="button" className="cx-btn sm" onClick={() => crawlNow([r.relay])}>
+                        Crawl now
+                      </button>
+                    ),
+                  },
+                ]}
+              />
+            ) : cr.error ? (
+              <ErrorState error={cr.error} retry={crawlersPoll.refresh} />
+            ) : (
+              <Loading />
+            )}
+          </Panel>
+          <Sec title="Recently disconnected" digest={d ? `${disc.length} kept${tooSlow ? ` · ${tooSlow} too slow` : ''}` : ''} open flush>
+            {d ? (
+              <DataTable rows={disc} cols={discCols} rowKey={(s) => `${subKey(s)}@${s.disconnectedAt}`} open={(s) => ({ type: 'sub', id: subKey(s) })} compact empty={<div className="cx-empty">Nobody has left since the nodes started.</div>} />
+            ) : (
+              <Loading />
+            )}
+          </Sec>
+        </div>
+        <Panel title="Live events">
+          <LiveTail height={420} max={200} nodeFilter />
+        </Panel>
+      </div>
     </>
   )
 }

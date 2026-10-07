@@ -947,7 +947,7 @@ async fn list_repos_into(app: &App, pos: RepoPos, limit: usize, repos: &mut Vec<
                 state::slot_family(pos.slot as u16, state::ACCOUNT_FAMILY),
             ),
         };
-        let snap = p.db.snapshot().await.map_err(XrpcError::from_err)?;
+        let snap = p.db.snapshot().map_err(XrpcError::from_err)?;
         let opts = slatedb::config::ScanOptions { read_ahead_bytes: 1 << 20, max_fetch_tasks: 2, ..Default::default() };
         let mut heads = state::FamilyScan::new(snap.as_ref(), state::HEAD_FAMILY, Some(h_lo), &opts)
             .await

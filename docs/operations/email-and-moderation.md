@@ -3,18 +3,18 @@ title: Email and moderation
 section: Operations
 order: 112
 status: ready
-summary: "Outgoing mail (SMTP, branding, disposable-address policy), the moderation service, operator takedowns and cases, blob quarantine and upload quotas, scheduled deletion, earned invites and external handles."
+summary: "Outgoing mail (SMTP or an HTTPS API, branding, disposable-address policy), the moderation service, operator takedowns and cases, blob quarantine and upload quotas, scheduled deletion, earned invites and external handles."
 ---
 
 ```hero
 diagram:
-  caption: "What a PDS operator configures around accounts. Mail leaves over SMTP from whichever node handled the request; a moderation service (Ozone) calls a fixed set of admin methods with its own service token; sign-up and handle changes pass the reference PDS's policies."
+  caption: "What a PDS operator configures around accounts. Mail leaves over SMTP or an HTTPS mail API from whichever node handled the request; a moderation service (Ozone) calls a fixed set of admin methods with its own service token; sign-up and handle changes pass the reference PDS's policies."
   nodes:
     - { id: user, label: Users, sub: "sign-up · handle · email", at: [0, 0], size: [9, 3] }
     - { id: ozone, label: Ozone, sub: "--mod-service-did", at: [0, 7], size: [9, 3], tone: muted }
     - { id: pds, label: vlpds, sub: any node, at: [14, 3.5], size: [8, 3], tone: accent }
     - { id: policy, label: Policies, sub: "handles · disposable mail · invites", at: [14, 10], size: [11, 2.6], shape: note, tone: muted }
-    - { id: smtp, label: SMTP mailer, sub: "account mail · queue 1,024", at: [30, 0], size: [10, 3], tone: violet }
+    - { id: smtp, label: mailer, sub: "SMTP or HTTPS · queue 1,024", at: [30, 0], size: [10, 3], tone: violet }
     - { id: modmail, label: moderation mailer, sub: "admin sendEmail", at: [30, 4.6], size: [10, 3], tone: violet }
     - { id: report, label: report service, sub: "createReport", at: [30, 9.2], size: [10, 3], tone: muted }
   edges:
@@ -25,7 +25,7 @@ diagram:
     - { from: pds.r, to: modmail.l }
     - { from: pds.r, to: report.l, label: proxied }
 facts:
-  - { value: "SMTP", label: only, note: "smtp:// with STARTTLS or smtps://; unset, mail is only logged" }
+  - { value: "2", unit: transports, label: one per mailer, note: "SMTP, or Cloudflare's HTTPS API where SMTP is blocked · unset, mail is only logged" }
   - { value: "3", unit: retries, label: per message, note: "after ~2 s, 10 s and 60 s; queued mail is lost if the node stops", tone: violet }
   - { value: "8,883", unit: domains, label: refused as disposable, note: "the reference's list, compiled in", tone: amber }
   - { value: "≤ 5", unit: codes, label: earned and unused per account, note: "one per --invite-interval-ms of account age", tone: blue }
@@ -39,27 +39,30 @@ Every node of a cluster needs the same values. Sign-in second factors (email cod
 ## Email
 
 ```diagram
-caption: "The request path never waits on SMTP. A node queues the message and a background task sends up to 4 at a time over a pooled connection. Tokens live in the account's state, so any node verifies a code another node mailed."
+caption: "The request path never waits on the mail provider. A node queues the message and a background task sends up to 4 at a time over a pooled connection. Tokens live in the account's state, so any node verifies a code another node mailed."
 nodes:
   - { id: req, label: request, sub: "reset · confirm · PLC op", at: [0, 2], size: [9, 3] }
   - { id: queue, label: queue, sub: "1,024 · full = dropped", at: [14, 2], size: [9, 3], tone: accent }
   - { id: send, label: sender, sub: "4 at a time · 30 s", at: [28, 2], size: [9, 3], tone: accent }
-  - { id: relay, label: SMTP relay, sub: your provider, at: [42, 2], size: [8, 3], tone: muted }
+  - { id: relay, label: provider, sub: SMTP or HTTPS, at: [42, 2], size: [8, 3], tone: muted }
   - { id: retry, label: retry, sub: "2 s · 10 s · 60 s", at: [28, 7.5], size: [9, 2.6], shape: note, tone: muted }
 edges:
   - "req -> queue: enqueue"
   - queue -> send
   - "send -> relay: deliver"
-  - { from: send.b, to: retry.t, label: 4xx · timeout, dash: true }
+  - { from: send.b, to: retry.t, label: transient · timeout, dash: true }
 ```
 
 | Flag | Reference env | Notes |
 |---|---|---|
 | `--email-smtp-url` | `PDS_EMAIL_SMTP_URL` | `smtp://user:pass@host:587` (STARTTLS when offered, and `?tls=required` insists on it) or `smtps://…:465`. It holds credentials, so use `--email-smtp-url-file` |
-| `--email-from-address` | `PDS_EMAIL_FROM_ADDRESS` | required with the URL, as `addr@host` or `Name <addr@host>` |
+| `--email-api-url` | | send over Cloudflare Email Sending's REST API instead of SMTP (see [Sending over HTTPS](#sending-over-https)). Set this or `--email-smtp-url` |
+| `--email-api-token-file` | | the API's bearer token (`--email-api-token` takes it inline) |
+| `--email-from-address` | `PDS_EMAIL_FROM_ADDRESS` | required with either URL, as `addr@host` or `Name <addr@host>` |
 | `--email-smtp-ca-file` | | PEM CA certificate(s) trusted for the SMTP server(s) on top of the public roots, for a relay with a private CA or a local test server |
 | `--moderation-email-smtp-url` | `PDS_MODERATION_EMAIL_SMTP_URL` | admin `sendEmail` only. Unset, moderation mail goes through the main mailer |
-| `--moderation-email-address` | `PDS_MODERATION_EMAIL_ADDRESS` | required with the moderation URL |
+| `--moderation-email-api-url` | | the same over the REST API. Its token is `--moderation-email-api-token-file`, or the main one when that's unset |
+| `--moderation-email-address` | `PDS_MODERATION_EMAIL_ADDRESS` | required with a moderation URL |
 | `--email-brand-name` | `PDS_SERVICE_NAME` | default "{hostname} PDS" |
 | `--email-home-url` | `PDS_HOME_URL` | footer link (default https://bsky.app) |
 | `--email-logo-url` | `PDS_LOGO_URL` | header logo and footer mark (default the Bluesky logo). vlpds serves its own as a PNG at `/og/email-logo.png` (mail clients don't render SVG) |
@@ -67,23 +70,24 @@ edges:
 | `--email-disable-confirmation-link` | `PDS_EMAIL_DISABLE_CONFIRMATION_LINK` | drops the bsky.app "click here" link |
 | `--mail-daily-budget` | | account mails per UTC day for the whole cluster (default 900). Keep it under the provider's daily quota ([Mail budgets](#mail-budgets)) |
 
-- A URL without its address, or the reverse, fails startup. With neither, mail is logged
-  (recipient, subject, purpose) and not sent. Sign-up still works, but nobody receives codes. In
-  `--dev-mode` every mail is also kept in the node's dev mailbox, which the console's account page
-  shows. The Ansible role refuses to deploy without a URL unless `vlpds_email_required: false`. It
-  passes the URL as a secret file (`VLPDS_EMAIL_SMTP_URL_FILE`) and never puts it in the
+- A URL without its address, or the reverse, fails startup, and so do both URLs for one mailer.
+  With neither, mail is logged (recipient, subject, purpose) and not sent. Sign-up still works, but
+  nobody receives codes. In `--dev-mode` every mail is also kept in the node's dev mailbox, which
+  the console's account page shows. The Ansible role refuses to deploy without a URL unless
+  `vlpds_email_required: false`. It passes the SMTP URL and the API token as secret files
+  (`VLPDS_EMAIL_SMTP_URL_FILE`, `VLPDS_EMAIL_API_TOKEN_FILE`) and never puts them in the
   container's environment.
 - Admin `sendEmail` without a moderation mailer goes through the main mailer, so a single-SMTP
   deployment still delivers moderation mail. That's different from the reference, which logs the
   mail and answers `sent: true`.
 - Deliverability is up to your provider. Send from a domain with SPF, DKIM and DMARC set up for
-  that sender. vlpds only speaks SMTP (there's no HTTP mail API). Each message carries a
-  `Message-ID` on the From address's domain.
+  that sender. Over SMTP each message carries a `Message-ID` on the From address's domain. Over
+  the API, Cloudflare sets it.
 - If mail isn't arriving, look at `vlpds_mail_messages_total{result="failed"|"dropped"}` (by
   `purpose`, where `admin` is moderation mail), `vlpds_mail_queue_depth`,
   `vlpds_mail_suppressed_total` (the budgets below), and the `mail not sent` / `mail dropped`
-  warnings. The warnings name the recipient and purpose but never the token. 5xx rejections aren't
-  retried.
+  warnings. The warnings name the recipient and purpose but never the token. SMTP 5xx and API 4xx
+  rejections aren't retried.
 
 ### What is mailed
 
@@ -142,7 +146,8 @@ still bounds each node, which caps how fast one node can drain the day.
 
 ### Example: Cloudflare Email Service
 
-Cloudflare's Email Sending relay speaks SMTP with an API token as the password.
+Cloudflare's Email Sending relay speaks SMTP with an API token as the password. The same token
+works for its REST API ([Sending over HTTPS](#sending-over-https)).
 
 ```steps
 - title: Onboard the sending domain
@@ -162,6 +167,30 @@ limit-increase form raises it). Set `--mail-daily-budget` below it, and raise bo
 recipient is on the account's suppression list (after a hard bounce or complaint), the relay
 rejects the whole message unless the domain's "drop suppressed recipients" setting is on. vlpds
 sees a 5xx, counts the mail as `failed` and doesn't retry.
+
+### Sending over HTTPS
+
+Some VPS providers block outbound SMTP (ports 25, 465 and 587 to every host). On such a host every
+send times out, and the mail ends up `failed` after four attempts. HTTPS still
+works, so in that case send through Cloudflare's REST API instead:
+
+```bash
+--email-api-url https://api.cloudflare.com/client/v4/accounts/<account_id>/email/sending/send
+--email-api-token-file /run/secrets/email-api-token
+--email-from-address "pds.example.com <noreply@pds.example.com>"
+```
+
+The token is the same kind the SMTP relay takes (an account API token with `Email Sending: Edit`),
+so a deployment moving off SMTP can reuse it. The account ID is the one that owns the sending
+domain. vlpds POSTs one JSON message per mail with the token as a bearer header, and the queue,
+concurrency, budgets and metrics are the same as for SMTP. Each attempt gets 30 s. A 429, a 5xx
+or a timeout is retried on the same 2 s, 10 s and 60 s schedule. Any other 4xx is permanent, such
+as a bad token (401 or 403) or a sender domain that isn't onboarded. A 200 that lists the
+recipient under `permanent_bounces` also counts as `failed`. The URL has to be `https://` and must
+not carry credentials.
+
+The API has the relay's limits (50 recipients and 5 MiB per message, the same account daily quota).
+Use it only when SMTP is blocked. Otherwise SMTP needs no account ID and works with any provider.
 
 Procedure: RUNBOOK
 [Email](https://github.com/jazware/vlpds/blob/main/ops/RUNBOOK.md#email-smtp-moderation-mail-branding).

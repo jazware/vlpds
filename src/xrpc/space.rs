@@ -515,7 +515,7 @@ async fn served_digest(app: &App, repo: &str, space: &Space, rev: Tid) -> XResul
         return Ok(None);
     }
     let p = app.partition(repo)?;
-    let snap = p.db.snapshot().await.map_err(XrpcError::from_err)?;
+    let snap = p.db.snapshot().map_err(XrpcError::from_err)?;
     let Some(v) = snap.get(state::space_head_key(repo, &space.sid)).await.map_err(XrpcError::from_err)? else {
         return Ok(None);
     };
@@ -612,7 +612,7 @@ async fn served_head(
     if hidden.is_empty() {
         return Ok(load_head(sp, p, repo, space).await?.map(|h| (h, None)));
     }
-    let snap = p.db.snapshot().await.map_err(XrpcError::from_err)?;
+    let snap = p.db.snapshot().map_err(XrpcError::from_err)?;
     let Some(v) = snap.get(state::space_head_key(repo, &space.sid)).await.map_err(XrpcError::from_err)? else {
         return Ok(None);
     };
@@ -1068,7 +1068,7 @@ async fn list_repo_ops(
         }
     }
     // one snapshot: the commit describes exactly the ops' end state
-    let snap = p.db.snapshot().await.map_err(XrpcError::from_err)?;
+    let snap = p.db.snapshot().map_err(XrpcError::from_err)?;
     let head = match snap.get(state::space_head_key(&q.repo, &space.sid)).await.map_err(XrpcError::from_err)? {
         Some(v) => head_of(HeadRow::decode(&v).map_err(XrpcError::from_err)?, &space, &p)?,
         None => return Ok(Json(json!({"ops": []})).into_response()),
@@ -1905,7 +1905,7 @@ async fn get_repo(State(app): AppState, SpaceAuth(creds): SpaceAuth, Query(q): Q
     metrics::space_read("getRepo", auth_label(&creds));
     let slot = super::sync::export_slot(&app).await?;
     let p = app.partition(&q.repo)?;
-    let snap = Arc::new(p.db.snapshot().await.map_err(XrpcError::from_err)?);
+    let snap = Arc::new(p.db.snapshot().map_err(XrpcError::from_err)?);
     let not_found = || XrpcError::bad("RepoNotFound", format!("Could not find repo for space: {}", space.uri));
     let v = snap.get(state::space_head_key(&q.repo, &space.sid)).await.map_err(XrpcError::from_err)?;
     let head = head_of(HeadRow::decode(&v.ok_or_else(not_found)?).map_err(XrpcError::from_err)?, &space, &p)?;
@@ -2211,7 +2211,7 @@ async fn list_repos(State(app): AppState, headers: HeaderMap, Query(q): Query<Li
     }
     metrics::space_read("listRepos", "credential");
     let p = app.partition(&space.authority)?;
-    let snap = p.db.snapshot().await.map_err(XrpcError::from_err)?;
+    let snap = p.db.snapshot().map_err(XrpcError::from_err)?;
     let prefix = state::space_prefix(state::SPACE_SEQ_FAMILY, &space.authority, &space.sid);
     let lo = match q.cursor.as_deref() {
         None => prefix.clone(),

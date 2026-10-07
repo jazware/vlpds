@@ -28,6 +28,14 @@
 //! and replays like the rest of the row. A row written before suffixes were
 //! counted lacks them: the load counts that slot's account rows from the
 //! same snapshot as its rows, and writes the result back.
+//!
+//! The console's account filter counts ride along: unconfirmed email, and
+//! active without a second factor, are flags of the account row
+//! ([`flags_of`]), so they move with the same account deltas. "Second
+//! factor" is what the row records (`totpEnabled`, `emailAuthFactorAt`,
+//! `passkeys`): the fast-path flags sign-in already keeps, plus the passkey
+//! count each passkey change writes. A row written before the flags were
+//! counted is seeded from the account rows like the suffixes.
 
 use crate::segment::Mutation;
 use crate::state::{self, Account, Head};
@@ -75,18 +83,45 @@ fn cutoff(today: u32) -> u32 {
     today.saturating_sub(KEEP_DAYS)
 }
 
+pub const UNCONFIRMED: u8 = 1;
+/// Active, with no second factor on the row.
+pub const NO_2FA: u8 = 2;
+
+/// The filter flags of an account row's parts.
+pub fn flags(status: Option<&str>, email_confirmed: bool, extra: &serde_json::Map<String, serde_json::Value>) -> u8 {
+    let mut f = 0;
+    if !email_confirmed {
+        f |= UNCONFIRMED;
+    }
+    let second = extra.get("totpEnabled").and_then(|v| v.as_bool()) == Some(true)
+        || extra.get("emailAuthFactorAt").is_some_and(|v| v.is_string())
+        || extra.get("passkeys").and_then(|v| v.as_u64()).is_some_and(|n| n > 0);
+    if status.is_none() && !second {
+        f |= NO_2FA;
+    }
+    f
+}
+
+pub fn flags_of(account: &Account) -> u8 {
+    flags(account.status.as_deref(), account.email_confirmed, &account.extra)
+}
+
 /// What one repo counts toward.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RepoKey {
     pub status: u8,
     pub day: u32,
+    pub flags: u8,
 }
 
 impl RepoKey {
     /// None: the account is gone (deleted).
     pub fn of(account: &Account, head: &Head) -> Option<RepoKey> {
-        (account.status.as_deref() != Some("deleted"))
-            .then(|| RepoKey { status: status_index(account.status.as_deref()), day: day_of(head.rev) })
+        (account.status.as_deref() != Some("deleted")).then(|| RepoKey {
+            status: status_index(account.status.as_deref()),
+            day: day_of(head.rev),
+            flags: flags_of(account),
+        })
     }
 }
 
@@ -156,11 +191,20 @@ pub struct Totals {
     pub days: Vec<(u32, i64)>,
     /// Active accounts by handle suffix ([`suffix_of`]).
     pub suffixes: BTreeMap<Box<str>, i64>,
+    /// Accounts with [`UNCONFIRMED`], and with [`NO_2FA`].
+    pub unconfirmed: i64,
+    pub no2fa: i64,
 }
 
 impl Totals {
     fn add(&mut self, k: RepoKey, n: i64, cutoff: u32) {
         self.accounts[k.status as usize] += n;
+        if k.flags & UNCONFIRMED != 0 {
+            self.unconfirmed += n;
+        }
+        if k.flags & NO_2FA != 0 {
+            self.no2fa += n;
+        }
         if k.day < cutoff {
             return;
         }
@@ -211,9 +255,11 @@ impl Totals {
         for (s, n) in &o.suffixes {
             self.add_suffix(s, *n);
         }
+        self.unconfirmed += o.unconfirmed;
+        self.no2fa += o.no2fa;
     }
 
-    /// [`Totals::merge`] without the suffixes.
+    /// [`Totals::merge`] without what a seed counts (the suffixes and flags).
     pub fn merge_counts(&mut self, o: &Totals) {
         for (a, b) in self.accounts.iter_mut().zip(o.accounts) {
             *a += b;
@@ -241,11 +287,12 @@ impl Totals {
     /// Zigzag varints: the five status counts, the number of days, then
     /// per day its distance from the previous one (the first: absolute)
     /// and its count; then the number of suffixes, and per suffix its
-    /// length, its bytes and its count. ~100 bytes for a slot active on
-    /// every day kept, plus each suffix.
+    /// length, its bytes and its count; then the unconfirmed and no-2FA
+    /// counts. ~100 bytes for a slot active on every day kept, plus each
+    /// suffix.
     pub fn encode(&self) -> Bytes {
         let suffix_bytes: usize = self.suffixes.keys().map(|s| s.len() + 4).sum();
-        let mut b = Vec::with_capacity(17 + 6 * self.days.len() + suffix_bytes);
+        let mut b = Vec::with_capacity(27 + 6 * self.days.len() + suffix_bytes);
         for a in self.accounts {
             put_varint(&mut b, zigzag(a));
         }
@@ -262,6 +309,8 @@ impl Totals {
             b.extend_from_slice(s.as_bytes());
             put_varint(&mut b, zigzag(*n));
         }
+        put_varint(&mut b, zigzag(self.unconfirmed));
+        put_varint(&mut b, zigzag(self.no2fa));
         b.into()
     }
 
@@ -269,8 +318,9 @@ impl Totals {
         Ok(Totals::decode_row(b)?.0)
     }
 
-    /// The totals, and whether the row counts suffixes (rows written before
-    /// they were counted end after the days).
+    /// The totals, and whether the row counts suffixes and flags (rows
+    /// written before those were counted end after the days, or after the
+    /// suffixes).
     pub fn decode_row(mut b: &[u8]) -> anyhow::Result<(Totals, bool)> {
         let mut t = Totals::default();
         for a in &mut t.accounts {
@@ -298,6 +348,11 @@ impl Totals {
             b = rest;
             t.suffixes.insert(s.into(), unzigzag(get_varint(&mut b)?));
         }
+        if b.is_empty() {
+            return Ok((t, false));
+        }
+        t.unconfirmed = unzigzag(get_varint(&mut b)?);
+        t.no2fa = unzigzag(get_varint(&mut b)?);
         anyhow::ensure!(b.is_empty(), "totals row: {} trailing bytes", b.len());
         Ok((t, true))
     }
@@ -354,9 +409,10 @@ pub struct SlotRows {
     pub slot: u16,
     pub row: Option<Totals>,
     pub deltas: Vec<(Bytes, Totals)>,
-    /// The slot's active accounts by suffix, counted from its account rows
-    /// in the read's snapshot, when a row predates suffix counts.
-    pub seed: Option<BTreeMap<Box<str>, i64>>,
+    /// The slot's suffixes and flags, counted from its account rows in the
+    /// read's snapshot, when a row predates those counts. Only `suffixes`,
+    /// `unconfirmed` and `no2fa` are set.
+    pub seed: Option<Totals>,
 }
 
 /// A shard's totals as of the last entry the sequencer took. They load in
@@ -404,8 +460,12 @@ impl ShardTotals {
             handle: std::borrow::Cow<'a, str>,
             #[serde(borrow, default)]
             status: Option<std::borrow::Cow<'a, str>>,
+            #[serde(default)]
+            email_confirmed: bool,
+            #[serde(flatten)]
+            extra: serde_json::Map<String, serde_json::Value>,
         }
-        let snap = db.snapshot().await?;
+        let snap = db.snapshot()?;
         let opts = slatedb::config::ScanOptions { read_ahead_bytes: 1 << 20, max_fetch_tasks: 2, ..Default::default() };
         let mut scan = state::FamilyScan::new(snap.as_ref(), FAMILY, None, &opts).await?;
         let mut out: Vec<SlotRows> = Vec::new();
@@ -432,16 +492,22 @@ impl ShardTotals {
             return Ok(out);
         }
         let started = std::time::Instant::now();
-        let mut seeds: HashMap<u16, BTreeMap<Box<str>, i64>> = stale.iter().map(|s| (*s, BTreeMap::new())).collect();
+        let mut seeds: HashMap<u16, Totals> = stale.iter().map(|s| (*s, Totals::default())).collect();
         let mut accts = state::FamilyScan::new(snap.as_ref(), state::ACCOUNT_FAMILY, None, &opts).await?;
         while let Some(kv) = accts.next().await? {
             let Some(seed) = state::key_slot(&kv.key).and_then(|s| seeds.get_mut(&s)) else { continue };
             let Ok(a) = serde_json::from_slice::<Row>(&kv.value) else { continue };
+            if a.status.as_deref() == Some("deleted") {
+                continue;
+            }
+            let f = flags(a.status.as_deref(), a.email_confirmed, &a.extra);
+            seed.unconfirmed += i64::from(f & UNCONFIRMED != 0);
+            seed.no2fa += i64::from(f & NO_2FA != 0);
             if a.status.is_some() {
                 continue;
             }
             if let Some(s) = crate::handle_domains::handle_suffix(&a.handle) {
-                *seed.entry(s).or_default() += 1;
+                *seed.suffixes.entry(s).or_default() += 1;
             }
         }
         for o in &mut out {
@@ -450,7 +516,7 @@ impl ShardTotals {
         tracing::info!(
             slots = stale.len(),
             ms = started.elapsed().as_millis() as u64,
-            "account totals: counted handle suffixes of rows that lacked them"
+            "account totals: counted handle suffixes and filter flags of rows that lacked them"
         );
         Ok(out)
     }
@@ -479,7 +545,9 @@ impl ShardTotals {
         let seeded = r.seed.is_some();
         let mut s = Slot { row: r.row.unwrap_or_default(), deltas: Vec::new() };
         if let Some(seed) = r.seed {
-            s.row.suffixes = seed;
+            s.row.suffixes = seed.suffixes;
+            s.row.unconfirmed = seed.unconfirmed;
+            s.row.no2fa = seed.no2fa;
         }
         for (k, d) in r.deltas {
             if !s.deltas.contains(&k) {
@@ -632,6 +700,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn flags_from_the_row() {
+        let mut a = Account { email_confirmed: false, ..Default::default() };
+        assert_eq!(flags_of(&a), UNCONFIRMED | NO_2FA);
+        a.email_confirmed = true;
+        assert_eq!(flags_of(&a), NO_2FA);
+        for (k, v) in [
+            ("totpEnabled", serde_json::json!(true)),
+            ("emailAuthFactorAt", serde_json::json!("2026-10-01T00:00:00Z")),
+            ("passkeys", serde_json::json!(2)),
+        ] {
+            let mut b = a.clone();
+            b.extra.insert(k.into(), v);
+            assert_eq!(flags_of(&b), 0, "{k}");
+        }
+        for (k, v) in [("totpEnabled", serde_json::json!(false)), ("passkeys", serde_json::json!(0))] {
+            let mut b = a.clone();
+            b.extra.insert(k.into(), v);
+            assert_eq!(flags_of(&b), NO_2FA, "{k}");
+        }
+        // only active accounts lack a factor
+        a.status = Some("deactivated".into());
+        assert_eq!(flags_of(&a), 0);
+    }
+
+    #[test]
     fn statuses() {
         assert_eq!(status_index(None), 0);
         assert_eq!(status_index(Some("deactivated")), 1);
@@ -644,10 +737,16 @@ mod tests {
         s.iter().map(|(k, n)| (Box::from(*k), *n)).collect()
     }
 
-    /// A row as a build that didn't count suffixes wrote it.
+    /// A row as a build that didn't count suffixes (nor flags) wrote it.
     fn without_suffixes(t: &Totals) -> Bytes {
-        let b = Totals { suffixes: BTreeMap::new(), ..t.clone() }.encode();
-        b.slice(..b.len() - 1)
+        let b = Totals { suffixes: BTreeMap::new(), unconfirmed: 0, no2fa: 0, ..t.clone() }.encode();
+        b.slice(..b.len() - 3)
+    }
+
+    /// A row as a build that counted suffixes but not flags wrote it.
+    fn without_flags(t: &Totals) -> Bytes {
+        let b = Totals { unconfirmed: 0, no2fa: 0, ..t.clone() }.encode();
+        b.slice(..b.len() - 2)
     }
 
     #[test]
@@ -658,22 +757,33 @@ mod tests {
                 accounts: [1, 0, 7, -3, i64::MAX],
                 days: vec![(20_000, 1), (20_001, -2), (20_031, 1 << 40)],
                 suffixes: suffixes(&[("pds.test", 3), ("at.example.org", -1)]),
+                unconfirmed: 4,
+                no2fa: -2,
             },
         ] {
             assert_eq!(Totals::decode_row(&t.encode()).unwrap(), (t.clone(), true));
-            let old = Totals { suffixes: BTreeMap::new(), ..t.clone() };
+            let old = Totals { suffixes: BTreeMap::new(), unconfirmed: 0, no2fa: 0, ..t.clone() };
             assert_eq!(Totals::decode_row(&without_suffixes(&t)).unwrap(), (old, false));
+            let old = Totals { unconfirmed: 0, no2fa: 0, ..t.clone() };
+            assert_eq!(Totals::decode_row(&without_flags(&t)).unwrap(), (old, false));
         }
-        let t = Totals { accounts: [1; 5], days: vec![(9, 9)], suffixes: suffixes(&[("a.test", 1)]) };
+        let t = Totals {
+            accounts: [1; 5],
+            days: vec![(9, 9)],
+            suffixes: suffixes(&[("a.test", 1)]),
+            unconfirmed: 1,
+            no2fa: 1,
+        };
         let mut b = t.encode().to_vec();
         b.push(0);
         assert!(Totals::decode(&b).is_err());
         assert!(Totals::decode(&b[..3]).is_err());
-        assert!(Totals::decode(&b[..b.len() - 3]).is_err());
+        assert!(Totals::decode(&b[..b.len() - 2]).is_err(), "one flag count");
+        assert!(Totals::decode(&b[..b.len() - 5]).is_err());
     }
 
     fn k(status: u8, day: u32) -> Option<RepoKey> {
-        Some(RepoKey { status, day })
+        Some(RepoKey { status, day, flags: 0 })
     }
 
     fn apply(s: &mut ShardTotals, d: Delta, today: u32) -> Vec<Mutation> {
@@ -698,7 +808,7 @@ mod tests {
         let m = apply(&mut s, d(1, k(0, today - 3), k(0, today)), today);
         assert_eq!(
             Totals::decode(m[0].val.as_ref().unwrap()).unwrap(),
-            Totals { accounts: [2, 0, 0, 0, 0], days: vec![(today, 1)], suffixes: BTreeMap::new() }
+            Totals { accounts: [2, 0, 0, 0, 0], days: vec![(today, 1)], ..Default::default() }
         );
         let sum = s.sum().unwrap().clone();
         assert_eq!(sum.accounts, [2, 1, 1, 0, 0]);
@@ -737,8 +847,8 @@ mod tests {
     }
 
     type Db = std::collections::BTreeMap<Bytes, Bytes>;
-    /// Account id -> the suffix it counts under: the account rows.
-    type Accounts = HashMap<u32, Option<Box<str>>>;
+    /// Account id -> the suffix and flags it counts under: the account rows.
+    type Accounts = HashMap<u32, (Option<Box<str>>, u8)>;
 
     const SLOTS: u32 = 17;
 
@@ -764,11 +874,13 @@ mod tests {
         }
         for o in &mut out {
             if stale.contains(&o.slot) {
-                let mut seed = BTreeMap::new();
-                for (id, sfx) in accts {
-                    if let Some(sfx) = sfx.as_ref().filter(|_| (id % SLOTS) as u16 == o.slot) {
-                        *seed.entry(sfx.clone()).or_default() += 1;
+                let mut seed = Totals::default();
+                for (_, (sfx, flags)) in accts.iter().filter(|(id, _)| (*id % SLOTS) as u16 == o.slot) {
+                    if let Some(sfx) = sfx {
+                        *seed.suffixes.entry(sfx.clone()).or_default() += 1;
                     }
+                    seed.unconfirmed += i64::from(flags & UNCONFIRMED != 0);
+                    seed.no2fa += i64::from(flags & NO_2FA != 0);
                 }
                 o.seed = Some(seed);
             }
@@ -804,8 +916,9 @@ mod tests {
                 snapshot = None;
             }
             if rng.gen_ratio(1, 2_000) {
+                let legacy: fn(&Totals) -> Bytes = if rng.gen() { without_suffixes } else { without_flags };
                 for v in db.values_mut() {
-                    *v = without_suffixes(&Totals::decode(v).unwrap());
+                    *v = legacy(&Totals::decode(v).unwrap());
                 }
                 s = ShardTotals::unloaded();
                 snapshot = None;
@@ -826,7 +939,8 @@ mod tests {
             } else {
                 let status = rng.gen_range(0..5);
                 let suffix = (status == 0).then(|| Box::from(SUFFIXES[rng.gen_range(0..SUFFIXES.len())]));
-                Counted { repo: Some(RepoKey { status, day: today - rng.gen_range(0..2) }), suffix }
+                let flags = rng.gen_range(0..4u8) & if status == 0 { 3 } else { UNCONFIRMED };
+                Counted { repo: Some(RepoKey { status, day: today - rng.gen_range(0..2), flags }), suffix }
             };
             match after.repo {
                 Some(_) => repos.insert(id, after.clone()),
@@ -843,7 +957,7 @@ mod tests {
             }
             // the entry's batch: the account row and the totals rows together
             match after.repo {
-                Some(_) => accts.insert(id, after.suffix),
+                Some(r) => accts.insert(id, (after.suffix, r.flags)),
                 None => accts.remove(&id),
             };
             for m in muts {
@@ -863,10 +977,13 @@ mod tests {
                     if let Some(sfx) = &r.suffix {
                         want.add_suffix(sfx, 1);
                     }
+                    want.unconfirmed += i64::from(r.repo.unwrap().flags & UNCONFIRMED != 0);
+                    want.no2fa += i64::from(r.repo.unwrap().flags & NO_2FA != 0);
                 }
                 let sum = s.sum().unwrap();
                 assert_eq!(sum.accounts, want.accounts, "step {step}");
                 assert_eq!(sum.suffixes, want.suffixes, "step {step}");
+                assert_eq!((sum.unconfirmed, sum.no2fa), (want.unconfirmed, want.no2fa), "step {step}");
                 for (_, days) in WINDOWS {
                     let n = repos.values().filter(|r| r.repo.unwrap().day + days >= today).count() as i64;
                     assert_eq!(sum.written_within(days, today), n, "step {step}");
@@ -875,6 +992,11 @@ mod tests {
                 reloaded.install(read(&db, &accts), today);
                 assert_eq!(reloaded.sum().unwrap().accounts, want.accounts, "step {step}");
                 assert_eq!(reloaded.sum().unwrap().suffixes, want.suffixes, "step {step}");
+                assert_eq!(
+                    (reloaded.sum().unwrap().unconfirmed, reloaded.sum().unwrap().no2fa),
+                    (want.unconfirmed, want.no2fa),
+                    "step {step}"
+                );
                 for (_, days) in WINDOWS {
                     assert_eq!(reloaded.sum().unwrap().written_within(days, today), sum.written_within(days, today));
                 }
@@ -893,11 +1015,11 @@ mod tests {
     #[test]
     fn seeded_rows_are_saved() {
         let mut db = Db::new();
-        let t = Totals { accounts: [2, 0, 0, 0, 0], days: vec![(20_000, 2)], suffixes: BTreeMap::new() };
+        let t = Totals { accounts: [2, 0, 0, 0, 0], days: vec![(20_000, 2)], ..Default::default() };
         for slot in 0..1_000u16 {
             db.insert(key(slot).into(), without_suffixes(&t));
         }
-        let accts: Accounts = (0..2 * SLOTS).map(|id| (id, Some(Box::from("pds.test")))).collect();
+        let accts: Accounts = (0..2 * SLOTS).map(|id| (id, (Some(Box::from("pds.test")), NO_2FA))).collect();
         let mut s = ShardTotals::unloaded();
         s.install(read(&db, &accts), 20_000);
         assert_eq!(s.unsaved_entries(), 1_000usize.div_ceil(SAVE_PER_ENTRY));
@@ -914,6 +1036,8 @@ mod tests {
         let mut reloaded = ShardTotals::unloaded();
         reloaded.install(rows, 20_000);
         assert_eq!(reloaded.sum().unwrap().suffixes, suffixes(&[("pds.test", 2 * SLOTS as i64)]));
+        assert_eq!(reloaded.sum().unwrap().no2fa, 2 * SLOTS as i64);
+
         assert_eq!(reloaded.sum(), s.sum());
     }
 }

@@ -233,8 +233,12 @@ swappable.
     follows / blocks of that subject: the backlink index createRecord
     prunes duplicates with (see "Backlinks").
   - `S/{did}` → the repo's counts for checkAccountStatus (records, MST
-    nodes, distinct referenced blobs; 3 × u64), a stored mut of each commit
-    that changes them (see "checkAccountStatus counts").
+    nodes, distinct referenced blobs) and the console's repo bytes (record
+    blocks, node blocks); 5 × u64, or 3 in a row from before bytes were
+    counted, which the repo's next load counts. A stored mut of each commit
+    that changes the counts (see "checkAccountStatus counts"); the bytes are
+    kept close without reading what a commit replaces
+    (`state::RepoBytes::commit`) and made exact by `vlpds.admin.recountRepo`.
   - `a/{did}`, `n/{handle}` → account. The account row carries the repo
     signing key only wrapped under the KEK (`Account::wrapped_signing_key`,
     bound to the DID) next to its public key (`signing_pubkey`, which DID
@@ -243,6 +247,10 @@ swappable.
   - `G/{did}` → `ImportState`: a staged import (generation, driver nonce,
     reserved rev) and the generations left to sweep; absent otherwise (see
     "Staged imports").
+  - `L/{did}\0{factor}` → locked until (u64 BE seconds): the lockout index
+    `vlpds.admin.listLockouts` scans, put or deleted by the conditional
+    write of the account's lockout row (`mfa`, `eotp_lock`) in the same
+    batch (`xrpc::mfa::lockout_index`).
   - `D/{did}` → the account's `deleteAfter`, put or deleted with every
     account row its worker writes and left by the repo delete, so the
     owner's scheduled-deletion sweep finds due accounts (and unfinished
@@ -1665,27 +1673,19 @@ slot by slot: `state::FamilyScan` keeps one iterator over the shard and
 `seek`s past slots without the family, so empty slots cost nothing and a
 populated one costs one seek.
 
-*Patched SlateDB (fork).* A projection keeps each SST view's
-id, so right after a split both children hold the parent's L0 SSTs under
+*Patched SlateDB (fork).* A projection used to keep each SST view's
+id, so right after a split both children held the parent's L0 SSTs under
 the parent's view ids (each with its half as the visible range). Merging
 them back before either compacted those L0s gave the union's L0 one view
-id twice, and SlateDB 0.17's compactor keys L0 views by id: the merged
-shard's first compaction of such a view rewrote one half and dropped both
-from the manifest, so the other half's keys (acked writes, account and
-handle keys) were gone from the shard and from every later clone of it.
-This was `split_and_merge_under_write_load`'s rare "acked record lost"
-(the merged shard compacted only when its L0 ran deep under load). vlpds
-builds slatedb (and slatedb-common) from the fork
-`github.com/jazware/slatedb`, branch `vlpds-0.17-submit-dest-guard`, rev
-`68106cc0` (0.17.0 = upstream `c1e36fc` plus this fix, its test update,
-the synchronous-`next` / `next_batch` scan fast path, and a compactor guard:
-an admin-submitted spec, i.e. reshard GC's forced compactions, is failed
-instead of promoted when it collides with a claimed job's destination or
-sources, which the executor's `assert!` would otherwise panic on; via
-`[patch.crates-io]`), whose `Manifest::cloned_from_union` gives repeated
-L0 view ids fresh ids (same timestamp; the union has no L0 watermark that
-could name the old ones). Pending an upstream report; drop the patch once
-a release carries a fix. `partition.rs`
+id twice, and SlateDB's compactor keys L0 views by id: the merged shard's
+first compaction of such a view rewrote one half and dropped both from
+the manifest, so the other half's keys (acked writes, account and handle
+keys) were gone from the shard and from every later clone of it. This was
+`split_and_merge_under_write_load`'s rare "acked record lost" (the merged
+shard compacted only when its L0 ran deep under load). Upstream #2132
+fixes it: a projection that changes a view's range gives it a new id, a
+union gives any id still repeated a fresh one, and the compactor refuses a
+compaction whose L0 sources are ambiguous. `partition.rs`
 `merging_a_splits_halves_keeps_their_shared_l0s` pins it.
 
 The same merged L0 also has one SST behind two views (one per half), out
@@ -1700,10 +1700,19 @@ and the writer's next flush re-added one older than the L0 watermark and
 failed with `InvalidClockTick`. A reopen from that manifest would have lost
 those rows. It needs a merge of halves that still hold more than 8 views of
 their parent's L0s, i.e. a merge soon after a split of a shard with a deep
-L0. The fork branch `fix/l0-view-merge-dup-sst` (rev `c7b29a06`, on top of
-the above) cuts at the view id and uses the SST id only for a V1 marker
-without one; `partition.rs` `merging_halves_that_share_many_l0s_keeps_them`
-pins it.
+L0. Upstream #2134 cuts at the view id and uses the SST id only for a
+marker without one; `partition.rs`
+`merging_halves_that_share_many_l0s_keeps_them` pins it.
+
+vlpds builds slatedb (and slatedb-common) from the fork
+`github.com/jazware/slatedb` via `[patch.crates-io]`, pinned by rev to the
+fork's `main`: upstream `main` at `8c1c6c33`, which carries both fixes
+above, plus the patches in the fork's `PATCHES.md` (the synchronous
+`next` / `next_batch` scan fast path; a compactor guard that fails an
+admin-submitted spec, i.e. reshard GC's forced compactions, instead of
+promoting it when it collides with a claimed job's destination or sources,
+which the executor's `assert!` would otherwise panic on; compaction output
+seeded into the DB cache; and a cache peek before building a loader).
 
 **Protocol.** One reshard op at a time, cluster-wide, recorded in the
 layout as `op = {id, parents, children, driver}`:
@@ -3553,13 +3562,18 @@ least the backup retention.
 
 Email confirmation, email update, password reset, account deletion, PLC
 operation, sign-in code (email 2FA) and admin `sendEmail` mail go out over
-SMTP (`src/mail.rs`, lettre over rustls) when configured:
+SMTP (`src/mail.rs`, lettre over rustls) or, for hosts whose provider blocks
+outbound SMTP, Cloudflare Email Sending's REST API, when configured:
 
 | Flag | Env | Reference PDS env (also read) |
 |---|---|---|
 | `--email-smtp-url` | `VLPDS_EMAIL_SMTP_URL` | `PDS_EMAIL_SMTP_URL` |
+| `--email-api-url` | `VLPDS_EMAIL_API_URL` | |
+| `--email-api-token[-file]` | `VLPDS_EMAIL_API_TOKEN[_FILE]` | |
 | `--email-from-address` | `VLPDS_EMAIL_FROM_ADDRESS` | `PDS_EMAIL_FROM_ADDRESS` |
 | `--moderation-email-smtp-url` | `VLPDS_MODERATION_EMAIL_SMTP_URL` | `PDS_MODERATION_EMAIL_SMTP_URL` |
+| `--moderation-email-api-url` | `VLPDS_MODERATION_EMAIL_API_URL` | |
+| `--moderation-email-api-token[-file]` | `VLPDS_MODERATION_EMAIL_API_TOKEN[_FILE]` | |
 | `--moderation-email-address` | `VLPDS_MODERATION_EMAIL_ADDRESS` | `PDS_MODERATION_EMAIL_ADDRESS` |
 | `--email-brand-name` | `VLPDS_EMAIL_BRAND_NAME` | `PDS_SERVICE_NAME` |
 | `--email-home-url` | `VLPDS_EMAIL_HOME_URL` | `PDS_HOME_URL` |
@@ -3618,8 +3632,24 @@ attempt; transient failures (4xx, network, timeout) retry after ~2 s, 10 s and
 `vlpds_mail_retries_total`, `vlpds_mail_queue_depth`, `vlpds_mail_send_seconds`.
 Each node mails for the requests it handles; tokens live in the account's
 private state, so any node verifies them. Queued mail is lost if the node
-stops (the user asks again). A moderation mailer is a second `SmtpMailer`
+stops (the user asks again). A moderation mailer is a second `QueueMailer`
 with its own queue and pool; the metrics are shared (`purpose="admin"`).
+
+**HTTPS transport.** `--email-api-url` (the account's
+`https://api.cloudflare.com/client/v4/accounts/{account_id}/email/sending/send`)
+replaces SMTP with one JSON POST per mail (`from` as an address or
+`{address, name}`, `to`, `subject`, `text`, `html`), the token
+(`--email-api-token[-file]`, Email Sending: Edit, the same token the SMTP relay
+takes) as `Authorization: Bearer`. Exactly one of the SMTP and API URLs per
+mailer, else startup fails. It shares the queue, concurrency, backoff and
+metrics. 429, 408, 5xx, connection errors and timeouts retry; any other 4xx
+is permanent, as is a 200 whose `result.permanent_bounces` or
+`suppressed_recipients` is non-empty. A 200 without a parsable body counts as
+sent (retrying could deliver twice). Cloudflare sets `Message-ID` and refuses
+it in `headers`. The URL must be `https://` (plain `http://` only to loopback,
+for tests), and the token is a sensitive header value that no log or `Debug`
+shows. The moderation mailer takes `--moderation-email-api-url`, with its own
+token or the main one.
 
 ## Choosing a bucket (`vlpds-bucket-probe`)
 
@@ -4799,10 +4829,12 @@ the next count. Now the totals are kept exact as part of the state:
 - **One row per slot**, `0x01 ‖ slot ‖ T/`, holding the slot's account
   count per status and, per UTC day, how many of its repos have their
   latest commit on that day (the last 32 days, zigzag varints, ~100 bytes
-  when a slot has activity on every day). Since the rows are slot-major,
-  they split, merge and move with their slots like every other key. A
-  per-shard row would need splitting and merging logic, and no per-shard
-  summary can be divided at a split point.
+  when a slot has activity on every day), plus the console's filter counts
+  (email unconfirmed; active with no second factor on the account row),
+  which are flags of the account row moved by the same deltas. Since the
+  rows are slot-major, they split, merge and move with their slots like
+  every other key. A per-shard row would need splitting and merging logic,
+  and no per-shard summary can be divided at a split point.
 - **Exact deltas from the worker.** Each repo's worker holds its account
   and head, so for every create, commit, status change (deactivate,
   activate, takedown, suspend), import, key re-sign or delete, it knows

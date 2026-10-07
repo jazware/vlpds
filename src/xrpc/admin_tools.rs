@@ -10,6 +10,7 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/xrpc/vlpds.admin.publishIdentity", post(publish_identity))
         .route("/xrpc/vlpds.admin.checkRepo", get(check_repo))
         .route("/xrpc/vlpds.admin.rebuildRepo", post(rebuild_repo))
+        .route("/xrpc/vlpds.admin.recountRepo", post(recount_repo))
 }
 
 fn invalid(message: impl Into<String>) -> XrpcError {
@@ -80,6 +81,8 @@ struct Inspection {
     /// What a rebuild deletes: bad or unreferenced `M/` nodes, stale index
     /// entries.
     stale_keys: Vec<Bytes>,
+    /// The repo's stats counted from the snapshot, bytes included.
+    counted: state::RepoStats,
     report: J,
 }
 
@@ -182,7 +185,7 @@ async fn inspect(app: &App, did: &str) -> XResult<Inspection> {
     let p = app.partition(did)?;
     let snap = {
         let _g = p.apply_lock.read().await;
-        p.db.snapshot().await.map_err(XrpcError::from_err)?
+        p.db.snapshot().map_err(XrpcError::from_err)?
     };
     let get = |k: Vec<u8>| {
         let snap = snap.clone();
@@ -220,17 +223,19 @@ async fn inspect(app: &App, did: &str) -> XResult<Inspection> {
 
     let recs: Vec<(crate::mst_lazy::Key, Cid)> =
         records.iter().map(|(p, c, ..)| (Arc::from(p.as_bytes()), *c)).collect();
-    let (rebuilt, want, tree_nodes) = tokio::task::spawn_blocking(move || -> XResult<(Cid, NodeBlocks, u64)> {
-        let mut tree = crate::mst_lazy::build_tree(&recs).map_err(XrpcError::from_err)?;
-        let root = tree.root_cid().map_err(XrpcError::from_err)?;
-        Ok((
-            root,
-            crate::mst_lazy::persisted_nodes(&tree, 1),
-            crate::repo_stats::count_tree(&tree).map_err(XrpcError::from_err)?.1,
-        ))
-    })
-    .await
-    .map_err(XrpcError::from_err)??;
+    let (rebuilt, want, tree_nodes, node_bytes) =
+        tokio::task::spawn_blocking(move || -> XResult<(Cid, NodeBlocks, u64, u64)> {
+            let mut tree = crate::mst_lazy::build_tree(&recs).map_err(XrpcError::from_err)?;
+            let root = tree.root_cid().map_err(XrpcError::from_err)?;
+            Ok((
+                root,
+                crate::mst_lazy::persisted_nodes(&tree, 1),
+                crate::repo_stats::count_tree(&tree).map_err(XrpcError::from_err)?.1,
+                crate::repo_stats::tree_bytes(&tree).map_err(XrpcError::from_err)?,
+            ))
+        })
+        .await
+        .map_err(XrpcError::from_err)??;
     let matches_head = rebuilt == head.data;
     let (mut have, mut corrupt, mut stale_keys) = (HashSet::new(), Vec::new(), Vec::new());
     let mut extra = Vec::new();
@@ -273,6 +278,10 @@ async fn inspect(app: &App, did: &str) -> XResult<Inspection> {
         records: (records.len() + bad_records.len()) as u64,
         nodes: tree_nodes,
         blobs: records.iter().flat_map(|(_, _, _, bs)| bs.iter()).collect::<HashSet<_>>().len() as u64,
+        bytes: Some(state::RepoBytes {
+            records: records.iter().map(|(_, _, b, _)| b.len() as u64).sum(),
+            nodes: node_bytes,
+        }),
     };
     let stored_stats = match get(state::repo_stats_key(did)).await? {
         Some(v) => Some(state::RepoStats::decode(&v).map_err(XrpcError::from_err)?),
@@ -293,7 +302,10 @@ async fn inspect(app: &App, did: &str) -> XResult<Inspection> {
     }
     match stored_stats {
         None => problems.push("repo stats (S/) missing".into()),
-        Some(st) if st != counted => problems.push(format!("repo stats (S/) are {st:?}, the repo has {counted:?}")),
+        // bytes are kept close, not exact, between counts: not a problem
+        Some(st) if st.counts() != counted.counts() => {
+            problems.push(format!("repo stats (S/) are {:?}, the repo has {:?}", st.counts(), counted.counts()))
+        }
         Some(_) => {}
     }
     if !matches_head {
@@ -325,8 +337,14 @@ async fn inspect(app: &App, did: &str) -> XResult<Inspection> {
         "records": {"count": records.len() + bad_records.len(), "badCount": bad_records.len(), "bad": sample(&bad_records)},
         "mst": {"rebuiltRoot": rebuilt.to_string(), "matchesHead": matches_head},
         "stats": {
-            "stored": stored_stats.map(|s| json!({"records": s.records, "nodes": s.nodes, "blobs": s.blobs})),
-            "counted": {"records": counted.records, "nodes": counted.nodes, "blobs": counted.blobs},
+            "stored": stored_stats.map(|s| json!({
+                "records": s.records, "nodes": s.nodes, "blobs": s.blobs,
+                "recordBytes": s.bytes.map(|b| b.records), "nodeBytes": s.bytes.map(|b| b.nodes),
+            })),
+            "counted": {
+                "records": counted.records, "nodes": counted.nodes, "blobs": counted.blobs,
+                "recordBytes": counted.bytes.map(|b| b.records), "nodeBytes": counted.bytes.map(|b| b.nodes),
+            },
         },
         "nodes": {
             "expected": want.len(), "stored": stored.len(),
@@ -340,7 +358,7 @@ async fn inspect(app: &App, did: &str) -> XResult<Inspection> {
             "collectionsMissing": colls_missing,
         },
     });
-    Ok(Inspection { head, records, bad_records, matches_head, stale_keys, report })
+    Ok(Inspection { head, records, bad_records, matches_head, stale_keys, counted, report })
 }
 
 #[derive(Deserialize)]
@@ -396,6 +414,33 @@ async fn rebuild_repo(State(app): AppState, Auth(creds): Auth, Json(inp): Json<R
     Ok(Json(out))
 }
 
+/// Counts the repo's stats (repo bytes included) from a snapshot and
+/// installs them, guarded by the head they were counted at (`InvalidSwap`
+/// if a commit landed since: run it again). Costs a read of the whole repo,
+/// as checkRepo; for a repo whose bytes have drifted. Rows written before
+/// bytes were counted don't need it: the repo's next load counts them.
+async fn recount_repo(
+    State(app): AppState,
+    Auth(creds): Auth,
+    Json(inp): Json<super::console::DidIn>,
+) -> XResult<Json<J>> {
+    require_admin(&creds)?;
+    let did = inp.did;
+    let ins = inspect(&app, &did).await?;
+    if !ins.bad_records.is_empty() {
+        return Err(XrpcError::bad("RepoUnrecoverable", format!("{did}: records don't hash to their CIDs")));
+    }
+    let before = ins.report["stats"]["stored"].clone();
+    let stats = ins.counted;
+    app.account_op(&did, crate::worker::AccountOp::SetStats { stats, at_rev: ins.head.rev.0 }).await?;
+    Ok(Json(json!({
+        "did": did,
+        "before": before,
+        "after": ins.report["stats"]["counted"],
+        "repoBytes": stats.bytes.map(|b| b.total()),
+    })))
+}
+
 pub fn space_routes() -> Router<Arc<App>> {
     Router::new().route("/xrpc/vlpds.admin.checkSpace", get(check_space))
 }
@@ -441,7 +486,7 @@ async fn check_space(
     let p = app.partition(&q.did)?;
     let snap = {
         let _g = p.apply_lock.read().await;
-        p.db.snapshot().await.map_err(XrpcError::from_err)?
+        p.db.snapshot().map_err(XrpcError::from_err)?
     };
     let rows = check::load(snap.as_ref(), &q.did, &q.space).await.map_err(XrpcError::from_err)?;
     if rows.is_empty() {

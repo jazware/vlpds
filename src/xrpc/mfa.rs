@@ -14,6 +14,38 @@ use super::*;
 use sha2::{Digest, Sha256};
 
 pub(super) const ROW: &str = "mfa";
+/// [`Mfa`]'s lockout: TOTP codes and recovery codes.
+pub const FACTOR_LOCK: &str = "second_factor";
+/// The email sign-in code's own lockout (`email2fa`).
+pub const EMAIL_LOCK: &str = "email_code";
+
+/// The lockout index (`L/{did}\0{factor}` -> locked until, u64 BE seconds)
+/// that `vlpds.admin.listLockouts` scans: the index entry of a lockout row
+/// (`mfa`, the email code's) written in the same batch as the row, by the
+/// conditional write at the account's owner (`cas::private_cas_local`). Set
+/// while the row is locked, deleted when it's written unlocked or deleted.
+/// An entry that outlived its row (expired, or the account went) is
+/// dropped when the listing finds it so.
+pub(super) fn lockout_index(routing: &str, name: &str, val: Option<&Bytes>) -> Option<crate::segment::Mutation> {
+    let factor = match name {
+        ROW => FACTOR_LOCK,
+        super::email2fa::LOCKOUT_NAME => EMAIL_LOCK,
+        _ => return None,
+    };
+    let until = match (factor, val) {
+        (_, None) => 0,
+        (FACTOR_LOCK, Some(v)) => serde_json::from_slice::<Mfa>(v).map_or(0, |m| m.locked_until),
+        (_, Some(v)) => serde_json::from_slice::<super::email2fa::Lockout>(v).map_or(0, |l| l.locked_until),
+    };
+    let key = state::lockout_key(routing, factor).into();
+    let locked = until > crate::totp::now_secs();
+    Some(crate::segment::Mutation { key, val: locked.then(|| Bytes::copy_from_slice(&until.to_be_bytes())) })
+}
+
+/// The factor named in a lockout index key's body, after the DID.
+pub fn lockout_factor(f: &[u8]) -> Option<&'static str> {
+    [FACTOR_LOCK, EMAIL_LOCK].into_iter().find(|x| x.as_bytes() == f)
+}
 pub const RECOVERY_CODES: usize = 10;
 const CAS_ROUNDS: usize = 8;
 

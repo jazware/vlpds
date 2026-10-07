@@ -16,16 +16,16 @@ pub(super) const PURPOSE: &str = "auth_factor";
 /// retries, double submits and a password-holding attacker can't flood
 /// the inbox, and the code already sent still works.
 pub(super) const RESEND_AFTER_MS: u64 = 60_000;
-const LOCKOUT_NAME: &str = "eotp_lock";
+pub(super) const LOCKOUT_NAME: &str = "eotp_lock";
 
 pub(super) fn enabled(a: &Account) -> bool {
     a.extra.get(FLAG).is_some_and(|v| v.is_string())
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
-struct Lockout {
-    failures: u32,
-    locked_until: u64,
+pub(super) struct Lockout {
+    pub failures: u32,
+    pub locked_until: u64,
 }
 
 /// Golden fixtures (`super::private_rows`).
@@ -178,6 +178,7 @@ async fn check_email_code(app: &App, acct: &Account, email: Option<&str>, code: 
             Err(e) if e.error != "InvalidToken" => return Err(e),
             Err(e) => {
                 crate::totp::record_failure_in(&mut lk.failures, &mut lk.locked_until, now);
+
                 let e = if now < lk.locked_until { crate::totp::locked_out() } else { e };
                 (Err(e), vec![Op::put(LOCKOUT_NAME, Some(Bytes::from(to_json_bytes(&lk))))])
             }

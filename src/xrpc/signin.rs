@@ -225,7 +225,7 @@ pub(super) async fn prefs(app: &App, did: &str) -> XResult<Prefs> {
 
 /// Which second factors are set up, and since when. Any 2FA change changes
 /// it, so it voids the trusts granted before. A new factor kind adds a part.
-async fn factors(app: &App, acct: &Account) -> XResult<String> {
+pub(super) async fn factors(app: &App, acct: &Account) -> XResult<String> {
     let totp = crate::totp::load(app, &acct.did).await?;
     let totp_at = if totp.enabled() { totp.enabled_at.clone().unwrap_or_else(|| "on".into()) } else { String::new() };
     let email_at = acct.extra.get(super::email2fa::FLAG).and_then(|v| v.as_str()).unwrap_or("");

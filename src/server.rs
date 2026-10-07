@@ -382,6 +382,7 @@ pub async fn build(cfg: Config) -> anyhow::Result<Arc<xrpc::App>> {
     let state_limits = Limits::new(cfg.store_inflight);
     let ctl_limits =
         Limits::new(crate::objlimit::CTL_PERMITS).with_reserved(Reserve::LeaseWrites, crate::objlimit::LEASE_PERMITS);
+    let store_stats = crate::store_stats::StoreStats::new(&cfg.prefix);
     let (store, state_store, ctl_store) = match &cfg.s3 {
         None => {
             let m = match &cfg.memory_store {
@@ -389,18 +390,22 @@ pub async fn build(cfg: Config) -> anyhow::Result<Arc<xrpc::App>> {
                 None => Store::memory(cfg.inject_latency),
             };
             let plain = Store { latency: None, ..m.clone() };
-            (m.counted("log"), plain.clone().counted("state"), plain.counted("ctl"))
+            (
+                m.counted_into("log", &store_stats),
+                plain.clone().counted_into("state", &store_stats),
+                plain.counted_into("ctl", &store_stats),
+            )
         }
         Some(s3) => (
-            Store::s3(s3, &cfg.prefix, cfg.inject_latency, log_limits.connections())?.counted("log"),
-            Store::s3(s3, &cfg.prefix, None, state_limits.connections())?.counted("state"),
+            Store::s3(s3, &cfg.prefix, cfg.inject_latency, log_limits.connections())?.counted_into("log", &store_stats),
+            Store::s3(s3, &cfg.prefix, None, state_limits.connections())?.counted_into("state", &store_stats),
             Store::s3_ctl(
                 s3,
                 &cfg.prefix,
                 ctl_limits.connections(),
                 cfg.cluster.as_ref().map_or_else(|| ClusterConfig::default().renew_every, |c| c.renew_every),
             )?
-            .counted("ctl"),
+            .counted_into("ctl", &store_stats),
         ),
     };
     let (store, state_store, ctl_store) = (
@@ -451,6 +456,7 @@ pub async fn build(cfg: Config) -> anyhow::Result<Arc<xrpc::App>> {
     // before the join, which may fence our own previous incarnation's log
     crate::metrics::init_counters();
     let started = std::time::Instant::now();
+    store_stats.attach(ctl_store.clone(), &cc.node_id);
     let cluster = Cluster::join(cc, ctl_store).await?;
     // route by this prefix's layout (it may differ from --shards: splits,
     // merges, or a different count at creation)
@@ -605,7 +611,9 @@ pub async fn build(cfg: Config) -> anyhow::Result<Arc<xrpc::App>> {
         log,
         node: node_handle,
         ui,
+        store_stats,
     });
+    app.store_stats.start();
     if let Some(s) = &app.spaces {
         crate::metrics::init_space_counters();
         s.outbox.start(Arc::downgrade(&app));
@@ -632,6 +640,7 @@ pub fn spawn_reporters(app: &Arc<xrpc::App>) {
         }
     });
     stats::spawn_stall_detector();
+    crate::node_metrics::start();
 }
 
 /// Builds the app and serves it in background tasks. Returns the public
@@ -1127,6 +1136,10 @@ pub async fn shutdown(app: &Arc<xrpc::App>) {
             tracing::error!("{e:#}: exiting nonzero without dropping our lease (peers or our restart fence the log)");
             crate::lifecycle::fail_stop(8, "shutdown_fence");
         }
+    }
+    // after the shards closed: their last flushes are counted too
+    if let Err(e) = app.store_stats.flush(true).await {
+        tracing::warn!("storage stats: the last fold of this node's changes: {e:#}");
     }
 }
 

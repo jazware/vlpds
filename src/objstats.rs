@@ -32,6 +32,7 @@ pub fn component(prefix: &str, path: &str) -> &'static str {
         "writers" => "ctl_writer",
         "cluster" => "ctl_version",
         "handle" | "email" => "account_index",
+        "stats" => "ctl_stats",
         "blob" | "blob-gc" | "blob-tmp" => "blob",
         // vlrelay's quorum log: its manifest and leader record, and its
         // state's SlateDB at `qlog/state` (or a recovery's `qlog/state-e{n}`)
@@ -68,6 +69,8 @@ pub struct Counting {
     prefix: String,
     client: &'static str,
     latency: Option<Latency>,
+    /// Objects and bytes by component (crate::store_stats).
+    stats: Option<Arc<crate::store_stats::StoreStats>>,
 }
 
 /// Bench-only lognormal latency, `<read ms>,<write ms>[,<sigma>]`: emulates
@@ -100,11 +103,21 @@ async fn sleep_lognormal(median_ms: f64, sigma: f64) {
 }
 
 pub fn counted(inner: Arc<dyn ObjectStore>, prefix: &str, client: &'static str) -> Arc<dyn ObjectStore> {
+    counted_with(inner, prefix, client, None)
+}
+
+pub fn counted_with(
+    inner: Arc<dyn ObjectStore>,
+    prefix: &str,
+    client: &'static str,
+    stats: Option<Arc<crate::store_stats::StoreStats>>,
+) -> Arc<dyn ObjectStore> {
     Arc::new(Counting {
         inner,
         prefix: prefix.trim_end_matches('/').to_string(),
         client,
         latency: Latency::from_env(client),
+        stats,
     })
 }
 
@@ -194,13 +207,33 @@ impl Counting {
     fn count_list(
         &self,
         comp: &'static str,
+        prefix: Option<&Path>,
+        whole: bool,
         mut s: BoxStream<'static, Result<ObjectMeta>>,
     ) -> BoxStream<'static, Result<ObjectMeta>> {
         let client = self.client;
         let mut first = Some(Req::new("list", comp, client));
         let mut n = 0u64;
+        let stats = self.stats.clone();
+        let sizes = stats.as_ref().is_some_and(|st| st.sizes_from(prefix.map(|p| p.as_ref())));
+        let mut observe = prefix.filter(|_| whole).map(|p| p.to_string());
+        let mut seen_bytes = 0u64;
         futures::stream::poll_fn(move |cx| {
             let item = futures::ready!(s.poll_next_unpin(cx));
+            match (&item, &stats) {
+                (Some(Ok(m)), Some(st)) => {
+                    seen_bytes += m.size;
+                    if sizes {
+                        st.listed(m.location.as_ref(), m.size);
+                    }
+                }
+                (None, Some(st)) => {
+                    if let Some(p) = observe.take() {
+                        st.list_done(&p, n, seen_bytes);
+                    }
+                }
+                _ => {}
+            }
             match (&item, first.take()) {
                 (Some(r), Some(req)) => req.finish(r),
                 (None, Some(req)) => req.finish(&Ok(())),
@@ -235,10 +268,15 @@ impl ObjectStore for Counting {
             PutMode::Update(_) => "put_cas",
         };
         let req = Req::new(op, comp, self.client);
-        bytes("up", comp, self.client, payload.content_length() as u64);
+        let size = payload.content_length() as u64;
+        bytes("up", comp, self.client, size);
+        let (kind, start) = (crate::store_stats::PutKind::from(&opts.mode), crate::store_stats::now_us());
         self.write_delay().await;
         let r = self.inner.put_opts(location, payload, opts).await;
         req.finish(&r);
+        if let (Ok(_), Some(st)) = (&r, &self.stats) {
+            st.put(location.as_ref(), comp, kind, size, start);
+        }
         r
     }
 
@@ -248,7 +286,15 @@ impl ObjectStore for Counting {
         self.write_delay().await;
         let r = self.inner.put_multipart_opts(location, opts).await;
         req.finish(&r);
-        Ok(Box::new(CountingUpload { inner: r?, comp, client: self.client }))
+        Ok(Box::new(CountingUpload {
+            inner: r?,
+            comp,
+            client: self.client,
+            stats: self.stats.clone(),
+            path: location.to_string(),
+            size: 0,
+            start: crate::store_stats::now_us(),
+        }))
     }
 
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
@@ -269,6 +315,10 @@ impl ObjectStore for Counting {
         if !head {
             bytes("down", comp, self.client, r.range.end - r.range.start);
         }
+        // a read tells the object's size, so its later delete or overwrite is exact
+        if let Some(st) = &self.stats {
+            st.listed(location.as_ref(), r.meta.size);
+        }
         Ok(r)
     }
 
@@ -276,6 +326,7 @@ impl ObjectStore for Counting {
     /// per object.
     fn delete_stream(&self, locations: BoxStream<'static, Result<Path>>) -> BoxStream<'static, Result<Path>> {
         let (prefix, client) = (self.prefix.clone(), self.client);
+        let (stats, start) = (self.stats.clone(), crate::store_stats::now_us());
         // an error may not name its key: count it under the last one sent
         let last = Arc::new(parking_lot::Mutex::new("other"));
         let sent = last.clone();
@@ -296,7 +347,13 @@ impl ObjectStore for Counting {
         self.inner
             .delete_stream(locations)
             .inspect(move |r| match r {
-                Ok(p) => count("delete", component(&prefix, p.as_ref()), client, "ok"),
+                Ok(p) => {
+                    let comp = component(&prefix, p.as_ref());
+                    count("delete", comp, client, "ok");
+                    if let Some(st) = &stats {
+                        st.deleted(p.as_ref(), comp, start);
+                    }
+                }
                 Err(e) => count("delete", *last.lock(), client, result_label(e)),
             })
             .boxed()
@@ -304,12 +361,12 @@ impl ObjectStore for Counting {
 
     fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, Result<ObjectMeta>> {
         let comp = prefix.map_or("other", |p| self.comp(p));
-        self.count_list(comp, self.inner.list(prefix))
+        self.count_list(comp, prefix, true, self.inner.list(prefix))
     }
 
     fn list_with_offset(&self, prefix: Option<&Path>, offset: &Path) -> BoxStream<'static, Result<ObjectMeta>> {
         let comp = prefix.map_or("other", |p| self.comp(p));
-        self.count_list(comp, self.inner.list_with_offset(prefix, offset))
+        self.count_list(comp, prefix, false, self.inner.list_with_offset(prefix, offset))
     }
 
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
@@ -322,10 +379,15 @@ impl ObjectStore for Counting {
     }
 
     async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> Result<()> {
-        let req = Req::new("copy", self.comp(to), self.client);
+        let comp = self.comp(to);
+        let req = Req::new("copy", comp, self.client);
+        let start = crate::store_stats::now_us();
         self.write_delay().await;
         let r = self.inner.copy_opts(from, to, options).await;
         req.finish(&r);
+        if let (Ok(()), Some(st)) = (&r, &self.stats) {
+            st.copied(from.as_ref(), to.as_ref(), comp, start);
+        }
         r
     }
 }
@@ -335,6 +397,10 @@ struct CountingUpload {
     inner: Box<dyn MultipartUpload>,
     comp: &'static str,
     client: &'static str,
+    stats: Option<Arc<crate::store_stats::StoreStats>>,
+    path: String,
+    size: u64,
+    start: u64,
 }
 
 #[async_trait]
@@ -342,6 +408,7 @@ impl MultipartUpload for CountingUpload {
     fn put_part(&mut self, data: PutPayload) -> UploadPart {
         let req = Req::new("mpu_part", self.comp, self.client);
         bytes("up", self.comp, self.client, data.content_length() as u64);
+        self.size += data.content_length() as u64;
         let part = self.inner.put_part(data);
         Box::pin(async move {
             let r = part.await;
@@ -354,6 +421,9 @@ impl MultipartUpload for CountingUpload {
         let req = Req::new("mpu_complete", self.comp, self.client);
         let r = self.inner.complete().await;
         req.finish(&r);
+        if let (Ok(_), Some(st)) = (&r, &self.stats) {
+            st.put(&self.path, self.comp, crate::store_stats::PutKind::Overwrite, self.size, self.start);
+        }
         r
     }
 
@@ -441,6 +511,7 @@ mod tests {
             prefix: "objstats-cancel".into(),
             client: "state",
             latency: Some(Latency { read_ms: 60_000.0, write_ms: 60_000.0, sigma: 0.0 }),
+            stats: None,
         };
         let p = Path::from("objstats-cancel/writers/007");
         let (c0, t0) = (n("get", "ctl_writer", "cancelled"), timed("get", "ctl_writer"));

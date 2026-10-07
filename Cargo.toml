@@ -147,14 +147,14 @@ name = "level_gating"
 path = "tests/level_gating.rs"
 required-features = ["test-level"]
 
-# slatedb 0.17.0 (upstream c1e36fc) plus five patches: 1-4 on the fork branch
-# vlpds-0.17-filtercache, 5 on fix/l0-view-merge-dup-sst on top of it (all
-# pending an upstream report):
-# 1. a union clone (a shard merge) of two sources that inherited the same L0
-#    SST from a common ancestor (a split's halves merged back) repeated its L0
-#    view id, and the merged shard's first compaction of it dropped one half's
-#    keys (Manifest::cloned_from_union now gives repeats fresh ids). DESIGN.md
-#    "Online shard split/merge", "Patched SlateDB".
+# The fork's main = upstream slatedb main at 8c1c6c33 plus the patches listed
+# in its PATCHES.md (numbered as there), pinned here by rev (each patch also
+# has its own branch for an upstream report, all pending). Upstream fixes
+# the two union-clone bugs behind partition.rs's merge regression tests
+# (#2132: unique L0 view ids after a split's halves merge back; #2134: the
+# writer/compactor L0 merge cuts at the view id, not a shared SST id), so the
+# fork's patches 1 and 5 are gone. DESIGN.md "Online shard split/merge",
+# "Patched SlateDB".
 # 2. a synchronous `next` fast path for resident rows plus DbIterator::next_batch
 #    (scan ~12.5k -> ~3.4k instructions/row; getRepo export -57%).
 # 3. an admin-submitted compaction (reshard GC's forced detach) skipped the
@@ -164,16 +164,15 @@ required-features = ["test-level"]
 # 4. CompactionWorkerBuilder::with_db_cache: a standalone worker seeds its
 #    output SSTs' index and filters into the DB's cache, so a fresh SST isn't
 #    a guaranteed metadata miss for its first reads.
-# 5. the writer/compactor manifest merge cut L0 at the first view of the last
-#    compacted SST, but a union clone has one SST behind several views (a
-#    merge of halves still holding their parent's L0s; a families clone): the
-#    compactor wrote an L0 missing live views and the writer's next flush
-#    failed with InvalidClockTick (LsmTreeState::merge_writer_and_compactor
-#    now cuts at the view id; partition.rs merging_halves_that_share_many_l0s_keeps_them).
+# 6. the table store peeks the cache (DbCache::peek_*) before it builds a
+#    CacheLoader: every filter/index/stats/block hit built and dropped one,
+#    ~10 allocations per SST section a get touches (~16% fewer instructions
+#    per cached get in the fork's alloc bench). MetaCache and BlockCache use
+#    the default peek, their get_*.
 [patch.crates-io]
-slatedb = { git = "https://github.com/jazware/slatedb", rev = "c7b29a0673d54a8346cb8dd6f4b888e0b7dda84a" }
+slatedb = { git = "https://github.com/jazware/slatedb", rev = "cec4b86fad717081fca9e9522c498c0269087cf8" }
 # the same rev, so the metrics recorder (src/metrics.rs) and slatedb share one slatedb-common
-slatedb-common = { git = "https://github.com/jazware/slatedb", rev = "c7b29a0673d54a8346cb8dd6f4b888e0b7dda84a" }
+slatedb-common = { git = "https://github.com/jazware/slatedb", rev = "cec4b86fad717081fca9e9522c498c0269087cf8" }
 
 # Fat LTO + 1 codegen unit: ~4 min of a release build is this crate's
 # single-threaded optimization and LTO, but cheaper settings cost runtime

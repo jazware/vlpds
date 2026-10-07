@@ -84,6 +84,8 @@ pub struct CertInfo {
     pub node_id: Option<String>,
     /// Unix seconds.
     pub not_after: i64,
+    /// Unix seconds.
+    pub not_before: i64,
     pub is_ca: bool,
     /// DNS and IP SANs.
     pub hosts: Vec<String>,
@@ -118,6 +120,7 @@ pub fn cert_info(der: &[u8]) -> Result<CertInfo> {
     Ok(CertInfo {
         node_id,
         not_after: c.validity().not_after.timestamp(),
+        not_before: c.validity().not_before.timestamp(),
         is_ca: c.is_ca(),
         hosts,
         subject: c.subject().to_string(),
@@ -155,6 +158,7 @@ struct Material {
     client_verifier: Arc<dyn ClientCertVerifier>,
     server_verifier: Arc<WebPkiServerVerifier>,
     cert_not_after: i64,
+    leaf: CertInfo,
     ca_not_after: i64,
 }
 
@@ -180,7 +184,7 @@ impl Material {
         let ck =
             CertifiedKey::from_der(chain.clone(), key, &p).context("the node key doesn't match its certificate")?;
         let leaf = cert_info(&chain[0])?;
-        let Some(node_id) = leaf.node_id else {
+        let Some(node_id) = leaf.node_id.clone() else {
             bail!("the node certificate ({}) has no {NODE_URI_PREFIX}<node-id> URI SAN (issue it with `vlpds admin tls issue`)", leaf.subject);
         };
         let roots = Arc::new(roots);
@@ -199,6 +203,7 @@ impl Material {
             client_verifier,
             server_verifier,
             cert_not_after: leaf.not_after,
+            leaf: leaf.clone(),
             ca_not_after,
         })
     }
@@ -286,6 +291,21 @@ impl PeerTls {
     pub fn not_after(&self) -> (i64, i64) {
         let m = self.cur.read();
         (m.cert_not_after, m.ca_not_after)
+    }
+
+    /// What getConfig shows of the certificate in use: no key material.
+    pub fn report(&self) -> serde_json::Value {
+        let m = self.cur.read();
+        let ms = |s: i64| s.saturating_mul(1000);
+        serde_json::json!({
+            "nodeId": m.node_id,
+            "subject": m.leaf.subject,
+            "hosts": m.leaf.hosts,
+            "notBefore": ms(m.leaf.not_before),
+            "notAfter": ms(m.cert_not_after),
+            "caNotAfter": ms(m.ca_not_after),
+            "reloadable": self.files.is_some(),
+        })
     }
 
     fn export_expiry(&self) {

@@ -108,12 +108,12 @@ async fn added_domain_serves_handles() {
     s.xrpc.post("com.atproto.identity.updateHandle", &json!({"handle": primary.handle}), &primary.auth()).await.ok();
 
     // counts and removal
-    let l = list(&s).await;
+    let l = complete_domain_counts(&s).await;
     assert_eq!(l["primary"], json!(HANDLE_DOMAIN));
     assert_eq!(l["domains"][0]["primary"], json!(true));
     assert_eq!(accounts(&l, "group-a.test"), Some(1));
     assert_eq!(accounts(&l, HANDLE_DOMAIN), Some(1));
-    let r = remove(&s, "group-a.test", false).await;
+    let r = remove_handle_domain_unforced(&s, "group-a.test").await;
     r.err(409, "DomainInUse");
     assert!(r.text().contains("1 active account"), "{}", r.text());
     remove(&s, HANDLE_DOMAIN, true).await.err(400, "CannotRemovePrimary");
@@ -130,7 +130,7 @@ async fn added_domain_serves_handles() {
     assert_eq!(tls_check(&s, &a.handle).await, 400);
     // an unused domain goes without force
     add(&s, "group-c.test").await.ok();
-    remove(&s, "group-c.test", false).await.ok();
+    remove_handle_domain_unforced(&s, "group-c.test").await.ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -146,7 +146,7 @@ async fn bad_domains_are_refused() {
     // a domain nested in another is fine: the longest match wins
     add(&s, "at.group-a.test").await.ok();
     let a = s.create_account_with(&format!("{}.at.group-a.test", unique_name("nest")), PASSWORD).await;
-    let l = list(&s).await;
+    let l = complete_domain_counts(&s).await;
     assert_eq!((accounts(&l, "at.group-a.test"), accounts(&l, "group-a.test")), (Some(1), Some(0)));
     assert_eq!(s.resolve_handle(&a.handle).await.ok()["did"], json!(a.did));
     s.xrpc.post("vlpds.admin.addHandleDomain", &json!({"domain": "x.test"}), &Auth::None).await.err_status(401);
@@ -201,8 +201,8 @@ async fn peers_serve_a_change_at_once() {
     assert_eq!(well_known(&b, &acct.handle).await, (200, acct.did.clone()));
     assert_eq!(tls_check(&b, &acct.handle).await, 200);
     // b counts a's shards
-    assert_eq!(accounts(&list(&b).await, "group-a.test"), Some(1));
-    remove(&b, "group-a.test", false).await.err(409, "DomainInUse");
+    assert_eq!(accounts(&complete_domain_counts(&b).await, "group-a.test"), Some(1));
+    remove_handle_domain_unforced(&b, "group-a.test").await.err(409, "DomainInUse");
     remove(&b, "group-a.test", true).await.ok();
     assert_eq!(domains(&a).await, json!([format!(".{HANDLE_DOMAIN}")]));
     assert_eq!(tls_check(&a, &acct.handle).await, 400);
@@ -255,7 +255,7 @@ async fn counts_are_kept_and_partial_only_while_loading() {
 
     let l = settled(&b).await;
     assert_eq!((accounts(&l, "group-a.test"), accounts(&l, HANDLE_DOMAIN)), (Some(4), Some(4)));
-    remove(&b, "group-b.test", false).await.ok();
+    remove_handle_domain_unforced(&b, "group-b.test").await.ok();
 
     let byo = format!("{}.elsewhere.test", unique_name("byo"));
     admin_handle(&b, &accts[0].did, &byo).await;
@@ -274,7 +274,7 @@ async fn counts_are_kept_and_partial_only_while_loading() {
     admin_handle(&b, &accts[0].did, &back).await;
     let l = settled(&b).await;
     assert_eq!((accounts(&l, "elsewhere.test"), accounts(&l, HANDLE_DOMAIN)), (Some(0), Some(3)));
-    remove(&a, "elsewhere.test", false).await.ok();
+    remove_handle_domain_unforced(&a, "elsewhere.test").await.ok();
 }
 
 /// Totals rows written before handle suffixes were counted: a shard that
@@ -295,8 +295,9 @@ async fn rows_without_suffixes_are_seeded() {
     let mut stripped = 0;
     for p in s.app.partitions.owned() {
         for (k, (t, _)) in totals_rows(&p).await {
-            let b = vlpds::totals::Totals { suffixes: Default::default(), ..t }.encode();
-            p.db.put(&k, &b[..b.len() - 1]).await.unwrap();
+            let b = vlpds::totals::Totals { suffixes: Default::default(), unconfirmed: 0, no2fa: 0, ..t }.encode();
+            // the suffix count and the two flag counts, all zero: one byte each
+            p.db.put(&k, &b[..b.len() - 3]).await.unwrap();
             stripped += 1;
         }
         p.db.flush().await.unwrap();

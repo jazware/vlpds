@@ -31,6 +31,8 @@ pub fn routes() -> Router<Arc<App>> {
         .merge(super::ratelimits::internal_routes())
         .merge(super::handle_domains::internal_routes())
         .merge(super::firehose_subs::internal_routes())
+        .merge(super::console::internal_routes())
+        .merge(super::console_storage::internal_routes())
 }
 
 /// For HA tests and ops.

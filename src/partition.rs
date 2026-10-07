@@ -1996,7 +1996,7 @@ mod clone_tests {
     /// per family (a view per projection, the stages' after the parent's).
     /// Once the child's compactor took some, SlateDB's L0 merge cut at the
     /// wrong copy of the compacted SST and the writer's next flush failed
-    /// with `InvalidClockTick` (fork patch 5 in Cargo.toml).
+    /// with `InvalidClockTick` (fixed upstream, #2134).
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn family_child_flushes_through_compaction() {
         let three = tagged(0x03);

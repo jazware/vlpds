@@ -216,6 +216,12 @@ pub struct Session {
     /// and nothing wider, at the code exchange and every refresh.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space_collections: Option<std::collections::BTreeMap<String, Vec<String>>>,
+    /// The client address of the code exchange, and of the latest token
+    /// issuance (as rate limits resolve it), for the console.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
 }
 
 pub fn session_key(id: &str) -> String {
@@ -434,7 +440,10 @@ mod tests {
             request_id: None,
             auth_cred: None,
             space_collections: None,
+            created_ip: None,
+            ip: None,
         };
+
         let key = [7u8; 32];
         let t = refresh_token(&key, &s);
         let p = parse_refresh_token(&t).unwrap();

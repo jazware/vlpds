@@ -110,6 +110,11 @@ impl Store {
         Store { raw: crate::objstats::counted(self.raw, &self.prefix, client), ..self }
     }
 
+    /// [`Store::counted`], also keeping the node's object counts.
+    pub fn counted_into(self, client: &'static str, stats: &Arc<crate::store_stats::StoreStats>) -> Store {
+        Store { raw: crate::objstats::counted_with(self.raw, &self.prefix, client, Some(stats.clone())), ..self }
+    }
+
     /// Wrap each underlying client once, after `counted`, so the request
     /// metrics time the wire, not the wait for a permit.
     pub fn limited(self, client: &'static str, limits: crate::objlimit::Limits) -> Store {

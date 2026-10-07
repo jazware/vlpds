@@ -1852,6 +1852,7 @@ unreadable or empty file, or when the plain form is also set (flag or env).
 | Internal token | `VLPDS_INTERNAL_TOKEN` | `--internal-token-file` / `VLPDS_INTERNAL_TOKEN_FILE` |
 | S3 access / secret key | `VLPDS_S3_ACCESS_KEY`, `VLPDS_S3_SECRET_KEY` | `--s3-access-key-file`, `--s3-secret-key-file` / `VLPDS_S3_*_KEY_FILE` (also `vlpds-bucket-probe`) |
 | SMTP URLs (credentials) | `VLPDS_EMAIL_SMTP_URL`, `VLPDS_MODERATION_EMAIL_SMTP_URL` | `--email-smtp-url-file`, `--moderation-email-smtp-url-file` / `VLPDS_*_SMTP_URL_FILE` |
+| Mail API tokens | `VLPDS_EMAIL_API_TOKEN`, `VLPDS_MODERATION_EMAIL_API_TOKEN` | `--email-api-token-file`, `--moderation-email-api-token-file` / `VLPDS_*_API_TOKEN_FILE` |
 | Rate-limit bypass key | `VLPDS_RATE_LIMIT_BYPASS_KEY` | `--rate-limit-bypass-key-file` / `VLPDS_RATE_LIMIT_BYPASS_KEY_FILE` |
 | KEK, PLC rotation key, GCP credentials | `VLPDS_KEK`, `VLPDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX` | `--kek-file`, `--plc-rotation-key-file`, `--gcp-credentials-file` ([KEK provisioning](#kek-provisioning)) |
 | Vault credentials | `VLPDS_VAULT_APPROLE_ROLE_ID` (no env form for the rest) | `--vault-approle-role-id-file` (read once at startup), `--vault-approle-secret-id-file` and `--vault-k8s-jwt-file` (read at every login), `--vault-token-file` (read every minute and after a 403) |
@@ -2387,9 +2388,12 @@ works as is:
 | Flag | Env | Reference env | Notes |
 |---|---|---|---|
 | `--email-smtp-url` | `VLPDS_EMAIL_SMTP_URL` | `PDS_EMAIL_SMTP_URL` | `smtp://user:pass@host:587` / `smtps://...:465`. Unset, mail is only logged |
-| `--email-from-address` | `VLPDS_EMAIL_FROM_ADDRESS` | `PDS_EMAIL_FROM_ADDRESS` | required with the URL |
+| `--email-api-url` | `VLPDS_EMAIL_API_URL` | | Cloudflare Email Sending's REST API (`https://api.cloudflare.com/client/v4/accounts/<account_id>/email/sending/send`) for hosts that block outbound SMTP. Set this or `--email-smtp-url` |
+| `--email-api-token-file` | `VLPDS_EMAIL_API_TOKEN_FILE` | | its bearer token (Email Sending: Edit). `--email-api-token` / `VLPDS_EMAIL_API_TOKEN` inline |
+| `--email-from-address` | `VLPDS_EMAIL_FROM_ADDRESS` | `PDS_EMAIL_FROM_ADDRESS` | required with either URL |
 | `--moderation-email-smtp-url` | `VLPDS_MODERATION_EMAIL_SMTP_URL` | `PDS_MODERATION_EMAIL_SMTP_URL` | admin `sendEmail` only. Unset, it uses the main mailer |
-| `--moderation-email-address` | `VLPDS_MODERATION_EMAIL_ADDRESS` | `PDS_MODERATION_EMAIL_ADDRESS` | required with the moderation URL |
+| `--moderation-email-api-url` | `VLPDS_MODERATION_EMAIL_API_URL` | | the same over the REST API. Token: `--moderation-email-api-token-file`, else the main one |
+| `--moderation-email-address` | `VLPDS_MODERATION_EMAIL_ADDRESS` | `PDS_MODERATION_EMAIL_ADDRESS` | required with a moderation URL |
 | `--email-brand-name` | `VLPDS_EMAIL_BRAND_NAME` | `PDS_SERVICE_NAME` | default "{hostname} PDS" |
 | `--email-home-url` | `VLPDS_EMAIL_HOME_URL` | `PDS_HOME_URL` | footer link, default https://bsky.app |
 | `--email-logo-url` | `VLPDS_EMAIL_LOGO_URL` | `PDS_LOGO_URL` | default is the Bluesky logo, as in the reference |

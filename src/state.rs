@@ -21,6 +21,7 @@
 //! S/{did}                 -> repo counts (`RepoStats`: checkAccountStatus)
 //! G/{did}                 -> `ImportState`: a staged import, generations left to sweep
 //! D/{did}                 -> the account's `deleteAfter` (crate::xrpc::scheduled_deletion)
+//! L/{did}\0{factor}       -> locked until, u64 BE secs: the lockout index (crate::xrpc::mfa)
 //!
 //! `{gen}` is the repo's generation (`Account::repo_gen`, LEB128): importRepo
 //! stages the new repo under a fresh one and moves the account to it in one
@@ -161,6 +162,12 @@ pub fn blob_ref_key(did: &str, gen: u64, blob: &crate::cid::Cid, path: &str) -> 
 
 pub fn blob_ref_prefix(did: &str, gen: u64) -> Vec<u8> {
     gen_prefix(BLOB_REF_FAMILY, did, gen)
+}
+
+pub const LOCKOUT_FAMILY: &[u8] = b"L/";
+
+pub fn lockout_key(did: &str, factor: &str) -> Vec<u8> {
+    keyed(did, LOCKOUT_FAMILY, &[did.as_bytes(), b"\0", factor.as_bytes()])
 }
 
 pub fn private_key(did: &str, name: &str) -> Vec<u8> {
@@ -621,23 +628,73 @@ pub struct RepoStats {
     pub nodes: u64,
     /// Distinct blob CIDs the records reference (`b/`).
     pub blobs: u64,
+    /// None in a row written before bytes were counted: the repo's next
+    /// load counts them (`crate::repo_stats::walk`).
+    pub bytes: Option<RepoBytes>,
+}
+
+/// A repo's size as the console shows it: its record blocks plus its MST
+/// node blocks (leaves included), what a getRepo CAR holds less the commit
+/// and the CAR framing. Not the bytes the repo's rows take in the bucket
+/// (keys, indexes, compression). A full count is exact; a commit keeps it
+/// without reading what it replaces, so between counts it is close, not
+/// exact (see `RepoBytes::commit`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RepoBytes {
+    pub records: u64,
+    pub nodes: u64,
+}
+
+impl RepoBytes {
+    pub fn total(&self) -> u64 {
+        self.records + self.nodes
+    }
+
+    /// A commit's change, from what the commit has in hand. A created
+    /// record adds its size. An updated record is taken to be the size it
+    /// was (the old block isn't read), and a deleted one the repo's mean
+    /// record size. Nodes the commit wrote add their size; each one it
+    /// replaced takes the repo's mean node size. Only for commits that
+    /// change the counts: one that only updates records changes nothing. `before` is the counts
+    /// before the commit; `created` the created records' bytes, `deleted`
+    /// how many it deleted; `written` the bytes of the nodes it added and
+    /// `gone` how many it lost.
+    pub fn commit(&mut self, before: &RepoStats, created: u64, deleted: u64, written: u64, gone: u64) {
+        let mean = |total: u64, n: u64| total.checked_div(n).unwrap_or(0);
+        let rec_mean = mean(self.records, before.records);
+        let node_mean = mean(self.nodes, before.nodes);
+        self.records = (self.records + created).saturating_sub(deleted * rec_mean);
+        self.nodes = (self.nodes + written).saturating_sub(gone * node_mean);
+    }
 }
 
 impl RepoStats {
-    pub const LEN: usize = 24;
+    pub const LEN: usize = 40;
+    /// A row written before bytes were counted.
+    const LEN_COUNTS: usize = 24;
 
     pub fn encode(&self) -> Bytes {
         let mut b = Vec::with_capacity(Self::LEN);
         b.put_u64(self.records);
         b.put_u64(self.nodes);
         b.put_u64(self.blobs);
+        if let Some(by) = self.bytes {
+            b.put_u64(by.records);
+            b.put_u64(by.nodes);
+        }
         b.into()
     }
 
     pub fn decode(b: &[u8]) -> anyhow::Result<RepoStats> {
-        anyhow::ensure!(b.len() == Self::LEN, "repo stats of {} bytes", b.len());
+        anyhow::ensure!(b.len() == Self::LEN || b.len() == Self::LEN_COUNTS, "repo stats of {} bytes", b.len());
         let at = |i: usize| u64::from_be_bytes(b[i * 8..i * 8 + 8].try_into().unwrap());
-        Ok(RepoStats { records: at(0), nodes: at(1), blobs: at(2) })
+        let bytes = (b.len() == Self::LEN).then(|| RepoBytes { records: at(3), nodes: at(4) });
+        Ok(RepoStats { records: at(0), nodes: at(1), blobs: at(2), bytes })
+    }
+
+    /// The counts without the bytes, which only a full count gets exact.
+    pub fn counts(&self) -> (u64, u64, u64) {
+        (self.records, self.nodes, self.blobs)
     }
 
     /// The reference's `repoBlocks`: the commit, the nodes, a block per record.

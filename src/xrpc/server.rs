@@ -625,6 +625,7 @@ impl Mailer for LogMailer {
         // Never the token or body, at any level: they are credentials (a
         // debug log is still shipped to log storage).
         tracing::info!(to = %m.to, subject = %m.subject, purpose = %m.purpose, has_token = m.token.is_some(), body_bytes = m.body.len(), "mail (log mailer: email disabled, not sent)");
+        crate::mail::MAIL_LOG.logged(&m.purpose, &m.to);
     }
 }
 
@@ -657,6 +658,7 @@ pub(super) async fn mail_permit(
     let route = format!("mail:{purpose}");
     let limited = |reason: &str| {
         crate::mail::MAIL_SUPPRESSED.with_label_values(&[purpose, reason]).inc();
+        crate::mail::MAIL_LOG.suppressed(purpose, to, reason);
         XrpcError {
             status: StatusCode::TOO_MANY_REQUESTS,
             error: "RateLimitExceeded".into(),
@@ -987,6 +989,12 @@ struct RefreshState {
     /// The passkey that signed this in (`super::passkeys::auth_ref`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     auth_cred: Option<String>,
+    /// The client address at sign-in, and at this row's refresh (as rate
+    /// limits resolve it), for the console.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    created_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ip: Option<String>,
 }
 
 fn access_scope(ap: &Option<AppPassRef>) -> &'static str {
@@ -1054,11 +1062,13 @@ pub(super) async fn create_session_tokens(
     takendown: bool,
     epoch: Option<&str>,
     auth_cred: Option<String>,
+    ip: Option<std::net::IpAddr>,
 ) -> XResult<(String, String)> {
     use super::cas::{Cond, Op};
     let family = new_family_id();
     let rid = random_hex(24);
     let scope = if takendown { SCOPE_TAKENDOWN } else { access_scope(&ap) };
+    let ip = ip.map(|i| i.to_string());
     let st = RefreshState {
         family: family.clone(),
         exp: now_secs() + REFRESH_TTL,
@@ -1066,6 +1076,8 @@ pub(super) async fn create_session_tokens(
         created_at: now_secs(),
         next_id: None,
         auth_cred,
+        created_ip: ip.clone(),
+        ip,
     };
     let name = format!("sess/{rid}");
     let mut conds = vec![Cond::eq(&name, None)];
@@ -1185,6 +1197,53 @@ pub(super) async fn revoke_signed_in_with(app: &App, did: &str, auth_ref: &str) 
         }
     }
     Ok(())
+}
+
+/// The account's password and app-password sessions (`sess/` rows), one per
+/// session family: rotation adds rows, the family stays.
+pub(super) async fn legacy_sessions(app: &App, did: &str) -> XResult<Vec<J>> {
+    let mut fams: HashMap<String, RefreshState> = HashMap::new();
+    for (_, v) in super::internal::scan_private_anywhere(app, did, "sess/").await? {
+        let Ok(st) = serde_json::from_slice::<RefreshState>(&v) else { continue };
+        let live = |s: &RefreshState| (s.next_id.is_none(), s.created_at);
+        match fams.get(&st.family) {
+            Some(cur) if live(cur) >= live(&st) => {}
+            _ => {
+                fams.insert(st.family.clone(), st);
+            }
+        }
+    }
+    let now = now_secs();
+    let mut out: Vec<J> = fams
+        .into_values()
+        .filter(|st| st.exp > now)
+        .map(|st| {
+            // the family id starts with its issue time (micros, hex)
+            let started = u64::from_str_radix(st.family.get(..16).unwrap_or(""), 16).ok().map(|us| us / 1000);
+            json!({
+                "id": format!("legacy:{}", st.family),
+                "kind": if st.app_password.is_some() { "appPassword" } else { "legacy" },
+                "appPassword": st.app_password.as_ref().map(|a| &a.name),
+                "privileged": st.app_password.as_ref().is_some_and(|a| a.privileged),
+                "signedInAt": started,
+                "refreshedAt": st.created_at * 1000,
+                "expiresAt": st.exp * 1000,
+                "passkey": st.auth_cred.is_some(),
+                "ip": st.ip,
+                "signedInIp": st.created_ip,
+            })
+        })
+        .collect();
+    out.sort_by_key(|j| std::cmp::Reverse(j["refreshedAt"].as_u64()));
+    Ok(out)
+}
+
+/// One password or app-password session family: its refresh rows and its
+/// access tokens. How many rows went.
+pub(super) async fn revoke_legacy_family(app: &App, did: &str, family: &str) -> XResult<usize> {
+    let gone = delete_sessions_where(app, did, |_, st| st.family == family).await?;
+    revoke_families(app, did, &[family.to_string()]).await?;
+    Ok(gone.len())
 }
 
 async fn revoke_app_password_sessions(app: &App, did: &str, name: &str) -> XResult<()> {
@@ -1320,6 +1379,7 @@ pub(super) fn has_external_did(a: &Account) -> bool {
 /// this method, and its issuer may then bring its own DID (migration in).
 async fn create_account(
     State(app): AppState,
+    super::moderation::ClientIp(ip): super::moderation::ClientIp,
     headers: HeaderMap,
     Json(inp): Json<CreateAccountIn>,
 ) -> XResult<Json<J>> {
@@ -1331,7 +1391,7 @@ async fn create_account(
     // service of the DID, never the account holder, so it can't bring the DID.
     let requester = requester.filter(|r| !r.iss.contains('#'));
     let acct = create_account_inner(&app, inp, requester.as_ref().map(|r| r.iss.as_str())).await?;
-    let (access, refresh) = create_session_tokens(&app, &acct.did, None, false, None, None).await?;
+    let (access, refresh) = create_session_tokens(&app, &acct.did, None, false, None, None, ip).await?;
     let mut out = json!({"handle": acct.handle, "did": acct.did, "accessJwt": access, "refreshJwt": refresh});
     if let Some(doc) = account_did_doc(&app, &acct).await {
         out["didDoc"] = doc;
@@ -1359,7 +1419,16 @@ async fn account_did_doc(app: &App, a: &Account) -> Option<J> {
 ///   repo and no firehose events until activateAccount.
 /// - A given invite code is checked and recorded even if not required.
 pub(super) async fn create_account_inner(app: &App, inp: CreateAccountIn, requester: Option<&str>) -> XResult<Account> {
-    let r = create_account_checked(app, inp, requester).await;
+    count_signup(create_account_checked(app, inp, requester, false).await)
+}
+
+/// The operator's createAccount (vlpds.admin.createAccount): as a sign-up,
+/// but no invite code is needed when the server requires one.
+pub(super) async fn create_account_by_operator(app: &App, inp: CreateAccountIn) -> XResult<Account> {
+    count_signup(create_account_checked(app, inp, None, true).await)
+}
+
+fn count_signup(r: XResult<Account>) -> XResult<Account> {
     let result = match &r {
         Ok(_) => "created",
         Err(e) => signup_refusal(e),
@@ -1386,7 +1455,12 @@ fn signup_refusal(e: &XrpcError) -> &'static str {
     }
 }
 
-async fn create_account_checked(app: &App, inp: CreateAccountIn, requester: Option<&str>) -> XResult<Account> {
+async fn create_account_checked(
+    app: &App,
+    inp: CreateAccountIn,
+    requester: Option<&str>,
+    operator: bool,
+) -> XResult<Account> {
     if inp.plc_op.is_some() {
         return Err(invalid_request("Unsupported input: \"plcOp\""));
     }
@@ -1397,7 +1471,7 @@ async fn create_account_checked(app: &App, inp: CreateAccountIn, requester: Opti
         )));
     }
     let invite = inp.invite_code.as_deref().map(str::trim).filter(|c| !c.is_empty()).map(str::to_string);
-    if app.config.invite_required && invite.is_none() {
+    if app.config.invite_required && invite.is_none() && !operator {
         return Err(XrpcError::bad("InvalidInviteCode", "No invite code provided"));
     }
     // the request's spelling, echoed in "Email already taken" as the reference does
@@ -1848,7 +1922,7 @@ async fn create_session_inner(
     };
     let include_email = shows_email(app_pass.as_ref());
     let (access, refresh) =
-        create_session_tokens(app, &acct.did, app_pass, soft_deleted, Some(epoch.as_str()), None).await?;
+        create_session_tokens(app, &acct.did, app_pass, soft_deleted, Some(epoch.as_str()), None, ip).await?;
     let ua = super::signin::user_agent(headers);
     // a new browser gets its device cookie here, as on the OAuth pages
     let mut set_cookie = None;
@@ -1892,7 +1966,11 @@ async fn get_session(State(app): AppState, Auth(creds): Auth) -> XResult<Json<J>
     Ok(Json(session_info(&app, &acct, include_email).await))
 }
 
-async fn refresh_session(State(app): AppState, headers: HeaderMap) -> XResult<Json<J>> {
+async fn refresh_session(
+    State(app): AppState,
+    super::moderation::ClientIp(ip): super::moderation::ClientIp,
+    headers: HeaderMap,
+) -> XResult<Json<J>> {
     let c = refresh_claims(&app, &headers, false)?;
     let did = c.sub.clone();
     let rid = c.jti.clone().unwrap_or_default();
@@ -1904,7 +1982,7 @@ async fn refresh_session(State(app): AppState, headers: HeaderMap) -> XResult<Js
     let e = ext(&app);
     // an economy: the conditional write is what is correct across nodes
     let _g = e.lock(&did).await;
-    let (st, next) = rotate_refresh(&app, &did, &rid).await?;
+    let (st, next) = rotate_refresh(&app, &did, &rid, ip).await?;
     let ap_scope = st.app_password.as_ref().and_then(|a| a.scopes.as_deref());
     let (access, refresh) = issue_pair(&app, &did, access_scope(&st.app_password), ap_scope, &st.family, &next);
     let mut out = session_info(&app, &acct, shows_email(st.app_password.as_ref())).await;
@@ -1915,7 +1993,12 @@ async fn refresh_session(State(app): AppState, headers: HeaderMap) -> XResult<Js
 
 /// (the session, the next refresh id). Rewritten on condition the rows are
 /// unchanged, so a revocation landing meanwhile is never undone.
-async fn rotate_refresh(app: &App, did: &str, rid: &str) -> XResult<(RefreshState, String)> {
+async fn rotate_refresh(
+    app: &App,
+    did: &str,
+    rid: &str,
+    ip: Option<std::net::IpAddr>,
+) -> XResult<(RefreshState, String)> {
     use super::cas::{Cond, Op};
     let name = format!("sess/{rid}");
     for _ in 0..CAS_ROUNDS {
@@ -1936,7 +2019,8 @@ async fn rotate_refresh(app: &App, did: &str, rid: &str) -> XResult<(RefreshStat
         let rotated = RefreshState { exp: st.exp.min(now + REFRESH_GRACE), next_id: Some(next.clone()), ..st.clone() };
         let mut ops = vec![Op::put(&name, Some(Bytes::from(to_json_bytes(&rotated))))];
         if next_raw.is_none() {
-            let next_st = RefreshState { exp: now + REFRESH_TTL, created_at: now, next_id: None, ..st.clone() };
+            let ip = ip.map(|i| i.to_string()).or_else(|| st.ip.clone());
+            let next_st = RefreshState { exp: now + REFRESH_TTL, created_at: now, next_id: None, ip, ..st.clone() };
             ops.push(Op::put(&next_name, Some(Bytes::from(to_json_bytes(&next_st)))));
         }
         super::cas::pause_point("legacy_refresh", did).await;
@@ -2077,18 +2161,28 @@ async fn revoke_app_password(
 ) -> XResult<StatusCode> {
     // app passwords can't revoke app passwords (stricter than the reference)
     let did = full_access(&creds)?;
-    let e = ext(&app);
-    let _g = e.lock(&did).await;
-    let name = inp.name.trim().to_string();
-    if let Some(meta) = get_json::<J>(&app, &did, &format!("apppass/{name}")).await? {
-        let mut muts = vec![pmut(&did, &format!("apppass/{name}"), None)];
-        if let Some(h) = meta["hash"].as_str() {
-            muts.push(pmut(&did, &format!("apphash/{h}"), None));
-        }
-        app.put_private(&did, muts).await?;
-    }
-    revoke_app_password_sessions(&app, &did, &name).await?;
+    remove_app_password(&app, &did, inp.name.trim()).await?;
     Ok(StatusCode::OK)
+}
+
+/// The password and the sessions it signed in. False if there was none by
+/// that name (its sessions are ended all the same).
+pub(super) async fn remove_app_password(app: &App, did: &str, name: &str) -> XResult<bool> {
+    let e = ext(app);
+    let _g = e.lock(did).await;
+    let found = match get_json::<J>(app, did, &format!("apppass/{name}")).await? {
+        Some(meta) => {
+            let mut muts = vec![pmut(did, &format!("apppass/{name}"), None)];
+            if let Some(h) = meta["hash"].as_str() {
+                muts.push(pmut(did, &format!("apphash/{h}"), None));
+            }
+            app.put_private(did, muts).await?;
+            true
+        }
+        None => false,
+    };
+    revoke_app_password_sessions(app, did, name).await?;
+    Ok(found)
 }
 
 /// [`App::mutate_account`] that always writes; returns the account as written.
@@ -2267,7 +2361,7 @@ async fn check_account_status(State(app): AppState, Auth(creds): Auth) -> XResul
     let did = user_did(&creds)?;
     let acct = app.account(&did).await?;
     let p = app.partition(&did)?;
-    let snap = p.db.snapshot().await.map_err(XrpcError::from_err)?;
+    let snap = p.db.snapshot().map_err(XrpcError::from_err)?;
     let (hv, sv) = tokio::try_join!(
         slatedb::DbReadOps::get(snap.as_ref(), state::head_key(&did)),
         slatedb::DbReadOps::get(snap.as_ref(), state::repo_stats_key(&did))
@@ -3153,6 +3247,7 @@ pub(super) async fn reset_second_factors(app: &App, did: &str, revoke_sessions: 
     ];
     app.private_cas(did, Vec::new(), ops).await?;
     set_totp_flag(app, did, false).await?;
+    super::passkeys::note_count(app, did, 0).await;
     if revoke_sessions {
         revoke_everything(app, did).await?;
     } else {
@@ -3311,6 +3406,8 @@ pub(super) fn scoped_app_password_fixture_rows(did: &str) -> Vec<super::private_
         created_at: 1_790_000_000,
         next_id: None,
         auth_cred: None,
+        created_ip: None,
+        ip: None,
     };
     let hash = "5e2d1cf1".repeat(8);
     let meta = json!({"name": "bot", "createdAt": "2026-10-01T00:00:00.000Z", "privileged": false, "hash": hash, "scopes": scopes});
@@ -3331,7 +3428,10 @@ pub(super) fn passkey_session_fixture_rows(did: &str, cred: &str) -> Vec<super::
         created_at: 1_790_000_000,
         next_id: None,
         auth_cred: Some(cred.into()),
+        created_ip: None,
+        ip: None,
     };
+
     vec![(did.into(), "sess/00112233445566778899aabbccddeeff0011223344556622".into(), super::private_rows::enc(&st))]
 }
 
@@ -3347,6 +3447,8 @@ pub(super) fn fixture_rows(did: &str) -> Vec<super::private_rows::PrivateRow> {
         created_at: 1_790_000_000,
         next_id: Some("00112233445566778899aabbccddeeff0011223344556677".into()),
         auth_cred: None,
+        created_ip: None,
+        ip: None,
     };
     let hash = "4f1c0de0".repeat(8);
     let et = EmailToken { token_hash: "ab".repeat(32), requested_at: 1_790_000_000_000 };

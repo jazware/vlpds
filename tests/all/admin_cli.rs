@@ -540,6 +540,7 @@ async fn the_node_reads_secret_files() {
         (vec!["--internal-token-file".into(), path(&jwt)], vec![("VLPDS_INTERNAL_TOKEN", long.to_string())]),
         (vec![], vec![("VLPDS_S3_SECRET_KEY", long.to_string()), ("VLPDS_S3_SECRET_KEY_FILE", path(&jwt))]),
         (vec!["--email-smtp-url".into(), "smtp://x".into(), "--email-smtp-url-file".into(), path(&jwt)], vec![]),
+        (vec!["--email-api-token-file".into(), path(&jwt)], vec![("VLPDS_EMAIL_API_TOKEN", long.to_string())]),
     ] {
         let (code, err) = run(args, env).await;
         assert_eq!(code, Some(2), "{err}");

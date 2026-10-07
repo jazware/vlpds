@@ -1,0 +1,94 @@
+/* Accounts section: the second-factor marks and a few drawer bits. Tokens come from .cx (console.css). */
+
+.cx-2fa {
+  display: inline-flex;
+  gap: 3px;
+}
+.cx-2fa span {
+  font-size: 10px;
+  font-family: var(--mono);
+  padding: 0 4px;
+  border-radius: 3px;
+  line-height: 16px;
+  border: 1px solid var(--rule);
+  color: var(--ink3);
+}
+.cx-2fa span.on {
+  border-color: color-mix(in oklab, var(--accent) 45%, var(--rule));
+  color: var(--accent);
+  background: var(--accent-wash);
+}
+
+.cx-acc-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.cx-acc-more {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.cx-acc-check {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--ink2);
+}
+.cx-acc-check ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.cx-drawer .cx-banners,
+.cx-fullpage .cx-banners {
+  margin-bottom: 10px;
+}
+
+/* a client host or a device: one line, the full value on hover */
+.cx-acc-cell {
+  display: inline-block;
+  max-width: 260px;
+  vertical-align: middle;
+  /* table cells set tabular-nums, which spaces the dots of hosts and versions out */
+  font-variant-numeric: normal;
+}
+.cx-drawer .cx-acc-cell {
+  max-width: 180px;
+}
+
+/* sign-ins pack left (the new-device column takes the slack) with room between columns */
+table.cx-acc-signins th,
+table.cx-acc-signins td {
+  padding-right: 22px;
+}
+
+.cx-acc-quota {
+  display: grid;
+  grid-template-columns: auto minmax(60px, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
+/* the full page: more room than the other details for the sign-in and session tables */
+.cx-fullpage.wide > .cx-stack {
+  max-width: 1480px;
+}
+.cx-fullpage.wide > .cx-stack,
+.cx-fullpage.wide .cols > div {
+  gap: 16px;
+}
+.cx-fullpage.wide .cx-sec > .sb {
+  padding: 12px 14px;
+}
+
+.cx-acc-keys {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

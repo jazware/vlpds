@@ -1,0 +1,226 @@
+/* Moderation, Limits & lockouts, Domains & invites: the few parts the console kit doesn't
+   have. Tokens come from console.css (.cx). */
+
+.cxp-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+.cxp-link:hover .cx-handle,
+.cxp-link:hover .cx-did,
+.cxp-link.mono:hover {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* a subject in a case */
+.cxp-subj {
+  border: 1px solid var(--rule2);
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--raised);
+  min-width: 0;
+}
+.cxp-subj-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.cxp-casepick {
+  padding: 8px 10px;
+  border: 1px dashed var(--rule);
+  border-radius: 8px;
+}
+.cxp-casepick select {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.cxp-notes {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cxp-note {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* blob preview: nothing loads until asked, images stay blurred until revealed */
+.cxp-blob {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+.cxp-preview {
+  position: relative;
+  width: 132px;
+  height: 108px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--rule2);
+  background: repeating-linear-gradient(135deg, var(--hatch) 0 6px, transparent 6px 12px), var(--sunk);
+  padding: 0;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  color: var(--ink3);
+  font-size: 11.5px;
+}
+.cxp-preview.empty {
+  cursor: default;
+  padding: 6px;
+  text-align: center;
+  align-content: center;
+  gap: 6px;
+}
+.cxp-preview img,
+.cxp-preview video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.cxp-preview.blurred img,
+.cxp-preview.blurred video {
+  filter: blur(18px) saturate(0.6);
+  transform: scale(1.1);
+}
+.cxp-reveal {
+  position: absolute;
+  inset: auto 6px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--sheet) 88%, transparent);
+  color: var(--ink);
+  font: 600 11px/1.6 var(--sans);
+  cursor: pointer;
+}
+
+/* rate-limit edits, as a diff */
+.cxp-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  border: 1px solid var(--rule2);
+  border-radius: 6px;
+  padding: 7px 9px;
+  background: var(--sunk);
+  margin: 2px 0;
+}
+.cxp-diff > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  overflow-wrap: anywhere;
+}
+.cxp-diff .w {
+  color: var(--ink);
+  font-weight: 600;
+}
+.cxp-diff .a {
+  color: var(--err);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in oklab, var(--err) 50%, transparent);
+}
+.cxp-diff .b {
+  color: var(--ok);
+}
+.cxp-diff .add .w::before {
+  content: '+ ';
+  color: var(--ok);
+}
+.cxp-diff .del .w::before {
+  content: '− ';
+  color: var(--err);
+}
+.cxp-diff .del .a {
+  text-decoration: none;
+}
+
+/* codes just created */
+.cxp-codes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 280px;
+  overflow: auto;
+}
+.cxp-codes > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--rule2);
+}
+
+.cxp-domgrid {
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+}
+
+/* rate-limit tables: a key at a fixed width, use as a right-aligned count then a fixed meter */
+.cxp-key {
+  display: inline-flex;
+  max-width: 100%;
+  vertical-align: middle;
+  font-size: 11.5px;
+}
+.cxp-key > span,
+.cxp-fixed {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.cxp-use {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  white-space: nowrap;
+}
+.cxp-use .n {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.cxp-use .cx-meter,
+.cxp-use .cx-chip {
+  width: 64px;
+  flex: none;
+  justify-content: center;
+}
+/* the window reads with the limit to its left: "300  1 h" */
+table.cx-t td.cxp-win {
+  padding-left: 2px;
+}
+@media (max-width: 1100px) {
+  .cxp-domgrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 760px) {
+  .cxp-blob {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

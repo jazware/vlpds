@@ -86,7 +86,9 @@ prefix (`vlpds_s3_prefix`) is one PDS: never point two deployments at it.
 5. **DNS**: `A` for the hostname and `*.<handle domain>`. Prefer one wildcard
    certificate (`vlpds_caddy_wildcard_dns: cloudflare` +
    `vlpds_cloudflare_dns_token`) over per-handle on-demand ones.
-6. **Email** (optional): `vlpds_email_smtp_url` (secret) and
+6. **Email** (optional): `vlpds_email_smtp_url` (secret), or
+   `vlpds_email_api_url` + `vlpds_email_api_token` (secret) where the
+   provider blocks outbound SMTP, and
    `vlpds_email_from_address`, or `vlpds_email_required: false`.
 7. **Run** (after `playbooks/bootstrap.yml` on a fresh VPS):
 

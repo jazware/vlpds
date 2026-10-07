@@ -1846,14 +1846,19 @@ fn granted_scope(requested: &str, ticked: Option<&[String]>) -> Option<String> {
     Some(granted.join(" "))
 }
 
-async fn token(State(app): AppState, headers: HeaderMap, body: AxBytes) -> Response {
-    match token_inner(&app, &headers, &body).await {
+async fn token(
+    State(app): AppState,
+    super::moderation::ClientIp(ip): super::moderation::ClientIp,
+    headers: HeaderMap,
+    body: AxBytes,
+) -> Response {
+    match token_inner(&app, &headers, &body, ip.map(|i| i.to_string())).await {
         Ok(j) => as_json(&app, StatusCode::OK, j),
         Err(e) => as_error(&app, e),
     }
 }
 
-async fn token_inner(app: &Arc<App>, headers: &HeaderMap, body: &[u8]) -> Result<J, OAuthError> {
+async fn token_inner(app: &Arc<App>, headers: &HeaderMap, body: &[u8], ip: Option<String>) -> Result<J, OAuthError> {
     let p = parse_params(headers, body)?;
     let proof = check_as_dpop(app, headers, "/oauth/token").await?;
     let creds = ClientCredentials::from_params(&p)?;
@@ -1871,8 +1876,8 @@ async fn token_inner(app: &Arc<App>, headers: &HeaderMap, body: &[u8]) -> Result
         )));
     }
     match grant_type {
-        "authorization_code" => code_grant(app, &client, client_auth, &p, &proof).await,
-        "refresh_token" => refresh_grant(app, &client, client_auth, &p, &proof).await,
+        "authorization_code" => code_grant(app, &client, client_auth, &p, &proof, ip).await,
+        "refresh_token" => refresh_grant(app, &client, client_auth, &p, &proof, ip).await,
         "" => Err(OAuthError::invalid_request("Missing \"grant_type\"")),
         g => Err(OAuthError::unsupported_grant_type(&format!("Unsupported grant_type \"{g}\""))),
     }
@@ -1895,6 +1900,7 @@ async fn code_grant(
     client_auth: ClientAuth,
     p: &HashMap<String, String>,
     proof: &DpopProof,
+    ip: Option<String>,
 ) -> Result<J, OAuthError> {
     let code =
         p.get("code").filter(|c| !c.is_empty()).ok_or_else(|| OAuthError::invalid_request("Missing \"code\""))?;
@@ -1959,6 +1965,8 @@ async fn code_grant(
         request_id: Some(rid.clone()),
         auth_cred: req.auth_cred.clone(),
         space_collections: req.space_collections.clone(),
+        created_ip: ip.clone(),
+        ip,
     };
     req.consumed = Some((did.clone(), s.id.clone()));
     store::put_request(app, &rid, Some(&req)).await?;
@@ -2029,6 +2037,7 @@ async fn refresh_grant(
     client_auth: ClientAuth,
     p: &HashMap<String, String>,
     proof: &DpopProof,
+    ip: Option<String>,
 ) -> Result<J, OAuthError> {
     let tok = p
         .get("refresh_token")
@@ -2083,6 +2092,9 @@ async fn refresh_grant(
     s.refresh_gen += 1;
     super::cas::pause_point("oauth_refresh", &s.did).await;
     // only if the row is still the one read: a revocation since is not undone
+    if ip.is_some() {
+        s.ip = ip;
+    }
     issue_tokens(app, client, &mut s, store::SessionGuard::Row(raw)).await
 }
 

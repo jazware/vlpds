@@ -340,7 +340,7 @@ async fn get_space_info(State(app): AppState, Auth(creds): Auth, Query(q): Query
         return Err(XrpcError::bad("InvalidRequest", "a space is looked up at its authority"));
     }
     let p = app.partition(&space.authority)?;
-    let snap = p.db.snapshot().await.map_err(err)?;
+    let snap = p.db.snapshot().map_err(err)?;
     let Some(v) = snap.get(state::space_key(&space.authority, &space.sid)).await.map_err(err)? else {
         return Err(XrpcError::bad("SpaceNotFound", format!("{} is not hosted here", space.uri)));
     };
@@ -449,7 +449,7 @@ async fn get_account_spaces(State(app): AppState, Auth(creds): Auth, Query(q): Q
     require_admin(&creds)?;
     spaces_on(&app)?;
     let p = app.partition(&q.did)?;
-    let snap = p.db.snapshot().await.map_err(err)?;
+    let snap = p.db.snapshot().map_err(err)?;
     let prefix = state::space_did_prefix(state::SPACE_LIST_FAMILY, &q.did);
     let opts = slatedb::config::ScanOptions::default();
     let mut it = snap.scan_with_options(prefix.clone()..state::prefix_end(&prefix), &opts).await.map_err(err)?;

@@ -292,11 +292,23 @@ argument_specs:
       vlpds_email_smtp_url:
         description: "smtps://user:pass@host:465 or smtp://...:587 (secret)"
         type: str
+      vlpds_email_api_url:
+        description: "https://api.cloudflare.com/client/v4/accounts/<account_id>/email/sending/send (Cloudflare Email Sending REST API, instead of SMTP)"
+        type: str
+      vlpds_email_api_token:
+        description: "API token with Email Sending: Edit (secret)"
+        type: str
       vlpds_email_from_address:
         description: '"Name <addr@host>"'
         type: str
       vlpds_moderation_email_smtp_url:
         description: secret; empty = the main mailer
+        type: str
+      vlpds_moderation_email_api_url:
+        description: empty = the main mailer
+        type: str
+      vlpds_moderation_email_api_token:
+        description: secret; empty = vlpds_email_api_token
         type: str
       vlpds_moderation_email_address:
         description: See defaults/main.yml (vlpds_moderation_email_address).

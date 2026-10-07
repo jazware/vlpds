@@ -4,11 +4,12 @@ import './styles.css'
 import { usePath } from './lib/router'
 import { Landing } from './pages/Landing'
 import { AccountApp } from './pages/account/AccountApp'
-import { AdminApp } from './pages/admin/AdminApp'
 import { Migrate } from './pages/migrate/Migrate'
 
 // its own chunk: the nav and page index aren't needed anywhere else
 const DocsApp = lazy(() => import('./pages/docs/DocsApp').then((m) => ({ default: m.DocsApp })))
+// the operator console too: nobody else loads it
+const AdminApp = lazy(() => import('./pages/admin/AdminApp').then((m) => ({ default: m.AdminApp })))
 
 function App() {
   const path = usePath()
@@ -32,7 +33,13 @@ function App() {
         <DocsApp path={path} />
       </Suspense>
     )
-  return area === 'account' ? <AccountApp path={path} /> : area === 'admin' ? <AdminApp path={path} /> : <Migrate />
+  if (area === 'admin')
+    return (
+      <Suspense fallback={null}>
+        <AdminApp path={path} />
+      </Suspense>
+    )
+  return area === 'account' ? <AccountApp path={path} /> : <Migrate />
 }
 
 createRoot(document.getElementById('root')!).render(

@@ -266,7 +266,10 @@ mod tests {
             request_id: None,
             auth_cred: None,
             space_collections: None,
+            created_ip: None,
+            ip: None,
         };
+
         assert!(!session_expired(&s, now));
         assert!(session_expired(&s, now + REFRESH_LIFETIME + 1));
         let conf = Session {

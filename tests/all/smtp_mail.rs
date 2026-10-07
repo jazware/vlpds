@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
-use vlpds::mail::{SharedMailer, SmtpConfig, SmtpMailer, MAIL_MESSAGES, MAIL_RETRIES};
+use vlpds::mail::{QueueMailer, SharedMailer, SmtpConfig, MAIL_MESSAGES, MAIL_RETRIES};
 use vlpds::xrpc::{Mail, Mailer};
 
 #[derive(Debug)]
@@ -178,7 +178,7 @@ fn count(result: &str, purpose: &str) -> u64 {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn password_reset_is_mailed_over_smtp() {
     let (addr, mut rx, _) = fake_smtp(&[]).await;
-    let mailer = SmtpMailer::start(cfg(addr)).unwrap();
+    let mailer = QueueMailer::start_smtp(cfg(addr)).unwrap();
     let s = TestServer::spawn_with(|c| c.mailer = Some(SharedMailer(Arc::new(mailer)))).await;
     let a = s.create_account("smtp").await;
 
@@ -312,8 +312,8 @@ fn assert_moderation_mail(m: &Received) {
 async fn admin_send_email_uses_the_moderation_mailer() {
     let (main_addr, mut main_rx, _) = fake_smtp(&[]).await;
     let (mod_addr, mut mod_rx, _) = fake_smtp(&[]).await;
-    let main = SmtpMailer::start(cfg(main_addr)).unwrap();
-    let modm = SmtpMailer::start(SmtpConfig {
+    let main = QueueMailer::start_smtp(cfg(main_addr)).unwrap();
+    let modm = QueueMailer::start_smtp(SmtpConfig {
         backoff: vec![Duration::from_millis(20); 3],
         ..SmtpConfig::new(format!("smtp://{mod_addr}"), "Moderation <moderation@vlpds.test>")
     })
@@ -341,7 +341,7 @@ async fn admin_send_email_uses_the_moderation_mailer() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn admin_send_email_falls_back_to_the_main_mailer() {
     let (addr, mut rx, _) = fake_smtp(&[]).await;
-    let mailer = SmtpMailer::start(cfg(addr)).unwrap();
+    let mailer = QueueMailer::start_smtp(cfg(addr)).unwrap();
     let s = TestServer::spawn_with(|c| c.mailer = Some(SharedMailer(Arc::new(mailer)))).await;
     let a = s.create_account("modfb").await;
     admin_send(&s, &a.did, "Fallback notice").await;
@@ -353,7 +353,7 @@ async fn admin_send_email_falls_back_to_the_main_mailer() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn transient_failures_are_retried() {
     let (addr, mut rx, mail_froms) = fake_smtp(&["451 4.3.0 try again", "421 4.7.0 busy"]).await;
-    let m = SmtpMailer::start(cfg(addr)).unwrap();
+    let m = QueueMailer::start_smtp(cfg(addr)).unwrap();
     let retries = MAIL_RETRIES.get();
     m.send(&mail("test_transient", "bob@example.com"));
     let r = next(&mut rx).await;
@@ -373,7 +373,7 @@ async fn transient_failures_are_retried() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn permanent_failures_are_not_retried() {
     let (addr, _rx, mail_froms) = fake_smtp(&["550 5.7.1 rejected"]).await;
-    let m = SmtpMailer::start(cfg(addr)).unwrap();
+    let m = QueueMailer::start_smtp(cfg(addr)).unwrap();
     m.send(&mail("test_permanent", "carol@example.com"));
     for _ in 0..250 {
         if count("failed", "test_permanent") == 1 {
@@ -397,7 +397,7 @@ async fn full_queue_drops_without_blocking() {
             held.push(s);
         }
     });
-    let m = SmtpMailer::start(SmtpConfig { queue: 1, concurrency: 1, ..cfg(addr) }).unwrap();
+    let m = QueueMailer::start_smtp(SmtpConfig { queue: 1, concurrency: 1, ..cfg(addr) }).unwrap();
     let t = std::time::Instant::now();
     for _ in 0..10 {
         m.send(&mail("test_overflow", "dave@example.com"));
@@ -426,9 +426,11 @@ async fn smtps_with_auth_and_a_private_ca() {
     let url = format!("smtps://api_token:secret-token@localhost:{}", addr.port());
 
     // the webpki roots alone don't trust it: nothing is authenticated or sent
-    let m =
-        SmtpMailer::start(SmtpConfig { backoff: vec![], ..SmtpConfig::new(url.clone(), "vlpds <noreply@vlpds.test>") })
-            .unwrap();
+    let m = QueueMailer::start_smtp(SmtpConfig {
+        backoff: vec![],
+        ..SmtpConfig::new(url.clone(), "vlpds <noreply@vlpds.test>")
+    })
+    .unwrap();
     m.send(&mail("test_smtps_untrusted", "erin@example.com"));
     for _ in 0..250 {
         if count("failed", "test_smtps_untrusted") == 1 {
@@ -439,7 +441,7 @@ async fn smtps_with_auth_and_a_private_ca() {
     assert_eq!(count("failed", "test_smtps_untrusted"), 1);
     assert!(auths.lock().is_empty());
 
-    let m = SmtpMailer::start(SmtpConfig {
+    let m = QueueMailer::start_smtp(SmtpConfig {
         ca_pem: Some(ca.cert_pem.into_bytes()),
         ..SmtpConfig::new(url, "vlpds <noreply@vlpds.test>")
     })

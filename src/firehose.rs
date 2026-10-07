@@ -992,6 +992,25 @@ impl Firehose {
         Some(IpSlot { fh: Some(self.clone()), key })
     }
 
+    /// Disconnects connection `id` (its `conn` label); false if it isn't
+    /// connected here. It leaves with reason `kicked`.
+    pub fn kick(&self, id: u64) -> bool {
+        match self.subs.lock().get(&id) {
+            Some(e) => {
+                e.stats.kick();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The ring's batches, oldest first, and its floor: every event with seq
+    /// above it is in them.
+    pub fn ring_snapshot(&self) -> (Vec<Arc<MergedBatch>>, i64) {
+        let ring = self.ring.read();
+        (ring.iter().cloned().collect(), self.ring_floor.load(Ordering::Acquire))
+    }
+
     pub fn connections_from(&self, ip: std::net::IpAddr) -> usize {
         self.per_ip.lock().get(&ip_key(ip)).copied().unwrap_or(0)
     }

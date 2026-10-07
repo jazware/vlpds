@@ -1260,6 +1260,34 @@ pub async fn eventually<T, F: std::future::Future<Output = Option<T>>>(
     }
 }
 
+/// listHandleDomains (admin) once its counts are complete: no shard's
+/// totals loading and none uncounted, as after a shard moves between nodes.
+pub async fn complete_domain_counts(s: &TestServer) -> J {
+    let l = eventually(Duration::from_secs(30), || async {
+        let l = s.xrpc.get("vlpds.admin.listHandleDomains", &[], &Auth::Admin).await.ok();
+        let loading = l["loadingShards"].as_array().is_some_and(|a| !a.is_empty());
+        (l["countsPartial"].is_null() && !loading).then_some(l)
+    })
+    .await;
+    l.expect("handle domain counts never complete")
+}
+
+/// An unforced removeHandleDomain, refused (DomainInUse, "there may be
+/// more") while the counts are partial: sent once they are complete, and
+/// again if a shard started loading in between.
+pub async fn remove_handle_domain_unforced(s: &TestServer, domain: &str) -> Resp {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        complete_domain_counts(s).await;
+        let body = json!({"domain": domain, "force": false});
+        let r = s.xrpc.post("vlpds.admin.removeHandleDomain", &body, &Auth::Admin).await;
+        if r.status != 409 || !r.text().contains("may be more") || tokio::time::Instant::now() > deadline {
+            return r;
+        }
+        eprintln!("removeHandleDomain {domain}: counts partial again: {}", r.text());
+    }
+}
+
 pub const FH_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn fixture_path(rel: &str) -> std::path::PathBuf {

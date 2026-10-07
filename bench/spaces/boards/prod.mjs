@@ -49,14 +49,19 @@ async function main() {
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
   const ui = `http://boards.localhost:${PORT}`
+  // the secrets go in as files, the way yeet mounts them in production
+  const secret = (name, value) => {
+    writeFileSync(`${dir}${name}`, `${value}\n`, { mode: 0o600 })
+    return `${dir}${name}`
+  }
   const env = {
     BOARDS_PUBLIC_URL: ui,
     BOARDS_ALLOW_HTTP: '1',
     BOARDS_LISTEN: `127.0.0.1:${PORT},[::1]:${PORT}`,
     BOARDS_METRICS_LISTEN: `127.0.0.1:${PORT + 1}`,
     BOARDS_DB: `${dir}boards.sqlite`,
-    BOARDS_OAUTH_CLIENT_KEY: generateClientKey(),
-    BOARDS_SESSION_SECRET: randomBytes(32).toString('base64url'),
+    BOARDS_OAUTH_CLIENT_KEY_FILE: secret('client-key', generateClientKey()),
+    BOARDS_SESSION_SECRET_FILE: secret('session-secret', randomBytes(32).toString('base64url')),
     BOARDS_SERVICE_DID: `did:web:127.0.0.1%3A${PORT}`,
     BOARDS_PLC_URL: URLS.plc,
     BOARDS_HANDLE_RESOLVER: URLS.vlpds,

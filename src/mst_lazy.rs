@@ -73,6 +73,10 @@ pub struct Persist {
     /// Change in the tree's node count (nodes with entries, leaves
     /// included): written nodes it didn't hold, less the ones it lost.
     pub node_delta: i64,
+    /// Bytes of the written nodes it didn't hold, and how many it lost
+    /// (`state::RepoBytes::commit`).
+    pub added_bytes: u64,
+    pub gone: u64,
 }
 
 impl Persist {
@@ -85,14 +89,20 @@ impl Persist {
 /// as `mst::Tree` does after a write; leaves too with `keep_leaves`, for an
 /// export that emits them next.
 fn finish(height: i32, entries: Vec<Entry>, keep_leaves: bool) -> Result<Arc<Node>> {
+    Ok(finish_sized(height, entries, keep_leaves)?.0)
+}
+
+/// [`finish`], and the block's size.
+fn finish_sized(height: i32, entries: Vec<Entry>, keep_leaves: bool) -> Result<(Arc<Node>, usize)> {
     let mut n = Node::clean(height, entries, None);
     let mut buf = Vec::with_capacity(64 + n.entries.len() * 80);
     encode_node(&n, &mut buf)?;
     n.cid = Some(Cid::dag_cbor(&buf));
+    let len = buf.len();
     if height >= 1 || keep_leaves {
         n.bytes = Some(Arc::from(buf));
     }
-    Ok(Arc::new(n))
+    Ok((Arc::new(n), len))
 }
 
 /// The canonical subtree at `height` holding exactly `recs` (sorted, with
@@ -134,8 +144,10 @@ fn build(recs: &[(Key, Cid)], heights: &[i32], height: i32, keep_leaves: bool) -
 #[derive(Default)]
 pub struct StreamBuilder {
     open: Vec<Vec<Entry>>,
-    /// Nodes with entries finished so far (`count_tree`'s count).
+    /// Nodes with entries finished so far (`count_tree`'s count), and
+    /// their blocks' bytes.
     pub nodes: u64,
+    pub node_bytes: u64,
     pub records: u64,
 }
 
@@ -162,8 +174,9 @@ impl StreamBuilder {
         if self.open[l].is_empty() {
             return Ok(());
         }
-        let n = finish(l as i32, std::mem::take(&mut self.open[l]), false)?;
+        let (n, len) = finish_sized(l as i32, std::mem::take(&mut self.open[l]), false)?;
         self.nodes += 1;
+        self.node_bytes += len as u64;
         let cid = n.cid.ok_or(MstError::Invalid("unwritten node"))?;
         if let Some(b) = &n.bytes {
             out.push((cid, b.clone()));
@@ -172,21 +185,22 @@ impl StreamBuilder {
         Ok(())
     }
 
-    /// The root (its block kept whatever its height) and the tree's node
-    /// count; a root of height >= 1 goes to `out` too.
-    pub fn finish(mut self, out: &mut Vec<(Cid, Arc<[u8]>)>) -> Result<(Arc<Node>, u64)> {
-        let Some(top) = self.open.len().checked_sub(1) else { return Ok((finish(0, Vec::new(), true)?, 0)) };
+    /// The root (its block kept whatever its height), the tree's node
+    /// count and its nodes' bytes; a root of height >= 1 goes to `out` too.
+    pub fn finish(mut self, out: &mut Vec<(Cid, Arc<[u8]>)>) -> Result<(Arc<Node>, u64, u64)> {
+        let Some(top) = self.open.len().checked_sub(1) else { return Ok((finish(0, Vec::new(), true)?, 0, 0)) };
         for l in 0..top {
             self.close(l, out)?;
         }
-        let root = finish(top as i32, std::mem::take(&mut self.open[top]), true)?;
+        let (root, len) = finish_sized(top as i32, std::mem::take(&mut self.open[top]), true)?;
+        self.node_bytes += len as u64;
         if top >= 1 {
             out.push((
                 root.cid.ok_or(MstError::Invalid("unwritten node"))?,
                 root.bytes.clone().ok_or(MstError::Invalid("root without its block"))?,
             ));
         }
-        Ok((root, self.nodes + 1))
+        Ok((root, self.nodes + 1, self.node_bytes))
     }
 }
 
@@ -848,8 +862,13 @@ impl LazyTree {
         }
         // a written node the tree held before was on a walk (a node changes
         // only below one), and so is in `kept`
-        let added = out[start..].iter().filter(|(c, _)| !kept.contains(c) && *c != empty).count();
+        let (mut added, mut added_bytes) = (0usize, 0u64);
+        for (_, b) in out[start..].iter().filter(|(c, _)| !kept.contains(c) && *c != empty) {
+            added += 1;
+            added_bytes += b.len() as u64;
+        }
         let node_delta = added as i64 - gone.len() as i64;
+        let gone_n = gone.len() as u64;
         let deletes = gone.into_iter().filter(|(_, h)| *h >= self.persist_min).map(|(c, _)| c).collect();
         // every written node at a persisted height, proof-only neighbours
         // (already stored) included: exactly what replay derives from the
@@ -859,7 +878,7 @@ impl LazyTree {
             .filter(|(c, _)| heights.get(c).is_some_and(|h| *h >= self.persist_min))
             .cloned()
             .collect();
-        Ok((root, Persist { puts, deletes, node_delta }))
+        Ok((root, Persist { puts, deletes, node_delta, added_bytes, gone: gone_n }))
     }
 
     /// Whether the written tree holds node `cid` (at `height`, on the path
@@ -1187,9 +1206,11 @@ mod tests {
             for (k, c) in &recs {
                 sb.push(k.clone(), *c, &mut out).unwrap();
             }
-            let (root, nodes) = sb.finish(&mut out).unwrap();
+            let (root, nodes, node_bytes) = sb.finish(&mut out).unwrap();
             assert_eq!(root.cid, Some(tree.root_cid().unwrap()), "n={n}");
             assert_eq!(nodes, crate::repo_stats::count_tree(&tree).unwrap().1, "n={n}");
+            assert_eq!(node_bytes, crate::repo_stats::tree_bytes(&tree).unwrap(), "n={n}");
+
             let want = persisted_nodes(&tree, 1);
             let got: HashMap<Cid, Arc<[u8]>> = out.into_iter().collect();
             assert_eq!(got.len(), want.len(), "n={n}");

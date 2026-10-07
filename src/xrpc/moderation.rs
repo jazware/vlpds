@@ -991,18 +991,38 @@ async fn get_audit_log(State(app): AppState, Auth(creds): Auth, Query(q): Query<
 #[derive(Deserialize)]
 struct CasesQ {
     status: Option<String>,
+    /// Cases with a subject of this account (any kind).
+    did: Option<String>,
+    /// Narrows `did` to one record (its at:// URI) or blob (its CID).
+    subject: Option<String>,
 }
 
+/// Every case is read and filtered here: cases are few (one object each,
+/// opened by hand). Past a few thousand a subject index (`cases/by-did/…`
+/// written with the case) would replace the scan.
 async fn list_cases(State(app): AppState, Auth(creds): Auth, Query(q): Query<CasesQ>) -> XResult<Json<J>> {
     require_admin(&creds)?;
+    let did = q.did.as_deref().map(str::trim).filter(|d| !d.is_empty());
+    let subject = q.subject.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if subject.is_some() && did.is_none() {
+        return Err(XrpcError::bad("InvalidRequest", "subject needs did"));
+    }
+    let about = |c: &Case| {
+        did.is_none_or(|d| {
+            c.subjects.iter().any(|s| {
+                s.did == d && subject.is_none_or(|x| s.uri.as_deref() == Some(x) || s.cid.as_deref() == Some(x))
+            })
+        })
+    };
     let mut out: Vec<Case> = Vec::new();
     for m in list_metas(&app, "cases").await? {
         if let Some((c, _)) = get_obj::<Case>(&app, &m.location).await? {
-            if q.status.as_deref().is_none_or(|s| s.is_empty() || s == c.status) {
+            if q.status.as_deref().is_none_or(|s| s.is_empty() || s == c.status) && about(&c) {
                 out.push(c);
             }
         }
     }
+
     out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     Ok(Json(json!({"cases": out})))
 }

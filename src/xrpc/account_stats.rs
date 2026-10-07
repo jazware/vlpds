@@ -78,6 +78,10 @@ pub async fn scan_totals(app: &App) -> anyhow::Result<Totals> {
         handle: std::borrow::Cow<'a, str>,
         #[serde(borrow, default)]
         status: Option<std::borrow::Cow<'a, str>>,
+        #[serde(default)]
+        email_confirmed: bool,
+        #[serde(flatten)]
+        extra: serde_json::Map<String, serde_json::Value>,
     }
     let layout = app.partitions.layout();
     let mut t = Totals::default();
@@ -85,7 +89,7 @@ pub async fn scan_totals(app: &App) -> anyhow::Result<Totals> {
     let opts = slatedb::config::ScanOptions { read_ahead_bytes: 1 << 20, max_fetch_tasks: 2, ..Default::default() };
     for range in &layout.shards {
         let Some(p) = app.partitions.get(range.id) else { continue };
-        let snap = p.db.snapshot().await?;
+        let snap = p.db.snapshot()?;
         let lo = range.lo as u16;
         let in_range = |key: &[u8]| state::key_slot(key).is_some_and(|s| (s as u32) < range.hi);
         let mut accts = state::FamilyScan::new(
@@ -104,6 +108,10 @@ pub async fn scan_totals(app: &App) -> anyhow::Result<Totals> {
                 continue;
             };
             t.accounts[totals::status_index(a.status.as_deref()) as usize] += 1;
+            let f = totals::flags(a.status.as_deref(), a.email_confirmed, &a.extra);
+            t.unconfirmed += i64::from(f & totals::UNCONFIRMED != 0);
+            t.no2fa += i64::from(f & totals::NO_2FA != 0);
+
             if a.status.is_none() {
                 if let Some(s) = crate::handle_domains::handle_suffix(&a.handle) {
                     *t.suffixes.entry(s).or_default() += 1;

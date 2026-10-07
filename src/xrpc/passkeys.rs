@@ -92,6 +92,25 @@ pub(super) async fn load(app: &App, did: &str) -> XResult<Passkeys> {
     Ok(load_raw(app, did).await?.0)
 }
 
+/// The passkey count on the account row, which account totals count second
+/// factors by (crate::totals::flags): written after each change. The change
+/// itself stands if this fails; only the count is off until the next one.
+pub(super) async fn note_count(app: &App, did: &str, n: usize) {
+    let r = app
+        .mutate_account(did, false, false, false, move |a| {
+            let want = (n > 0).then(|| json!(n));
+            if a.extra.get("passkeys") == want.as_ref() {
+                return Ok(false);
+            }
+            super::server::set_extra(a, "passkeys", want.unwrap_or(J::Null));
+            Ok(true)
+        })
+        .await;
+    if let Err(e) = r {
+        tracing::warn!(did, "noting the passkey count on the account row: {}", e.message);
+    }
+}
+
 /// Ok(false): the row changed since `read`; nothing was written.
 pub(super) async fn save_if(app: &App, did: &str, p: &Passkeys, read: Option<Bytes>) -> XResult<bool> {
     let val = (!p.creds.is_empty()).then(|| Bytes::from(to_json_bytes(p)));
@@ -536,6 +555,7 @@ async fn finish_registration(
         let ops = vec![Op::put(ROW, Some(Bytes::from(to_json_bytes(&p)))), mop];
         if app.private_cas(&did, vec![Cond::eq(ROW, raw), mc], ops).await?.applied {
             crate::metrics::PASSKEYS.with_label_values(&["registered"]).inc();
+            note_count(&app, &did, p.creds.len()).await;
             let what = format!(
                 "A passkey \u{201c}{}\u{201d} was added to your account. If you didn't add it, remove it on the Security page, then change your password: changing the password alone doesn't remove a passkey.",
                 cred.name
@@ -663,6 +683,7 @@ async fn remove_passkey(State(app): AppState, Auth(creds): Auth, Json(inp): Json
                 ops.push(mop);
             }
             if app.private_cas(&did, conds, ops).await?.applied {
+                note_count(&app, &did, p.creds.len()).await;
                 break 'cas gone;
             }
         }
@@ -833,7 +854,7 @@ async fn create_session_inner(
     let auth_ref = used.cred.auth_ref();
     super::cas::pause_point("passkey_session", &did).await;
     let (access, refresh) =
-        super::server::create_session_tokens(app, &did, None, false, Some(&epoch), Some(auth_ref.clone())).await?;
+        super::server::create_session_tokens(app, &did, None, false, Some(&epoch), Some(auth_ref.clone()), ip).await?;
     // a removal racing this either found the session above or left the
     // passkey gone for this check (it writes the row before its scan)
     if !still_registered(app, &did, Some(&auth_ref)).await? {

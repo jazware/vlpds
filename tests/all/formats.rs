@@ -161,13 +161,28 @@ fn backlinks() -> Vec<u8> {
     pretty(&k)
 }
 
-/// A repo's counts (`S/`, checkAccountStatus): its key and value.
-fn repo_stats() -> Vec<u8> {
-    let st = vlpds::state::RepoStats { records: 1_000_003, nodes: 270_001, blobs: 4_096 };
+/// A repo's counts (`S/`, checkAccountStatus): its key and value. With
+/// `bytes`, the row the console's repo bytes ride in; without, a row from
+/// before they were counted (still read: the repo's next load counts them).
+fn repo_stats(bytes: Option<vlpds::state::RepoBytes>) -> Vec<u8> {
+    let st = vlpds::state::RepoStats { records: 1_000_003, nodes: 270_001, blobs: 4_096, bytes };
     let k: BTreeMap<&str, String> =
         [("key S/", hex::encode(vlpds::state::repo_stats_key(DID))), ("value", hex::encode(st.encode()))]
             .into_iter()
             .collect();
+    pretty(&k)
+}
+
+const REPO_BYTES: vlpds::state::RepoBytes = vlpds::state::RepoBytes { records: 412_345_678, nodes: 61_234_567 };
+
+/// A factor lockout's index entry (`L/`, listLockouts): its key and value.
+fn lockout_index() -> Vec<u8> {
+    let k: BTreeMap<&str, String> = [
+        ("key L/", hex::encode(vlpds::state::lockout_key(DID, vlpds::xrpc::mfa::FACTOR_LOCK))),
+        ("value", hex::encode(1_790_000_300u64.to_be_bytes())),
+    ]
+    .into_iter()
+    .collect();
     pretty(&k)
 }
 
@@ -491,7 +506,9 @@ fn written() -> Vec<(&'static str, Vec<u8>)> {
         ("segment/fence.bin", segment::fence_object("node-b").to_vec()),
         ("segment/like.seg", segment_like()),
         ("state/backlinks.json", backlinks()),
-        ("state/repo_stats.json", repo_stats()),
+        ("state/repo_stats.json", repo_stats(None)),
+        ("state/repo_stats_bytes.json", repo_stats(Some(REPO_BYTES))),
+        ("state/lockout_index.json", lockout_index()),
         ("state/head.bin", h.encode().to_vec()),
         ("state/record.bin", vlpds::state::record_value(&h.data, h.rev.0, b"\xa1aa\x01").to_vec()),
         ("state/account.json", compact(&account())),
@@ -847,7 +864,7 @@ async fn check(level: u32, name: &str, b: &[u8]) {
             assert_eq!(v.len(), 2);
             assert!(vlpds::backlinks::encode(&v) == hx("value"));
         }
-        "state/repo_stats.json" => {
+        "state/repo_stats.json" | "state/repo_stats_bytes.json" => {
             let k: BTreeMap<String, String> = serde_json::from_slice(b).unwrap();
             assert!(pretty(&k) == b);
             let key = hex::decode(&k["key S/"]).unwrap();
@@ -856,8 +873,19 @@ async fn check(level: u32, name: &str, b: &[u8]) {
             let v = hex::decode(&k["value"]).unwrap();
             let st = vlpds::state::RepoStats::decode(&v).unwrap();
             assert_eq!((st.records, st.nodes, st.blobs), (1_000_003, 270_001, 4_096));
+            let want = (name.ends_with("_bytes.json")).then_some(REPO_BYTES);
+            assert_eq!(st.bytes, want);
             assert!(st.encode() == v);
         }
+        "state/lockout_index.json" => {
+            let k: BTreeMap<String, String> = serde_json::from_slice(b).unwrap();
+            assert!(pretty(&k) == b);
+            let key = hex::decode(&k["key L/"]).unwrap();
+            assert_eq!(key, vlpds::state::lockout_key(DID, vlpds::xrpc::mfa::FACTOR_LOCK));
+            assert_eq!(vlpds::state::key_slot(&key), Some(vlpds::slots::slot_of(DID)));
+            assert_eq!(hex::decode(&k["value"]).unwrap(), 1_790_000_300u64.to_be_bytes());
+        }
+
         "segment/fence.bin" => {
             let LogObject::Fence { by } = segment::parse(Bytes::copy_from_slice(b), true, None).unwrap() else {
                 panic!("{name}")

@@ -464,6 +464,60 @@ pub struct NodeLog {
     /// log, or an in-process test node "crashed" (`Node::halt`). Peers then
     /// drain the log from S3 to its fence.
     pub closed: std::sync::atomic::AtomicBool,
+    pub feed: Arc<SegmentFeed>,
+}
+
+/// Segments the console's strata view shows: the last [`SegmentFeed::KEPT`]
+/// this log sealed, each marked durable once finalized. Memory only, one
+/// push per segment.
+#[derive(Default)]
+pub struct SegmentFeed {
+    ring: Mutex<VecDeque<SegmentInfo>>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentInfo {
+    pub ordinal: u64,
+    /// Sequenced entries: firehose events plus private-state writes.
+    pub entries: u32,
+    pub events: u32,
+    /// Seqs as strings, like every seq the admin API returns (past 2^53).
+    pub first_seq: String,
+    pub last_seq: String,
+    pub bytes: u64,
+    /// Compressed size as stored; 0 until durable.
+    pub stored_bytes: u64,
+    pub sealed_at: u64,
+    /// None while its PUT is in flight (or an earlier one is).
+    pub durable_at: Option<u64>,
+    pub put_ms: Option<f64>,
+}
+
+impl SegmentFeed {
+    pub const KEPT: usize = 1024;
+
+    fn sealed(&self, info: SegmentInfo) {
+        let mut r = self.ring.lock();
+        if r.len() >= Self::KEPT {
+            r.pop_front();
+        }
+        r.push_back(info);
+    }
+
+    fn durable(&self, ordinal: u64, put_secs: f64, stored_bytes: usize) {
+        let mut r = self.ring.lock();
+        if let Some(s) = r.iter_mut().rev().find(|s| s.ordinal == ordinal) {
+            s.durable_at = Some(crate::tid::now_micros() / 1000);
+            s.put_ms = Some(put_secs * 1000.0);
+            s.stored_bytes = stored_bytes as u64;
+        }
+    }
+
+    /// Oldest first, sealed at or after `since_ms`.
+    pub fn since(&self, since_ms: u64) -> Vec<SegmentInfo> {
+        self.ring.lock().iter().filter(|s| s.sealed_at >= since_ms).cloned().collect()
+    }
 }
 
 pub fn segment_path(store: &Store, log_id: &str, ordinal: u64) -> Path {
@@ -607,6 +661,7 @@ impl NodeLog {
         let live = LiveRing::new(DEFAULT_LIVE_RING_BYTES);
         let durable_ordinal = Arc::new(AtomicU64::new(u64::MAX));
         let sinks = Arc::new(ShardSinks::new(durable_ordinal.clone()));
+        let feed = Arc::new(SegmentFeed::default());
         let log_id: Arc<str> = cfg.log_id.clone().into();
         let seq_cfg = SeqConfig {
             log_id: cfg.log_id.clone(),
@@ -617,7 +672,7 @@ impl NodeLog {
         // critical: a panic in either fail-stops the node (lifecycle.rs)
         tokio::spawn(crate::lifecycle::critical(
             "log_sequencer",
-            run_sequencer(store, seq_cfg, cfg.lease_ok.clone(), wm.clone(), sinks.clone(), rx, fin_tx),
+            run_sequencer(store, seq_cfg, cfg.lease_ok.clone(), wm.clone(), sinks.clone(), rx, fin_tx, feed.clone()),
         ));
         tokio::spawn(crate::lifecycle::critical(
             "log_finalizer",
@@ -630,9 +685,10 @@ impl NodeLog {
                 live.clone(),
                 cfg.lease_ok,
                 durable_ordinal.clone(),
+                feed.clone(),
             ),
         ));
-        Arc::new(NodeLog { log_id, tx, wm, live, durable_ordinal, sinks, closed: Default::default() })
+        Arc::new(NodeLog { log_id, tx, wm, live, durable_ordinal, sinks, closed: Default::default(), feed })
     }
 
     /// The ordinal the next segment will get (an owner records it as the start
@@ -848,6 +904,7 @@ struct SeqConfig {
 /// waiting for the stall *and* its own PUT. Extra concurrent PUTs therefore
 /// only start under load or a stall, so the PUT rate at low load stays one
 /// per PUT latency while the ceiling is K full segments per PUT latency.
+#[allow(clippy::too_many_arguments)]
 async fn run_sequencer(
     store: Store,
     cfg: SeqConfig,
@@ -856,6 +913,7 @@ async fn run_sequencer(
     sinks: Arc<ShardSinks>,
     mut rx: mpsc::Receiver<LogEntry>,
     fin_tx: mpsc::Sender<Sealed>,
+    feed: Arc<SegmentFeed>,
 ) {
     use futures::stream::{FuturesOrdered, StreamExt};
     let SeqConfig { log_id, max_segment_bytes, inflight: k, hedge_after } = cfg;
@@ -927,7 +985,8 @@ async fn run_sequencer(
                 }
             }
             let o = std::mem::replace(&mut open, Open::new(&log_id));
-            metrics::SEGMENT_EVENTS.observe(o.frames.len() as f64);
+            metrics::SEGMENT_ENTRIES.observe(o.frames.len() as f64);
+            metrics::SEGMENT_EVENTS.observe(o.frames.iter().filter(|(_, r)| !r.is_empty()).count() as f64);
             metrics::COMMIT_STAGE
                 .with_label_values(&["seal_wait"])
                 .observe(o.acks.first().map_or(0.0, |a| a.3.elapsed().as_secs_f64()));
@@ -935,6 +994,18 @@ async fn run_sequencer(
                 prefix_end = ordinal;
             }
             let last_seq = o.seg.last_seq;
+            feed.sealed(SegmentInfo {
+                ordinal,
+                entries: o.frames.len() as u32,
+                events: o.frames.iter().filter(|(_, r)| !r.is_empty()).count() as u32,
+                first_seq: o.frames.first().map_or(last_seq, |f| f.0).to_string(),
+                last_seq: last_seq.to_string(),
+                bytes: o.seg.len() as u64,
+                stored_bytes: 0,
+                sealed_at: crate::tid::now_micros() / 1000,
+                durable_at: None,
+                put_ms: None,
+            });
             let data = o.seg.seal(&log_id, ordinal, prefix_end);
             let sealed = Sealed {
                 ordinal,
@@ -1172,6 +1243,7 @@ async fn run_finalizer(
     live: Arc<LiveRing>,
     lease_ok: Option<LeaseCheck>,
     durable_ordinal: Arc<AtomicU64>,
+    feed: Arc<SegmentFeed>,
 ) {
     let mut expect = 0u64;
     while let Some(mut s) = rx.recv().await {
@@ -1248,6 +1320,7 @@ async fn run_finalizer(
         }
         wm.set_durable(s.last_seq);
         durable_ordinal.store(s.ordinal, Ordering::Release);
+        feed.durable(s.ordinal, s.put_secs, s.stored_bytes);
         metrics::SEGMENTS.with_label_values(&["node"]).inc();
         metrics::SEGMENT_BYTES.observe(s.data.len() as f64);
         metrics::SEGMENT_BYTES_TOTAL.inc_by(s.data.len() as u64);

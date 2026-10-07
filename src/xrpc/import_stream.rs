@@ -52,8 +52,8 @@ pub(super) enum Item {
     /// Everything handed out so far is void: the buffered parse follows.
     Restart,
     /// The whole repo was handed out: the root's block (its CID is the
-    /// commit's `data`), the counts, and which parse took it.
-    Done { root: Bytes, records: u64, nodes: u64, path: &'static str },
+    /// commit's `data`), the counts and bytes, and which parse took it.
+    Done { root: Bytes, records: u64, nodes: u64, bytes: crate::state::RepoBytes, path: &'static str },
 }
 
 enum Chunk {
@@ -146,6 +146,8 @@ struct Sink<'a> {
     records: Vec<ImportedRecord>,
     nodes: Vec<(Cid, Arc<[u8]>)>,
     bytes: usize,
+    /// Of every record so far.
+    record_bytes: u64,
     sent: bool,
 }
 
@@ -158,6 +160,7 @@ impl<'a> Sink<'a> {
             records: Vec::new(),
             nodes: Vec::new(),
             bytes: 0,
+            record_bytes: 0,
             sent: false,
         }
     }
@@ -166,6 +169,7 @@ impl<'a> Sink<'a> {
         let key: crate::mst_lazy::Key = Arc::from(r.0.as_bytes());
         self.builder.push(key, r.1, &mut self.nodes).map_err(|_| Stop::Depart)?;
         self.bytes += r.2.len();
+        self.record_bytes += r.2.len() as u64;
         self.records.push(r);
         if self.records.len() >= BATCH_RECORDS || self.bytes >= self.res.sizing().batch_bytes {
             self.flush()?;
@@ -189,8 +193,8 @@ fn parse(rx: mpsc::Receiver<Chunk>, tx: mpsc::Sender<XResult<Item>>, res: &Reser
     let mut input = Input::new(rx);
     let mut sink = Sink::new(&tx, res);
     let sent = match stream(&mut input, &mut sink) {
-        Ok((root, records, nodes)) => {
-            let _ = tx.blocking_send(Ok(Item::Done { root, records, nodes, path: "stream" }));
+        Ok((root, records, nodes, bytes)) => {
+            let _ = tx.blocking_send(Ok(Item::Done { root, records, nodes, bytes, path: "stream" }));
             return;
         }
         Err(Stop::Gone) => return,
@@ -231,7 +235,7 @@ fn parse(rx: mpsc::Receiver<Chunk>, tx: mpsc::Sender<XResult<Item>>, res: &Reser
     }
     // the buffered parse checked the tree: this rebuilds the same root
     let records = sink.builder.records;
-    let (root, nodes) = match std::mem::take(&mut sink.builder).finish(&mut sink.nodes) {
+    let (root, nodes, node_bytes) = match std::mem::take(&mut sink.builder).finish(&mut sink.nodes) {
         Ok(v) => v,
         Err(e) => {
             let _ = tx.blocking_send(Err(XrpcError::from_err(e)));
@@ -242,11 +246,12 @@ fn parse(rx: mpsc::Receiver<Chunk>, tx: mpsc::Sender<XResult<Item>>, res: &Reser
         return;
     }
     let root = root.bytes.as_deref().map(Bytes::copy_from_slice).unwrap_or_default();
-    let _ = tx.blocking_send(Ok(Item::Done { root, records, nodes, path: "buffered" }));
+    let bytes = crate::state::RepoBytes { records: sink.record_bytes, nodes: node_bytes };
+    let _ = tx.blocking_send(Ok(Item::Done { root, records, nodes, bytes, path: "buffered" }));
 }
 
 /// The single pass, handing records to `sink`.
-fn stream(input: &mut Input, sink: &mut Sink) -> Result<(Bytes, u64, u64), Stop> {
+fn stream(input: &mut Input, sink: &mut Sink) -> Result<(Bytes, u64, u64, crate::state::RepoBytes), Stop> {
     let hlen = input.varint().ok_or(Stop::Depart)?;
     let header = input.take(usize::try_from(hlen).map_err(|_| Stop::Depart)?).ok_or(Stop::Depart)?;
     let roots = car::read_header(&header).map_err(|_| Stop::Depart)?;
@@ -296,7 +301,7 @@ fn stream(input: &mut Input, sink: &mut Sink) -> Result<(Bytes, u64, u64), Stop>
     // streamed was the canonical one: the same tree the buffered parse loads.
     let builder = std::mem::take(&mut sink.builder);
     let records = builder.records;
-    let (root, nodes) = builder.finish(&mut sink.nodes).map_err(|_| Stop::Depart)?;
+    let (root, nodes, node_bytes) = builder.finish(&mut sink.nodes).map_err(|_| Stop::Depart)?;
     if root.cid != Some(data) {
         return Err(Stop::Depart);
     }
@@ -311,7 +316,7 @@ fn stream(input: &mut Input, sink: &mut Sink) -> Result<(Bytes, u64, u64), Stop>
     }
     sink.flush()?;
     let block = root.bytes.as_deref().map(Bytes::copy_from_slice).ok_or(Stop::Depart)?;
-    Ok((block, records, nodes))
+    Ok((block, records, nodes, crate::state::RepoBytes { records: sink.record_bytes, nodes: node_bytes }))
 }
 
 #[derive(PartialEq)]
@@ -626,7 +631,7 @@ mod tests {
                     recs.clear();
                     nodes.clear();
                 }
-                Ok(Item::Done { root, records, nodes: count, path }) => {
+                Ok(Item::Done { root, records, nodes: count, bytes, path }) => {
                     let root_cid = Cid::dag_cbor(&root);
                     assert_eq!(records as usize, recs.len());
                     let mut t = Tree::new();
@@ -635,6 +640,9 @@ mod tests {
                     }
                     assert_eq!(t.root_cid().unwrap(), root_cid);
                     assert_eq!(count, crate::repo_stats::count_tree(&t).unwrap().1);
+                    assert_eq!(bytes.nodes, crate::repo_stats::tree_bytes(&t).unwrap());
+                    assert_eq!(bytes.records, recs.iter().map(|r| r.2.len() as u64).sum::<u64>());
+
                     let want = crate::mst_lazy::persisted_nodes(&t, 1);
                     assert_eq!(nodes.len(), want.len());
                     assert!(want.keys().all(|c| nodes.contains_key(c)));

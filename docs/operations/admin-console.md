@@ -55,10 +55,10 @@ edges:
 
 - On the tailnet. With `vlpds_tailnet_console_port` set, the Ansible role runs `tailscale serve` on
   that port. tailscaled terminates TLS and listens on the tailnet only. `/` goes to the node and
-  `/metrics` to its metrics listener, so the Live metrics page works. Open
+  `/metrics` to its metrics listener. Open
   `https://<tailnet name>:<port>/admin`. Don't use port 443, because Docker's DNAT for Caddy takes it.
 - Over SSH. Run `ssh -L 2583:127.0.0.1:2583 <host>` and open `http://localhost:2583/admin`.
-  Everything works except Live metrics, which needs `/metrics` on the same origin.
+  Every page works this way: the charts come from `getNodeMetrics`, not `/metrics`.
 - Unlock it with the node's `--admin-token`. The console checks the token with a
   `getClusterStatus` call and keeps it in that browser tab only. Lock console forgets it.
 
@@ -69,22 +69,25 @@ cluster, and account pages are routed to each account's owner.
 
 ```facts
 - { value: Cluster, label: "/admin", note: "ownership map, nodes, firehose sources, feature level · every 2 s", tone: accent }
-- { value: Metrics, label: "/admin/metrics", note: "charts scraped from /metrics every 2 s, last 6 min", tone: blue }
-- { value: Accounts, label: "/admin/accounts", note: "search, details, takedown, handle, email, password, delete", tone: violet }
+- { value: Metrics, label: "/admin/metrics", note: "every node's rates and latencies every 2 s, last 3 min", tone: blue }
+- { value: Accounts, label: "/admin/accounts", note: "every account, search, sessions, 2FA, takedown, key rotation, rebuild, delete", tone: violet }
 - { value: Limits, label: "/admin/ratelimits", note: "live 429s, top keys, buckets and overrides, cluster-wide", tone: amber }
 ```
 
 | Page | What it shows | What you can do |
 |---|---|---|
 | Cluster | Nodes with a lease, shards owned by this node, its lease, durable log ordinal and feature level (with a finalize or mixed-builds banner) · a shard ownership map coloured by node · a node table (reachable, lease, owned, durable ordinal, firehose lag with the slowest log marked, build and level window) · the firehose's sources | Read only. Click a node to highlight its shards, or its address or build to copy it. |
-| Live metrics | Commits and record ops, HTTP requests by method, commit to durable, segment PUT latency, firehose, cold repo loads, forwarded requests, rejected requests, memory | Read only. Needs `/metrics` on the console's origin. Buttons at the bottom download the [Grafana dashboards](monitoring.md#import-into-your-own-grafana). |
-| Accounts | Search by email prefix (every node's shards, paged), or jump by handle or DID · an account's details and moderation status, with the date a [scheduled deletion](email-and-moderation.md#scheduled-deletion) is due · the dev mailbox in `--dev-mode` | The handle opens the account, and a DID or email copies when you click it · take down (with a reference) and reverse it · change handle, email or password · enable or disable its invites · reset its two-factor sign-in (passkeys, TOTP, recovery codes and trusted browsers, with a reason, audited and mailed to the user) · delete (type the handle to confirm). |
+| Live metrics | Commits and ops, commit to durable, segment PUT, HTTP and 5xx, 429s, firehose events, bytes and emit delay, cold repo loads, class A and B object-store requests and errors, CPU, memory, repos in memory and subscribers: the cluster's line and each node's, from `getNodeMetrics` | Read only. Two buttons download the [Grafana dashboards](monitoring.md#import-into-your-own-grafana). |
+| Object store | Class A and B requests per second, bytes and objects stored, errors and timeouts, segment PUT p99 · requests by key component (log segments, leases, SlateDB manifests and SSTs, blobs and the rest) and each one's share · objects and bytes stored by component from [storage stats](#storage-stats), exact or approximate, and the last backfill · per node rates and PUT latency · the bucket's provider, endpoint, prefix and region | Read only. Bucket listings aren't part of the console: stored sizes come from the nodes' own counters. |
+| Accounts | Every account on every node's shards, most recently active first (`listAccounts`), searchable by handle prefix, email prefix or DID and filtered to those needing attention, deactivated, taken down, without a second factor or with an unconfirmed email · per row its shard and owner, records, blob bytes, last commit, second factors and state · an account opens in a side panel or full page: identity, placement, sign-in and second factors with recent sign-ins, sessions, app passwords, recent ops from the firehose ring, blobs and quota, invites, spaces, cases and audit entries, the date a [scheduled deletion](email-and-moderation.md#scheduled-deletion) is due, and the dev mailbox in `--dev-mode` | Take down (with a reference) and reverse it · deactivate and reactivate · rotate the signing key · rebuild the repo (after a dry run) · check the repo · publish an `#identity` event · revoke one session, every session or an app password · clear a code lockout · change handle, email, password or blob quota · enable or disable its invites · reset its two-factor sign-in (audited and mailed to the user) · delete. Each asks for confirmation and shows the call it makes, and the destructive ones ask you to type the handle. ⌘K takes "take down @handle", "reset 2fa @handle" and the rest. |
 | Moderation | Look up a subject from a bsky.app URL, at:// URI, handle, DID or DID + blob CID, and see the account, the record's JSON and its blobs (previews load on request, blurred) · active takedowns by kind · cases · the audit log · accounts over their blob quota | Take down or restore an account, record or blob with a reason, filed under a case · open and update cases (notes, status, subjects) · change an account's blob quota. See [Email and moderation](email-and-moderation.md#operator-moderation). |
 | Handle domains | The primary (`--handle-domain`) and the domains added here, each with its active accounts (every 5 s), when it was added and by whom | Add a domain · remove one (refused while it has active accounts, with Remove anyway to force it). See [Handle domains](handle-domains.md). |
 | Invite codes | Every code, newest first, one per row: uses left out of its total, when it was made, who made it and for whom, who used it, and whether it's active, disabled or used up | Create codes (count, uses, for an account) · copy a code, or a usable code's migrate or sign-up link · disable one code, or select several and disable them together. |
 | Rate limits | Each bucket's busiest key, 429s in the last minute and 15 minutes, a 429/s chart, top keys, recent 429s by route, and each node's applied config version | Change a bucket's points, window or on/off · add routes · add IP, CIDR or DID overrides (exempt or a custom limit) · a global off switch. Changes apply to every node within seconds and are kept, with your name, in the last 50 changes. See [Rate limits](rate-limits.md#changing-limits-live). |
-| Relays | The relays asked to crawl this PDS (`--crawlers`, or a list stored from here), each one's last ask and result, and the minimum interval | Add or remove relays, reset to the flag's list, change the interval, request a crawl now · click a relay to copy it. See [Relays and crawling](relays-and-crawling.md#crawl-requests). |
-| Firehose | Every subscribeRepos connection on every node, every 5 s: subscribers, live vs backfilling, this PDS's events/s and the bytes/s sent · per connection its `#conn` number and node, client address with its AS and verified reverse DNS name, the relay it matched, user agent (first 120 characters), how long it's been connected, start cursor and shard, state, lag, events/s against the PDS's rate, and events and bytes sent · the last 50 disconnects per node with their reason | Read only. Click a client address, reverse DNS name or user agent to copy it. A live connection well under the PDS's events/s is falling behind. |
+| Firehose & relays | Every subscribeRepos connection on every node, every 5 s: subscribers, live vs backfilling, this PDS's events/s and the bytes/s sent, emit delay · per connection its `#conn` number and node, client address with its AS, the relay it matched, user agent, how long it's been connected, start cursor, state, lag, and its events/s drawn against the PDS's · the last 50 disconnects per node with their reason · the relays asked to crawl this PDS (`--crawlers`, or a list stored from here), each one's last ask and result, and the minimum interval · the merged live tail, filtered by kind, text or node | Disconnect a connection (`kickSubscriber`, type its `#conn` to confirm; it can reconnect with its cursor) · add or remove relays, reset to the flag's list, change the interval, request a crawl now. A live connection well under the PDS's events/s is falling behind. See [Relays and crawling](relays-and-crawling.md#crawl-requests). |
+| Spaces (alpha) | Spaces whose authority is an account here, with members, writers, records and last write · each node's notify outbox, fan-out, revocation list and credential cache · a space's writers, members, notify registrations, taken-down records and audit entries | Take down or restore a space or one of its records, with a reason · remove a notify registration · read a writer's records after giving a reason (each page is an audited read). |
+| Mail | Each node's queue, the mail budgets (`mail-cluster-day`, `mail-node-hour`, the per-recipient ones) and how much of each is spent, mail by purpose, and the recent mail log: purpose, the recipient's domain, node and result | Read only. Budgets are rate-limit buckets: change them on the Limits page. |
+| Config | Every flag each node runs with and where its value came from (flag, env, default, unset or a `-file` secret), with its help · secrets as set or unset with a fingerprint · settings stored in the bucket · each node's build · any setting that differs between nodes, apart from their addresses and `--node-id` | Read only. Filter by name, value or help, or show only what's set or only what differs. |
 
 The rate-limit config lives in the bucket (`config/ratelimits.json`), so it survives restarts and
 every node reads the same one. `{}` means the built-in defaults. The relay list lives next to it in
@@ -104,6 +107,127 @@ their reverse zone. Both are looked up in the background, so a new address shows
 refresh. The `#conn` number is the `conn` label of
 `vlpds_firehose_subscriber_events_total`, so a line on the dashboard and a row here can be matched
 (see [Per-connection firehose series](monitoring.md#per-connection-firehose-series)).
+
+## Console API
+
+The console reads these `vlpds.admin.*` methods on top of the ones the pages above use. They take
+the admin token like the rest, and the role's Caddy keeps them off the public listener. The UI's
+typed client is `ui/src/lib/adminApi.ts`. Every time in an answer is unix milliseconds and every
+seq is a string, because seqs are past 2^53.
+
+They come in three shapes. Calls that name an account take its `did` and run on its owner, like
+`getAccountInfo`. Calls about the cluster ask every live node over the peer listener and merge
+the answers, naming any node that didn't answer in `unreachableNodes`. Calls about one node's own
+state answer for the node they reach, and an `x-vlpds-node: <node id>` header sends them to
+another one over peer mTLS.
+
+| Method | Input | Answer |
+|---|---|---|
+| `listAccounts` (GET) | `q?` (handle prefix, email prefix or DID), `filter?` (`all`, `attention`, `deactivated`, `takendown`, `no2fa`, `unconfirmed`), `sort?` (`recent` or `slot`), `cursor?`, `limit?` (1-200, default 50) | `accounts`, each with its status, shard and node, email and whether it's confirmed, second factors, records, MST nodes, blobs and blob bytes from the repo's kept counts, `repoBytes` (`recordBytes` + `mstBytes`, see below), head rev and `lastCommitAt` · `counts`: `total`, `active`, `deactivated`, `takendown`, `suspended`, `unconfirmed` and `no2fa` over every account, with `approximate` while a shard's totals are loading, a node didn't answer or a shard has no owner · `cursor` while there's more · `missingShards` like `searchAccounts` |
+| `getAccountSecurity` (GET) | `did` | Passkeys (name, created, last used, synced, suspect), TOTP, email codes, recovery codes left, wrong-code counts and locks, trusted browsers, app passwords, OAuth-only and app-password switches, recent sign-ins |
+| `getAccountKeys` (GET) | `did`, `refresh?` | The account's signing key and any pending one · the DID document's `verificationMethods` (from the resolver's cache, refetched with `refresh=true`), each with `matchesAccount` · for a did:plc, the directory's `rotationKeys`, each with its role (`server` for this PDS's current or retired key, `operator_recovery`, `other`). The rotation keys cost one request to the directory, so only an operator opening this asks |
+| `createAccount` | `{handle, email, password?, reason?}` | Creates an account as `com.atproto.server.createAccount` does (the same checks, claims and DID registration) with no invite code needed. Without `password` one is generated and returned once as `password`. Audited as `account.create`, without the password |
+| `recountRepo` | `{did}` | Counts the repo's records, nodes, blobs and bytes from a snapshot and replaces its kept counts, if no commit landed since (else `InvalidSwap`: run it again). Reads the whole repo, as `checkRepo` does |
+| `listSessions` (GET) | `did` | `sessions`: OAuth grants (client, scope, device, signed in, last refresh) and password or app-password sessions (one per session family), each with `ip` (the client address at its latest refresh) and `signedInIp` (at sign-in), as the rate limits resolve it behind trusted proxies. Each has an `id` for `revokeSessions` |
+| `revokeSessions` | `{did, ids?, reason?}` | Without `ids`, every session, OAuth grant, device sign-in and trusted browser, as a password change does. App passwords keep working. Audited as `sessions.revoke` |
+| `revokeAppPassword` | `{did, name, reason?}` | The password and the sessions it signed in. Audited as `app_password.revoke` |
+| `listRepoOps` (GET) | `did`, `limit?` (1-100, default 25) | The account's `#commit` (with its ops), `#sync`, `#identity` and `#account` events, newest first, from the firehose ring in memory. `reachesBackTo` says how far back it looked and `ringExhausted` that nothing older is in memory |
+| `getNodeMetrics` (GET) | `since?` | Per node: commits, ops, HTTP, 5xx, 429s, firehose events and bytes, repo loads, class A and B object-store requests per second, CPU cores busy, memory, subscribers, cached repos, mail queue, and commit, segment PUT and firehose emit p50/p99. `series` holds one point per 2 s for the last 3 minutes (only those after `since`), `latest` the last 10 s · `storeComponents`: class A and B per second by key component over the kept window (`storeWindowMs`), busiest first |
+| `listSegments` (GET) | `since?` (default the last 20 s) | Per node: its log, durable ordinal, watermark and its lag, and each segment's ordinal, seq range, entries against firehose events, bytes before and after compression, when it was sealed and when it was durable (null while its PUT is in flight) · the firehose's last emitted seq and min watermark |
+| `listMail` (GET) | `limit?` (default 100) | Every node's recent mail, newest first: purpose, the recipient's domain only, status (`queued`, `retrying`, `sent`, `failed`, `dropped`, `suppressed`, `logged`), attempts, the provider's error with any address removed, and the budget that suppressed it · each node's queue depth |
+| `listLockouts` (GET) | | Accounts whose TOTP and recovery codes (`second_factor`) or email codes (`email_code`) are locked after wrong codes, with the count and when the lock ends, from the lockout index of every node's shards |
+| `clearLockout` | `{did, reason}` | Clears both locks and their counts. Audited as `lockout.clear`. The sign-in rate-limit buckets are separate: a DID override on the Rate limits page lifts those |
+| `getConfig` (GET) | | This node's flags, each with its source (`flag`, `env`, `default`, `unset`, or `file` for a secret set by its `-file` flag) and value · settings stored in the bucket (handle domains, rate-limit version, shard layout, feature level) · version and build rev · `peerTls`: the peer certificate in use (`nodeId`, `subject`, `hosts`, `notBefore`, `notAfter`, the earliest CA's `caNotAfter`), null without peer TLS · `secretFiles`: each `-file` secret's `flag`, `path` and the file's `modifiedAt`, so a rotation shows as a recent change |
+| `getStorageStats` (GET) | | Objects and bytes in the bucket by key component (`components`, each `exact` or not, with its count of guessed changes), `totalObjects`, `totalBytes`, `exact`, `inexactBecause`, `seeded` and `lastBackfillAt` · `backfill`: the latest run's phase, requests, keys and place · per node: what it hasn't folded yet and when it last did. See [Storage stats](#storage-stats) |
+| `backfillStorageStats` | `{dryRun?, maxRequests?, pagesPerSecond?, restart?}` | Lists the bucket once in the background to seed the counts. `dryRun` answers the estimate (`estimatedObjects`, `estimatedRequests`, `estimatedSeconds`) and starts nothing. Otherwise `maxRequests` is required. Audited as `storage.backfill` |
+| `kickSubscriber` | `{conn}` | Closes that firehose connection on this node with reason `kicked`. The client can reconnect with its cursor |
+
+What these never return:
+
+- A secret's value. `getConfig` shows a secret flag as set or unset with `sha256:` and the first 8
+  hex digits of the value in use, enough to tell two nodes apart. A URL flag loses any
+  `user:password@`.
+- A recipient's address or a mail's body or token. The mail log keeps the purpose, the domain and
+  the outcome, and an error loses every word with an `@` in it.
+
+Each node keeps the last 1,024 segments it sealed, the last 200 mails and 3 minutes of metrics in
+memory, so none of this reads the bucket. A restart starts them empty. Lockouts are indexed in the
+shards (`L/{did}\0{factor}`, written in the same batch as the lock), so the list survives restarts
+and shard moves; an entry whose lock has run out is dropped the next time the list finds it.
+`listRepoOps` reads only the ring, so a quiet account's older events aren't there.
+`getStorageStats` reads one control-plane object and asks each node for what it holds, and never
+lists the bucket.
+
+### Storage stats
+
+Every PUT, copy and DELETE a node makes passes the request counter (`src/objstats.rs`), which also
+keeps objects and bytes by key component (`src/store_stats.rs`). A PUT knows its size. A DELETE
+doesn't, so each node remembers the size of every key it has written, read or seen in a LIST its
+background jobs already run (retention lists the segments it deletes, SlateDB's GC its SSTs, the
+blob sweep the blobs), up to 262,144 keys. A change it has to guess is counted as uncertain: a
+DELETE of a key it never saw takes the component's mean size, and an overwrite of a control-plane
+key it never saw is taken as a replace. A component with no guessed change since the last backfill
+is `exact`.
+
+Each node folds its changes into `stats/storage` every 5 minutes and when it shuts down. That's a
+GET and a conditional PUT on the control-plane client, never on a request or commit path: 8,640 of
+each a month per node. A node that crashes loses up to 5 minutes of changes, and its next start
+marks the totals approximate until the next backfill. A node that leaves for good keeps what it
+folded.
+
+The counts start at zero, so they mean nothing until one backfill lists the bucket. It lists the
+prefix once, in key order, one LIST request per 1,000 keys (Class A on R2 and S3), at
+`pagesPerSecond` (default 2, at most 50), and stops after `maxRequests` requests. It saves its place
+every 20 pages or 15 s in `stats/backfill`, so a capped, failed or interrupted run resumes after the
+last key it listed. One run at a time: a second call while one is running answers `AlreadyRunning`,
+and another node takes a run over once its runner hasn't saved for 2 minutes. While it lists, every
+node keeps its changes aside with their key and time. At the end each one is checked against the
+page that listed its key. A change made before that page was read is already in the listing and is
+dropped, one made after is kept, and one made while the page was in flight (within 250 ms on another
+node's clock) is kept as uncertain.
+
+To run it on a live PDS:
+
+```steps
+- title: Read the estimate
+  body: "`curl -su admin:$TOKEN -H 'content-type: application/json' -d '{\"dryRun\":true}' https://<pds>/xrpc/vlpds.admin.backfillStorageStats`. Before the first backfill `estimatedObjects` comes from the LISTs the background jobs ran last (`estimateBasis: \"observed LISTs\"`), which misses prefixes nothing lists, so expect the real count to be somewhat higher. `estimatedRequests` is ceil(objects / 1000)."
+- title: Run it with a budget
+  body: "`-d '{\"maxRequests\":<estimate × 1.5>,\"pagesPerSecond\":2}'`. The cap is the most it can spend: a bucket bigger than the estimate stops at the cap with `phase: \"capped\"` instead of listing on."
+- title: Watch it
+  body: "`getStorageStats` shows `backfill.phase`, `requests`, `keys` and `cursor`, and so does the Object store page. At 2 pages a second, a million objects take about 8 minutes."
+- title: Resume if it stopped
+  body: "Call it again with a new `maxRequests`. It goes on from `cursor`. `restart: true` starts over instead."
+- title: Check the result
+  body: "`seeded: true`, `lastBackfillAt` set, and `exact: true` once every node has folded. `inexactBecause` says what's in the way otherwise."
+```
+
+A bucket of N objects costs ceil(N / 1000) LIST requests, plus a GET and a PUT of `stats/backfill`
+each time it saves its place. A million objects is 1,000 LISTs and 50 saves (a PUT and a GET each). Running it again later
+takes the same requests, and resets any drift.
+
+### Repo bytes and filter counts
+
+`repoBytes` is the repo's record blocks plus its MST node blocks, leaves included: what a
+`getRepo` CAR carries, less the commit and the framing. It is not what the repo's rows take in
+the bucket. It rides in the repo's counts row (`S/`), which the commits that change the counts
+already write, so it costs no read and no extra write. A created record adds its exact size and
+a new node its own. The blocks a commit replaces aren't read, so a deleted record takes off the
+repo's mean record size, a replaced node the mean node size, and an update is taken to keep the
+record's size: close, not exact. `recountRepo` makes it exact again. A counts row written before
+bytes were counted has none (`repoBytes` is absent); the repo's next load counts them, a read of
+the whole repo once.
+
+The filter counts ride in each slot's account totals (crate::totals), moved by the same
+account changes that move the status counts: they are exact once a shard's totals have loaded.
+`unconfirmed` is accounts whose email isn't confirmed, `no2fa` active accounts with no second
+factor on their account row (TOTP, email codes or a passkey; the passkey count is written to the
+row with each passkey change). A totals row written before they were counted is counted from the
+slot's account rows when the shard opens. `attention` has no count: it depends on blob quotas and
+lockouts, which the totals don't follow.
+
+`listCases` takes `did` and `subject?` (a record's at:// URI or a blob's CID) to list the cases
+about one account or one of its records. It filters every case: cases are few. Past a few
+thousand, a subject index written with each case would replace the scan.
 
 ## Admin CLI
 

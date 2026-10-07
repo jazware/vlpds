@@ -78,6 +78,8 @@ _vlpds_env_base:
   VLPDS_CRAWLERS: "{{ vlpds_crawlers | join(',') }}"
   VLPDS_MOD_SERVICE_DID: "{{ vlpds_mod_service_did }}"
   VLPDS_RESOLVE_LEXICONS: "{{ 'true' if vlpds_resolve_lexicons | bool else '' }}"
+  VLPDS_EMAIL_API_URL: "{{ vlpds_email_api_url }}"
+  VLPDS_MODERATION_EMAIL_API_URL: "{{ vlpds_moderation_email_api_url }}"
   VLPDS_EMAIL_FROM_ADDRESS: "{{ vlpds_email_from_address }}"
   VLPDS_MODERATION_EMAIL_ADDRESS: "{{ vlpds_moderation_email_address }}"
   VLPDS_EMAIL_BRAND_NAME: "{{ vlpds_email_brand_name }}"
@@ -116,6 +118,8 @@ _vlpds_env_secrets:
   - { env: VLPDS_S3_SECRET_KEY, name: s3-secret-key, content: "{{ vlpds_s3_secret_key }}" }
   - { env: VLPDS_EMAIL_SMTP_URL, name: email-smtp-url, content: "{{ vlpds_email_smtp_url }}" }
   - { env: VLPDS_MODERATION_EMAIL_SMTP_URL, name: moderation-email-smtp-url, content: "{{ vlpds_moderation_email_smtp_url }}" }
+  - { env: VLPDS_EMAIL_API_TOKEN, name: email-api-token, content: "{{ vlpds_email_api_token }}" }
+  - { env: VLPDS_MODERATION_EMAIL_API_TOKEN, name: moderation-email-api-token, content: "{{ vlpds_moderation_email_api_token }}" }
   - { env: VLPDS_RATE_LIMIT_BYPASS_KEY, name: rate-limit-bypass-key, content: "{{ vlpds_rate_limit_bypass_key }}" }
 _vlpds_env_secrets_set: "{{ _vlpds_env_secrets | rejectattr('content', 'equalto', '') | list }}"
 _vlpds_env_secret_files: "{{ _vlpds_env_secrets_set | map(attribute='name') | list }}"

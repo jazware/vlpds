@@ -226,6 +226,12 @@ pub enum AccountOp {
     /// importRepo staged under a new generation (`crate::import`, DESIGN.md
     /// "Staged imports").
     Import(ImportStep),
+    /// Replaces `S/` with stats counted from a snapshot whose head was at
+    /// `at_rev` (admin recountRepo); refused if the head moved since.
+    SetStats {
+        stats: state::RepoStats,
+        at_rev: u64,
+    },
 }
 
 /// The steps of a staged import, each its own log entry. Every step but
@@ -1266,8 +1272,9 @@ impl Worker {
                 return;
             }
         };
-        let stats = match crate::repo_stats::count_tree(&tree) {
-            Ok((records, nodes)) => state::RepoStats { records, nodes, blobs: 0 },
+        let record_bytes = req.records.iter().map(|(_, _, b)| b.len() as u64).sum();
+        let stats = match crate::repo_stats::of_tree(&tree, record_bytes, 0) {
+            Ok(s) => s,
             Err(e) => {
                 let _ = req.reply.send(Err(WriteError::Internal(e.to_string())));
                 return;
@@ -1881,8 +1888,14 @@ async fn load_repo_with(partition: Arc<Partition>, did: Arc<str>, opts: LoadOpts
         }
     };
     let ((mst, backfill), blob_refs) = tokio::try_join!(open_lazy(&partition, &did, gen, &head, &opts), read_refs)?;
-    let (stats, backfill_stats) = match sv {
-        Some(v) => (state::RepoStats::decode(&v)?, false),
+    let stats = sv.map(|v| state::RepoStats::decode(&v)).transpose()?;
+    let (stats, backfill_stats) = match stats {
+        Some(s) if s.bytes.is_some() => (s, false),
+        Some(_) => {
+            // a row from before repo bytes were counted
+            metrics::LAZY_MST_FALLBACKS.with_label_values(&["stats_without_bytes"]).inc();
+            (crate::repo_stats::walk(&**db, &did, gen).await?, true)
+        }
         None => {
             tracing::warn!(%did, "repo stats missing: counting the repo");
             metrics::LAZY_MST_FALLBACKS.with_label_values(&["missing_stats"]).inc();
@@ -2892,6 +2905,7 @@ fn flush(st: &mut RepoState, batch: Batch, clock_id: u64, src: &dyn Source) -> a
 
     let stats_before = st.stats;
     st.stats.nodes = st.stats.nodes.saturating_add_signed(persist.node_delta);
+    let (mut created_bytes, mut deleted) = (0u64, 0u64);
     let mut ops = Vec::with_capacity(batch.ops.len());
     let mut muts = Vec::with_capacity(batch.ops.len() + 1);
     // exact up to the varints: header ~60, each block varint + 36-byte CID
@@ -2928,13 +2942,15 @@ fn flush(st: &mut RepoState, batch: Batch, clock_id: u64, src: &dyn Source) -> a
             _ => recent = None,
         }
         let action = match (prev, new) {
-            (None, Some(_)) => {
+            (None, Some(c)) => {
                 st.stats.records += 1;
+                created_bytes += batch.records[c].len() as u64;
                 "create"
             }
             (Some(_), Some(_)) => "update",
             _ => {
                 st.stats.records = st.stats.records.saturating_sub(1);
+                deleted += 1;
                 "delete"
             }
         };
@@ -3003,6 +3019,13 @@ fn flush(st: &mut RepoState, batch: Batch, clock_id: u64, src: &dyn Source) -> a
         extra.push(Mutation { key: state::mst_node_key(&st.did, gen, c).into(), val: None });
     }
     extra.append(&mut coll_muts);
+    // a commit that leaves the counts alone (updates) leaves the bytes too:
+    // `S/` is written only when the counts change
+    if st.stats.counts() != stats_before.counts() {
+        if let Some(b) = st.stats.bytes.as_mut() {
+            b.commit(&stats_before, created_bytes, deleted, persist.added_bytes, persist.gone);
+        }
+    }
     if st.stats != stats_before {
         extra.push(put(state::repo_stats_key(&st.did), st.stats.encode()));
     }
@@ -3411,7 +3434,8 @@ fn apply_account(st: &mut RepoState, req: AccountReq, clock_id: u64, src: &dyn S
                 &mut muts,
             );
             let data = tree.root_cid()?;
-            let counted = crate::repo_stats::count_tree(&tree)?;
+            let record_bytes = records.iter().map(|(_, _, b, _)| b.len() as u64).sum();
+            let counted = crate::repo_stats::of_tree(&tree, record_bytes, 0)?;
             replace_nodes_mutations(&st.did, gen, old_nodes, &tree, &mut muts);
             let (commit, commit_block) = match sign_commit(&st.did, &rev.to_string(), &data, &key) {
                 Ok(c) => c,
@@ -3421,7 +3445,8 @@ fn apply_account(st: &mut RepoState, req: AccountReq, clock_id: u64, src: &dyn S
                     return Err(e.into());
                 }
             };
-            (st.stats.records, st.stats.nodes) = counted;
+            st.stats = state::RepoStats { blobs: st.stats.blobs, ..counted };
+
             muts.push(put(state::repo_stats_key(&st.did), st.stats.encode()));
             st.mst = LazyTree::loaded(tree, 1);
             st.head = Head { commit, data, rev, commit_block };
@@ -3432,10 +3457,19 @@ fn apply_account(st: &mut RepoState, req: AccountReq, clock_id: u64, src: &dyn S
             }
             muts.push(put(state::head_key(&st.did), st.head.encode()));
         }
+        AccountOp::SetStats { stats, at_rev } => {
+            if st.head.rev.0 != at_rev {
+                let e = format!("head rev is {}, not the one counted at; run it again", st.head.rev);
+                return refuse(req.reply, WriteError::InvalidSwap(e));
+            }
+            st.stats = stats;
+            muts.push(put(state::repo_stats_key(&st.did), st.stats.encode()));
+        }
         AccountOp::Delete { only_if } => {
             if let Some(Err(e)) = only_if.map(|check| check(&st.account)) {
                 return refuse(req.reply, e);
             }
+
             let old_nodes = clear_repo_mutations(st, &mut muts, src)?;
             clear_backlinks(st, &mut muts, &done)?;
             for c in old_nodes.keys() {

@@ -113,13 +113,24 @@
 - name: Email is configured
   ansible.builtin.assert:
     that:
-      - (vlpds_email_smtp_url | length > 0) or not (vlpds_email_required | bool)
-      - (vlpds_email_smtp_url | length > 0) == (vlpds_email_from_address | length > 0)
-      - (vlpds_moderation_email_smtp_url | length > 0) == (vlpds_moderation_email_address | length > 0)
+      - (_mail | length > 0) or not (vlpds_email_required | bool)
+      - (_mail | length > 0) == (vlpds_email_from_address | length > 0)
+      - (_mod_mail | length > 0) == (vlpds_moderation_email_address | length > 0)
+      - _mail | length <= 1 and _mod_mail | length <= 1
       - vlpds_email_smtp_url | length == 0 or vlpds_email_smtp_url is match('^smtps?://')
       - vlpds_moderation_email_smtp_url | length == 0 or vlpds_moderation_email_smtp_url is match('^smtps?://')
-    fail_msg: "Set vlpds_email_smtp_url + vlpds_email_from_address (or vlpds_email_required: false); the moderation URL and address go together"
+      - vlpds_email_api_url | length == 0 or vlpds_email_api_url is match('^https://')
+      - vlpds_moderation_email_api_url | length == 0 or vlpds_moderation_email_api_url is match('^https://')
+      - vlpds_email_api_url | length == 0 or vlpds_email_api_token | length > 0
+      - vlpds_moderation_email_api_url | length == 0 or (vlpds_moderation_email_api_token ~ vlpds_email_api_token) | length > 0
+    fail_msg: >-
+      Set one of vlpds_email_smtp_url or vlpds_email_api_url (+ vlpds_email_api_token), with
+      vlpds_email_from_address (or vlpds_email_required: false); the same for the moderation
+      mailer and its address
     quiet: true
+  vars:
+    _mail: "{{ [vlpds_email_smtp_url, vlpds_email_api_url] | reject('equalto', '') | list }}"
+    _mod_mail: "{{ [vlpds_moderation_email_smtp_url, vlpds_moderation_email_api_url] | reject('equalto', '') | list }}"
 
 # The role has no dev mode: --dev-mode accepts the well-known dev secrets,
 # and --lexicon-authority-override (dev only) lets a chosen repo stand in

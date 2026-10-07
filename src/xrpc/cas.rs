@@ -144,8 +144,10 @@ pub(super) async fn private_cas_local(
     for op in &ops {
         match op {
             Op::Put { name, val } => {
-                muts.push(Mutation { key: state::private_key(routing, name).into(), val: val.clone() })
+                muts.push(Mutation { key: state::private_key(routing, name).into(), val: val.clone() });
+                muts.extend(super::mfa::lockout_index(routing, name, val.as_ref()));
             }
+
             Op::DeletePrefix { prefix } => {
                 for (name, v) in super::server::scan_private(app, routing, prefix).await? {
                     if !put_names.contains(&name.as_str()) {

@@ -33,9 +33,13 @@ vlpds_s3_prefix: pds-example-com
 vlpds_preflight_probe: false
 
 # --- email ---------------------------------------------------------------------
-# Off until SMTP credentials exist: mail is logged instead.
+# Off until mail credentials exist: mail is logged instead. Set one transport.
 vlpds_email_required: false
 # vlpds_email_smtp_url: "{{ secrets.vlpds_email_smtp_url }}"
+# Or, where the provider blocks outbound SMTP (some VPS providers do), Cloudflare
+# Email Sending's REST API:
+# vlpds_email_api_url: "https://api.cloudflare.com/client/v4/accounts/<account_id>/email/sending/send"
+# vlpds_email_api_token: "{{ secrets.vlpds_email_api_token }}"
 # vlpds_email_from_address: "pds.example.com <noreply@pds.example.com>"
 # vlpds_contact_email_address: "abuse@pds.example.com"
 
