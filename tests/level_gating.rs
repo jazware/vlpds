@@ -157,6 +157,17 @@ async fn scan(store: &object_store::memory::InMemory, at_most: Option<u32>) -> S
             // storage counters and the backfill cursor: observability only, a
             // backfill rebuilds them, so an older build ignoring them is safe
             "stats" => continue,
+            // the operator's audit log (here: the shard split's entry), cases
+            // and takedown index: JSON with no level, whose added fields an
+            // older build skips (a subject's `id` beside an always-written `did`)
+            "moderation" => {
+                if path.starts_with("moderation/audit/") {
+                    let e: J = serde_json::from_slice(&b).unwrap_or_else(|e| panic!("{path}: {e}"));
+                    let subject = &e["subject"];
+                    assert!(subject.is_null() || subject["did"].is_string(), "{path}: a subject without did: {e}");
+                }
+                continue;
+            }
             other => panic!("unclassified object family {other:?} ({path}): give it a rule in level_gating.rs"),
         }
         if !matches!(family, "log") {

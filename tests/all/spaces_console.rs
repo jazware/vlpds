@@ -232,6 +232,7 @@ async fn registration_removal_is_audited() {
     );
     assert_eq!(e[0]["detail"]["service"], json!(service));
     assert_eq!(e[0]["subject"], json!({"kind": "space", "did": owner.did, "uri": space}));
+    assert_eq!((&e[0]["actor"], &e[0]["auth"]), (&json!("admin"), &json!("token")), "{log}");
     let log = s.xrpc.get("vlpds.admin.getAuditLog", &[("space", "*")], &Auth::Admin).await.ok();
     let actions: Vec<&J> = log["entries"].as_array().unwrap().iter().map(|e| &e["action"]).collect();
     assert_eq!(actions, [&json!("space.read"), &json!("space.registration.remove")], "{log}");

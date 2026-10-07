@@ -97,40 +97,55 @@ impl Who {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubjectRef {
-    /// account, record or blob
+    /// account, record, blob, space or spaceRepo. Audit entries of operator
+    /// changes can also name a shard, node, domain (a served handle domain)
+    /// or config (a cluster-wide setting) by `id`, with an empty `did`.
     pub kind: String,
+    /// Always written, empty or not, so a build without `id` still reads
+    /// every entry.
     pub did: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uri: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 impl SubjectRef {
     pub fn account(did: &str) -> SubjectRef {
-        SubjectRef { kind: "account".into(), did: did.into(), uri: None, cid: None }
+        SubjectRef { kind: "account".into(), did: did.into(), uri: None, cid: None, id: None }
     }
 
     pub fn blob(did: &str, cid: &str) -> SubjectRef {
-        SubjectRef { kind: "blob".into(), did: did.into(), uri: None, cid: Some(cid.into()) }
+        SubjectRef { kind: "blob".into(), did: did.into(), uri: None, cid: Some(cid.into()), id: None }
     }
 
     pub fn record(uri: &str, did: &str) -> SubjectRef {
-        SubjectRef { kind: "record".into(), did: did.into(), uri: Some(uri.into()), cid: None }
+        SubjectRef { kind: "record".into(), did: did.into(), uri: Some(uri.into()), cid: None, id: None }
     }
 
     /// `did`'s repo in the space `uri` (operator reads; never taken down).
     pub fn space_repo(uri: &str, did: &str) -> SubjectRef {
-        SubjectRef { kind: "spaceRepo".into(), did: did.into(), uri: Some(uri.into()), cid: None }
+        SubjectRef { kind: "spaceRepo".into(), did: did.into(), uri: Some(uri.into()), cid: None, id: None }
     }
 
     /// A space (`uri`) at its authority `did`.
     pub fn space(uri: &str, did: &str) -> SubjectRef {
-        SubjectRef { kind: "space".into(), did: did.into(), uri: Some(uri.into()), cid: None }
+        SubjectRef { kind: "space".into(), did: did.into(), uri: Some(uri.into()), cid: None, id: None }
+    }
+
+    /// The subject of an operator change that has no account: `kind` is
+    /// shard, node, domain or config.
+    pub fn other(kind: &str, id: impl ToString) -> SubjectRef {
+        SubjectRef { kind: kind.into(), did: String::new(), uri: None, cid: None, id: Some(id.to_string()) }
     }
 
     /// Distinguishes the subject within its kind (index key, case de-dup).
     fn key(&self) -> String {
+        if let Some(id) = &self.id {
+            return id.clone();
+        }
         match self.kind.as_str() {
             "record" | "space" => self.uri.clone().unwrap_or_default(),
             "spaceRepo" => format!("{} {}", self.uri.as_deref().unwrap_or(""), self.did),
@@ -164,7 +179,8 @@ pub struct AuditEntry {
     pub ip: Option<String>,
     pub node: String,
     /// takedown, restore, blob.purge, case.create, case.update, quota.set,
-    /// second_factors.reset
+    /// second_factors.reset, and every other operator write
+    /// ([`super::admin_audit::AUDITED`])
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<SubjectRef>,
@@ -176,7 +192,7 @@ pub struct AuditEntry {
     pub detail: Option<J>,
 }
 
-fn node_id(app: &App) -> String {
+pub(super) fn node_id(app: &App) -> String {
     app.cluster.as_ref().map(|c| c.cfg.node_id.clone()).unwrap_or_else(|| "single".into())
 }
 
@@ -914,7 +930,7 @@ async fn moderate(
         "record" => {
             let uri = inp.uri.ok_or_else(|| XrpcError::bad("InvalidRequest", "uri required"))?;
             super::admin::record_takedown_name(&uri, &inp.did)?;
-            SubjectRef { kind: "record".into(), did: inp.did.clone(), uri: Some(uri), cid: inp.cid }
+            SubjectRef { kind: "record".into(), did: inp.did.clone(), uri: Some(uri), cid: inp.cid, id: None }
         }
         "blob" => SubjectRef::blob(
             &inp.did,
@@ -1095,6 +1111,9 @@ fn check_subject(s: &SubjectRef) -> XResult<()> {
     }
     if !s.did.starts_with("did:") {
         return Err(XrpcError::bad("InvalidRequest", "subject did must be a DID"));
+    }
+    if s.id.is_some() {
+        return Err(XrpcError::bad("InvalidRequest", "a case subject has no id"));
     }
     Ok(())
 }

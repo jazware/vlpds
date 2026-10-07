@@ -109,6 +109,7 @@ What the node does with the header:
 - Every audit entry records how its actor got in (`auth`): `proxy` for a login the proxy named,
   `token` for the name the console sends with the admin token (anyone with the token can type
   any name), and `service` for the moderation service. The console shows it with the entry.
+  [Audit log](#audit-log) lists what's audited.
 
 On load the console calls `vlpds.admin.getSession` without a token. If the answer is
 `{"auth": "proxy", "operator": "alice@example.com"}` it opens straight away and shows who you are
@@ -279,6 +280,39 @@ and shard moves; an entry whose lock has run out is dropped the next time the li
 `listRepoOps` reads only the ring, so a quiet account's older events aren't there.
 `getStorageStats` reads one control-plane object and asks each node for what it holds, and never
 lists the bucket.
+
+### Audit log
+
+Every write an admin credential can make leaves an entry in the audit log
+(`vlpds.admin.getAuditLog`, the Moderation page's Audit log, and an account's own list). That's
+the token, a login a proxy signed in, or the moderation service on the methods it may call. An
+entry has who acted and how they got in, the client address, the node, the action, its subject
+and a short detail. Each entry is also a `target=vlpds::audit` log line on the node.
+`src/xrpc/admin_audit.rs` lists every method and the action it writes, and a test fails if a new
+admin write has neither an entry nor a reason it goes without.
+
+| Subject | Actions |
+|---|---|
+| An account (`did`) | `account.create`, `account.handle`, `account.email`, `account.password`, `account.signing_key`, `account.deactivate`, `account.activate`, `account.delete`, `identity.publish`, `repo.rebuild`, `repo.recount`, `sessions.revoke`, `app_password.revoke`, `lockout.clear`, `second_factors.reset`, `quota.set`, `invites.create`, `invites.disable_account`, `invites.enable_account`, `invites.disable_codes`, `mail.send`, and `takedown` and `restore` of the account, a record or a blob |
+| A shard (`id`) | `shard.split`, `shard.merge`, `shard.abort` |
+| A node (`id`) | `secrets.rewrap`, `plc.rotate_keys`, `plc.recovery_key` (each node's run over its own shards), `firehose.kick` |
+| A handle domain (`id`) | `domain.add`, `domain.remove` |
+| A setting (`id`) | `ratelimits.update`, `crawlers.set`, `crawlers.request`, `feature_level.set` |
+| A space | `space.read`, `space.registration.remove`, and `takedown` and `restore` of a space |
+| None | `case.create`, `case.update` (with the case), `storage.backfill` |
+
+What an entry never holds: a password, token, invite code or private key, an email's body or
+subject line, or a full address. An email change keeps the old and new domains, and `mail.send`
+keeps the recipient's domain and the moderator's comment, like the mail log. The signing key
+entry has the new public `did:key`. Dry runs, and an `abortReshard` with nothing to abort, write
+nothing. Two writes go unaudited on purpose: `bulkCreate` (simulation only, refused without
+`--dev-mode` or `--allow-bulk-create`) and an admin `refreshIdentity`, which changes nothing.
+
+Some actions point at a fuller record. A `ratelimits.update` entry has the config's new version
+and how many limits changed, and the change itself is in that version of the rate-limit history.
+A `mail.send` entry links to the account's mail log. A `deleteAccount` is audited before anything
+is deleted, and `splitShard` and `mergeShards` before the op is planned. Each is audited again,
+with the error, if it fails.
 
 ### Storage stats
 

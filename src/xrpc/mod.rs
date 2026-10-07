@@ -3,6 +3,7 @@
 
 mod account_stats;
 mod admin;
+pub mod admin_audit;
 mod admin_tools;
 pub mod authn;
 mod blob_quota;

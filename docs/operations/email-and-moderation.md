@@ -258,7 +258,7 @@ bounce subdomain alone.
 - title: Act
   body: "Take down (or restore) the account, the record or a single blob. Every action needs a reason and can be filed under a case. An open case becomes actioned, and an actioned one becomes restored when you reverse it. Takedowns by a moderation service (`updateSubjectStatus`) take the same path, so they're listed and audited too."
 - title: Track
-  body: "Active takedowns lists everything in force, filterable by kind, with a restore button. The Audit log has every takedown, restore, purge, case and quota change, with who did it (admin, or the moderation service's DID), the client address and why. Add notes to the case as it develops. A counter-notice and the restore window (DMCA: 10 to 14 business days) belong there."
+  body: "Active takedowns lists everything in force, filterable by kind, with a restore button. The Audit log has every takedown, restore, purge, case and quota change, and every other operator change (an account's email, password or keys, invites, mail sent, shards, domains, limits), with who did it (the operator, or the moderation service's DID), the client address and why. Add notes to the case as it develops. A counter-notice and the restore window (DMCA: 10 to 14 business days) belong there."
 ```
 
 The audit log, cases and the list of active takedowns are objects in the bucket under
@@ -267,7 +267,8 @@ account itself. Each action is also logged on the node (`target=vlpds::audit`).
 Each entry names who acted and how they got in (`auth`). That's the login a proxy signed in
 (`proxy`, see [Sign-in through a proxy](admin-console.md#sign-in-through-a-proxy)), the name the
 console sends with the admin token (`token`, and `admin` if none), or the moderation service's
-DID (`service`). A `token` name is only what the caller typed.
+DID (`service`). A `token` name is only what the caller typed. [Audit log](admin-console.md#audit-log)
+lists every action and what an entry keeps.
 
 ### What a takedown does
 

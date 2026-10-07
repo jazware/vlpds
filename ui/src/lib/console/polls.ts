@@ -61,7 +61,19 @@ export type Case = {
 }
 export const openCasesPoll = createPoller(async () => (await admin<{ cases: Case[] }>('vlpds.admin.listCases', { params: { status: 'open' } })).cases, 15000)
 
-export type AuditEntry = { id: string; at: string; actor: string; auth?: string; ip?: string; node: string; action: string; subject?: SubjectRef; reason?: string; caseId?: string }
+export type AuditEntry = {
+  id: string
+  at: string
+  actor: string
+  auth?: string
+  ip?: string
+  node: string
+  action: string
+  /** Or, for an operator change with no account, a shard, node, domain or cluster setting by `id`. */
+  subject?: SubjectRef | { kind: 'shard' | 'node' | 'domain' | 'config'; id: string }
+  reason?: string
+  caseId?: string
+}
 export const auditPoll = createPoller(async () => (await admin<{ entries: AuditEntry[] }>('vlpds.admin.getAuditLog', { params: { limit: 8 } })).entries, 30000)
 
 export const lockoutsPoll = createPoller(lockouts, 15000)

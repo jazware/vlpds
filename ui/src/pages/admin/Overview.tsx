@@ -4,13 +4,14 @@ import { openPanel } from '../../components/console/nav'
 import { SECTION } from '../../components/console/sections'
 import { Strata } from '../../components/console/Strata'
 import { clusterPoll, useClusterView, type ClusterView } from '../../lib/console/cluster'
-import { ago, dur, factorName, fmtMs, fmtNum, fmtSec, fmtSi, plural } from '../../lib/console/fmt'
+import { ago, auditSubjectText, dur, factorName, fmtMs, fmtNum, fmtSec, fmtSi, plural } from '../../lib/console/fmt'
 import { col, last, useMetrics, type MetricsState } from '../../lib/console/metrics'
 import { useStartedAt } from '../../lib/console/nodeMetrics'
 import { segmentsPoll } from '../../lib/console/segments'
 import { auditPoll, isSlow, isThisBrowser, lockoutsPoll, openCasesPoll, subscribersPoll, type SubscriberList } from '../../lib/console/polls'
 import { heldSignInKeys, rlPoll, shortName } from '../../lib/console/ratelimits'
 import { crawlersPoll } from '../../lib/console/sys'
+import { AuditAction } from './auditUi'
 import { clusterBanners, NodesTable } from './clusterUi'
 
 // The overview: what's wrong (banners), one health line across every subsystem, the write
@@ -283,8 +284,8 @@ function Rail({ subs }: { subs?: SubscriberList }) {
         ) : audit.data.length ? (
           audit.data.slice(0, 5).map((e) => (
             <RRow key={e.id} onClick={() => openPanel('audit', e.id)} x={ago(Date.parse(e.at))}>
-              <span className="mono sm t2">{e.action}</span>
-              <span className="nm muted">{e.subject?.uri ?? e.subject?.did ?? e.reason ?? ''}</span>
+              <AuditAction a={e.action} />
+              <span className="nm muted">{e.subject ? auditSubjectText(e.subject) : (e.reason ?? '')}</span>
             </RRow>
           ))
         ) : (

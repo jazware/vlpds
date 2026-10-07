@@ -7,6 +7,7 @@
 //! restarts and any node's console shows the same state.
 
 use super::admin::require_admin;
+use super::moderation::{audit, ClientIp, SubjectRef, Who};
 use super::*;
 use object_store::GetOptions;
 use serde::Serialize;
@@ -542,6 +543,8 @@ struct SetIn {
     relays: Option<Option<Vec<String>>>,
     #[serde(default, deserialize_with = "some")]
     interval_secs: Option<Option<u64>>,
+    #[serde(default)]
+    actor: Option<String>,
 }
 
 fn some<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
@@ -567,7 +570,12 @@ fn validate_relays(given: &[String]) -> Result<Vec<String>, XrpcError> {
     Ok(out)
 }
 
-async fn set_crawlers(State(app): AppState, Auth(creds): Auth, Json(inp): Json<SetIn>) -> XResult<Json<J>> {
+async fn set_crawlers(
+    State(app): AppState,
+    Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
+    Json(inp): Json<SetIn>,
+) -> XResult<Json<J>> {
     require_admin(&creds)?;
     let relays = match &inp.relays {
         Some(Some(r)) => Some(Some(validate_relays(r)?)),
@@ -595,7 +603,9 @@ async fn set_crawlers(State(app): AppState, Auth(creds): Auth, Json(inp): Json<S
     .await
     .map_err(store_error)?;
     metrics::init_request_crawl(c.relays(&doc));
-    tracing::info!(target: "vlpds::audit", action = "crawlers.update", relays = ?c.relays(&doc), interval_secs = c.interval(&doc).as_secs(), "relay crawl config updated");
+    let detail = json!({"relays": c.relays(&doc), "intervalSecs": c.interval(&doc).as_secs()});
+    let who = Who::of(&creds, inp.actor.as_deref(), ip);
+    audit(&app, &who, "crawlers.set", Some(&SubjectRef::other("config", "crawlers")), None, None, Some(detail)).await?;
     // a relay added here is due at once; peers' loops see it within POLL
     c.wake.notify_one();
     c.hints.lock().refreshed = None;
@@ -607,6 +617,8 @@ struct RequestCrawlIn {
     /// Hostnames or URLs (default: the configured relays).
     #[serde(default)]
     relays: Vec<String>,
+    #[serde(default)]
+    actor: Option<String>,
 }
 
 /// Asks now, whatever the throttle, and reports each relay's result.
@@ -615,10 +627,12 @@ struct RequestCrawlIn {
 async fn request_crawl(
     State(app): AppState,
     Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
     body: Option<Json<RequestCrawlIn>>,
 ) -> XResult<Json<J>> {
     require_admin(&creds)?;
-    let given = validate_relays(&body.map(|Json(b)| b).unwrap_or_default().relays)?;
+    let inp = body.map(|Json(b)| b).unwrap_or_default();
+    let given = validate_relays(&inp.relays)?;
     let relays = if given.is_empty() {
         let (doc, _) = load(&app.store).await.map_err(store_error)?;
         app.crawlers.relays(&doc).to_vec()
@@ -646,7 +660,11 @@ async fn request_crawl(
             v
         })
         .collect();
-    tracing::info!(%hostname, relays = out.len(), ok = results.iter().filter(|(_, s)| s.ok).count(), "admin requestCrawl");
+    let ok = results.iter().filter(|(_, s)| s.ok).count();
+    let detail = json!({"relays": results.iter().map(|(r, _)| r).collect::<Vec<_>>(), "ok": ok});
+    let who = Who::of(&creds, inp.actor.as_deref(), ip);
+    let subject = SubjectRef::other("config", "crawlers");
+    audit(&app, &who, "crawlers.request", Some(&subject), None, None, Some(detail)).await?;
     Ok(Json(json!({"hostname": hostname, "results": out})))
 }
 

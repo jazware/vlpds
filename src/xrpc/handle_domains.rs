@@ -5,6 +5,7 @@
 
 use super::admin::require_admin;
 use super::internal::HDR as INTERNAL_HDR;
+use super::moderation::{audit, ClientIp, SubjectRef, Who};
 use super::*;
 use crate::handle_domains::{self as hd, SaveError};
 use std::collections::{BTreeMap, HashSet};
@@ -238,14 +239,20 @@ async fn nudge_peers(app: &Arc<App>) -> Vec<J> {
 #[derive(Deserialize)]
 struct AddIn {
     domain: String,
+    actor: Option<String>,
 }
 
-async fn add_handle_domain(State(app): AppState, Auth(creds): Auth, Json(inp): Json<AddIn>) -> XResult<Json<J>> {
+async fn add_handle_domain(
+    State(app): AppState,
+    Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
+    Json(inp): Json<AddIn>,
+) -> XResult<Json<J>> {
     require_admin(&creds)?;
     let domain = inp.domain.trim().to_string();
-    let by = creds.operator().unwrap_or("admin");
-    hd::add(&app.handle_domains, &app.store, &domain, by).await.map_err(save_error)?;
-    tracing::info!(target: "vlpds::audit", action = "handleDomains.add", %domain, by, node = %node_id(&app), "handle domain added");
+    let who = Who::of(&creds, inp.actor.as_deref(), ip);
+    hd::add(&app.handle_domains, &app.store, &domain, creds.operator().unwrap_or("admin")).await.map_err(save_error)?;
+    audit(&app, &who, "domain.add", Some(&SubjectRef::other("domain", &domain)), None, None, None).await?;
     let nodes = nudge_peers(&app).await;
     Ok(Json(json!({"domain": domain, "domains": rows(&app, None), "nodes": nodes})))
 }
@@ -255,11 +262,17 @@ struct RemoveIn {
     domain: String,
     #[serde(default)]
     force: bool,
+    actor: Option<String>,
 }
 
 /// Refused while accounts hold handles under the domain (or they couldn't
 /// all be counted), unless forced.
-async fn remove_handle_domain(State(app): AppState, Auth(creds): Auth, Json(inp): Json<RemoveIn>) -> XResult<Json<J>> {
+async fn remove_handle_domain(
+    State(app): AppState,
+    Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
+    Json(inp): Json<RemoveIn>,
+) -> XResult<Json<J>> {
     require_admin(&creds)?;
     let domain = inp.domain.trim().to_string();
     let names = app.handle_domains.names();
@@ -289,15 +302,9 @@ async fn remove_handle_domain(State(app): AppState, Auth(creds): Auth, Json(inp)
         });
     }
     hd::remove(&app.handle_domains, &app.store, &domain).await.map_err(save_error)?;
-    tracing::info!(
-        target: "vlpds::audit",
-        action = "handleDomains.remove",
-        %domain,
-        accounts = n,
-        force = inp.force,
-        node = %node_id(&app),
-        "handle domain removed"
-    );
+    let who = Who::of(&creds, inp.actor.as_deref(), ip);
+    let detail = json!({"accounts": n, "force": inp.force});
+    audit(&app, &who, "domain.remove", Some(&SubjectRef::other("domain", &domain)), None, None, Some(detail)).await?;
     let nodes = nudge_peers(&app).await;
     Ok(Json(json!({"domain": domain, "accounts": n, "nodes": nodes})))
 }

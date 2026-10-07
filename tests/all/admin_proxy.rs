@@ -189,4 +189,20 @@ async fn a_forward_to_the_owner_keeps_the_operator() {
     .await
     .expect("audited");
     assert_eq!(actors, [format!("{ALICE}/proxy")]);
+
+    // a reference admin method too, and a cluster-wide change
+    let body = json!({"did": acct.did, "password": "another-long-passphrase-7"});
+    let rb = post(&a, &admin, "com.atproto.admin.updateAccountPassword", &body)
+        .header(HEADER, ALICE)
+        .header("sec-fetch-site", "same-origin");
+    a.xrpc.send(rb).await.ok();
+    assert_eq!(audit_actors(&a, &acct.did, "account.password").await, [format!("{ALICE}/proxy")]);
+    let rb = post(&a, &admin, "vlpds.admin.addHandleDomain", &json!({"domain": "prx.example.net"}))
+        .header(HEADER, ALICE)
+        .header("sec-fetch-site", "same-origin");
+    a.xrpc.send(rb).await.ok();
+    let log = a.xrpc.get("vlpds.admin.getAuditLog", &[], &Auth::Admin).await.ok();
+    let e = log["entries"].as_array().unwrap().iter().find(|e| e["action"] == "domain.add").cloned().unwrap();
+    assert_eq!((&e["actor"], &e["auth"]), (&json!(ALICE), &json!("proxy")), "{e}");
+    assert_eq!(e["subject"], json!({"kind": "domain", "did": "", "id": "prx.example.net"}));
 }

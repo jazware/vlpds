@@ -2,6 +2,7 @@
 //! scripts that have no com.atproto.admin.* method (DESIGN.md "Admin CLI").
 
 use super::admin::require_admin;
+use super::moderation::{audit, ClientIp, SubjectRef, Who};
 use super::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -29,6 +30,7 @@ struct PublishIdentityIn {
     /// reference's rotate-keys).
     #[serde(default)]
     sync_plc: bool,
+    actor: Option<String>,
 }
 
 /// The reference's `sequenceIdentity`. With `syncPlc`, the repo is also
@@ -38,16 +40,26 @@ struct PublishIdentityIn {
 async fn publish_identity(
     State(app): AppState,
     Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
     Json(inp): Json<PublishIdentityIn>,
 ) -> XResult<Json<J>> {
     require_admin(&creds)?;
     let did = inp.did;
     let acct = app.account(&did).await.map_err(|_| not_found(&did))?;
+    let who = Who::of(&creds, inp.actor.as_deref(), ip);
+    let audited = |out: J| {
+        let (app, subject) = (app.clone(), SubjectRef::account(&did));
+        let detail = json!({"syncPlc": inp.sync_plc, "plcUpdated": out["plcUpdated"], "rev": out["rev"]});
+        async move {
+            audit(&app, &who, "identity.publish", Some(&subject), None, None, Some(detail)).await?;
+            Ok::<_, XrpcError>(Json(out))
+        }
+    };
     if !inp.sync_plc {
         // rewrites the unchanged row, ordered with the commits, for #identity
         let (_, after) = app.mutate_account(&did, true, false, false, |_| Ok(true)).await?;
         app.did_resolver.invalidate(&did);
-        return Ok(Json(json!({"did": did, "handle": after.handle, "plcUpdated": J::Null})));
+        return audited(json!({"did": did, "handle": after.handle, "plcUpdated": J::Null})).await;
     }
     if acct.pending_signing_key.is_some() {
         return Err(invalid("a signing key rotation is in progress for this account"));
@@ -61,7 +73,7 @@ async fn publish_identity(
     let head =
         app.account_op(&did, crate::worker::AccountOp::SigningKey(crate::worker::KeyStep::Resign { key })).await?;
     app.did_resolver.invalidate(&did);
-    Ok(Json(json!({"did": did, "handle": acct.handle, "plcUpdated": plc_updated, "rev": head.rev.to_string()})))
+    audited(json!({"did": did, "handle": acct.handle, "plcUpdated": plc_updated, "rev": head.rev.to_string()})).await
 }
 
 /// As ReplaceRepo takes it: (path, cid, bytes, blob refs).
@@ -377,14 +389,20 @@ struct RebuildIn {
     did: String,
     #[serde(default)]
     dry_run: bool,
+    actor: Option<String>,
 }
 
 /// The reference's rebuild-repo: re-derives the repo from its records under
 /// a new signed commit. The replace is guarded by the head the records were
 /// read at (`InvalidSwap` if a commit landed since: run it again). Refused
 /// when the records can't be the repo's (records lost), and for taken-down
-/// accounts.
-async fn rebuild_repo(State(app): AppState, Auth(creds): Auth, Json(inp): Json<RebuildIn>) -> XResult<Json<J>> {
+/// accounts. Audited unless a dry run.
+async fn rebuild_repo(
+    State(app): AppState,
+    Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
+    Json(inp): Json<RebuildIn>,
+) -> XResult<Json<J>> {
     require_admin(&creds)?;
     let did = inp.did;
     let ins = inspect(&app, &did).await?;
@@ -410,8 +428,17 @@ async fn rebuild_repo(State(app): AppState, Auth(creds): Auth, Json(inp): Json<R
     tracing::warn!(%did, commit = %head.commit, rev = %head.rev, "repo rebuilt from its records (admin rebuildRepo)");
     out["commit"] = json!(head.commit.to_string());
     out["rev"] = json!(head.rev.to_string());
+    let detail = json!({"records": out["records"], "commit": out["commit"], "rev": out["rev"]});
+    let who = Who::of(&creds, inp.actor.as_deref(), ip);
+    audit(&app, &who, "repo.rebuild", Some(&SubjectRef::account(&did)), None, None, Some(detail)).await?;
     out["after"] = inspect(&app, &did).await?.report;
     Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+struct RecountIn {
+    did: String,
+    actor: Option<String>,
 }
 
 /// Counts the repo's stats (repo bytes included) from a snapshot and
@@ -422,7 +449,8 @@ async fn rebuild_repo(State(app): AppState, Auth(creds): Auth, Json(inp): Json<R
 async fn recount_repo(
     State(app): AppState,
     Auth(creds): Auth,
-    Json(inp): Json<super::console::DidIn>,
+    ClientIp(ip): ClientIp,
+    Json(inp): Json<RecountIn>,
 ) -> XResult<Json<J>> {
     require_admin(&creds)?;
     let did = inp.did;
@@ -433,6 +461,9 @@ async fn recount_repo(
     let before = ins.report["stats"]["stored"].clone();
     let stats = ins.counted;
     app.account_op(&did, crate::worker::AccountOp::SetStats { stats, at_rev: ins.head.rev.0 }).await?;
+    let detail = json!({"repoBytes": stats.bytes.map(|b| b.total()), "rev": ins.head.rev.to_string()});
+    let who = Who::of(&creds, inp.actor.as_deref(), ip);
+    audit(&app, &who, "repo.recount", Some(&SubjectRef::account(&did)), None, None, Some(detail)).await?;
     Ok(Json(json!({
         "did": did,
         "before": before,

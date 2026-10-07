@@ -244,10 +244,25 @@ async fn update_rate_limits(
     require_admin(&creds)?;
     let doc: Doc = serde_json::from_value(inp.config)
         .map_err(|e| XrpcError::bad("InvalidConfig", format!("invalid config: {e}")))?;
-    let super::moderation::Who { actor, ip, .. } = super::moderation::Who::of(&creds, inp.actor.as_deref(), peer);
+    let who = super::moderation::Who::of(&creds, inp.actor.as_deref(), peer);
     let me = node_id(&app);
+    let (actor, ip) = (who.actor.clone(), who.ip.clone());
     let req = SaveReq { doc, if_version: inp.if_version, actor, ip, node: me.clone(), note: inp.note };
     let saved = runtime::save(&app.ratelimit, &app.store, req).await.map_err(save_error)?;
+    // the changes themselves are in the config's history, at this version
+    let changes = saved.history.last().map_or(0, |h| h.changes.iter().filter(|c| *c != "no changes").count());
+    let detail = json!({"version": saved.version, "changes": changes});
+    let subject = super::moderation::SubjectRef::other("config", "ratelimits");
+    super::moderation::audit(
+        &app,
+        &who,
+        "ratelimits.update",
+        Some(&subject),
+        saved.note.as_deref(),
+        None,
+        Some(detail),
+    )
+    .await?;
     // peers also re-read within REFRESH_EVERY; this makes it now
     let mut applied = vec![json!({"node": me, "configVersion": app.ratelimit.policy().version, "ok": true})];
     if let Some(c) = &app.cluster {

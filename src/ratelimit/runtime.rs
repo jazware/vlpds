@@ -322,9 +322,8 @@ pub async fn save(limiter: &Limiter, store: &Store, req: SaveReq) -> Result<Doc,
         // compile() passed above; unreachable unless validation is not pure
         return Err(SaveError::Invalid(errs));
     }
+    // the vlpds::audit line is the handler's audit entry's
     tracing::info!(
-        target: "vlpds::audit",
-        action = "ratelimits.update",
         version = doc.version,
         by = %req.actor,
         ip = req.ip.as_deref().unwrap_or("-"),

@@ -17,6 +17,7 @@ import { admin, call, errText } from '../../lib/xrpc'
 import * as act from './accountActions'
 import { useAccountsVersion, type Quota, type Who } from './accountActions'
 import { accountState, TwoFactor } from './Accounts'
+import { AuditAction } from './auditUi'
 import { NodeTag } from './clusterUi'
 import { addOverrideDialog, overrideFor } from './limitsUi'
 import { MailChip, mailId, mailOutcome, mailTone, purposeLabel } from './Mail'
@@ -774,7 +775,7 @@ function Moderation({ did, status, mode }: { did: string; status?: SubjectStatus
           </div>
           {audit.data.map((e) => (
             <RRow key={e.id} x={iso(e.at)} title={e.reason}>
-              <span className="mono sm">{e.action}</span>
+              <AuditAction a={e.action} />
               <span className="nm t2" title={authName(e.auth)}>{e.actor}</span>
             </RRow>
           ))}

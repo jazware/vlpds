@@ -5,9 +5,10 @@ import { Chip, Copy, GLYPH, Json, KV, Meter, RRow, Sec, Spinner, Src, Strip } fr
 import { openPanel, panelParam } from '../../components/console/nav'
 import { registerPalette } from '../../components/console/Palette'
 import { toast } from '../../components/console/toast'
-import { ago, authName, authShort, fmtBytes, plural } from '../../lib/console/fmt'
+import { ago, auditAction, auditSubjectText, authName, authShort, fmtBytes, plural } from '../../lib/console/fmt'
 import {
   auditSeen,
+  isOperatorSubject,
   CASE_STATUSES,
   CASE_TONE,
   createCase,
@@ -39,6 +40,7 @@ import { useAction, useLoad } from '../../lib/hooks'
 import { Link, navigate, useSearch } from '../../lib/router'
 import { admin, errText } from '../../lib/xrpc'
 import { Ops } from './accountDetail'
+import { AuditAction, auditLinks, OperatorSubjectLink } from './auditUi'
 import { openAccount, Who } from './peopleUi'
 import { spaceUrl } from './Spaces'
 
@@ -555,8 +557,8 @@ registerDetail('subject', {
         {audit.data?.length ? (
           audit.data.map((e) => (
             <RRow key={e.id} onClick={() => openPanel('audit', e.id)} x={ago(ISO(e.at))}>
-              <span className="mono sm">{e.action}</span>
-              <span className="nm t2">{e.reason ?? (e.subject ? shortUri(subjectQuery(e.subject)) : '')}</span>
+              <AuditAction a={e.action} />
+              <span className="nm t2">{e.reason ?? (e.subject ? shortUri(auditSubjectText(e.subject)) : '')}</span>
             </RRow>
           ))
         ) : (
@@ -833,8 +835,6 @@ registerDetail('case', {
 
 // ---------------------------------------------------------------- audit entry slide-over
 
-export const auditTone = (a: string) => (a === 'takedown' || a === 'blob.purge' ? 'err' : a === 'restore' ? 'ok' : a.includes('reset') || a.includes('clear') ? 'warn' : 'plain')
-
 registerDetail('audit', {
   kind: 'Audit entry',
   section: 'moderation',
@@ -849,10 +849,12 @@ registerDetail('audit', {
         loading: l.loading,
         missing: l.error ? errText(l.error) : 'Not among the newest 200 entries.',
       }
-    const t = auditTone(e.action)
+    const { label, tone } = auditAction(e.action)
+    const s = e.subject
+    const links = auditLinks(e)
     return {
-      title: <span className="mono">{e.action}</span>,
-      chip: t === 'plain' ? undefined : <Chip k={t}>{e.action}</Chip>,
+      title: label,
+      chip: tone ? <Chip k={tone}>{e.action}</Chip> : undefined,
       foot: <Src>getAuditLog</Src>,
       body: (
         <>
@@ -866,20 +868,21 @@ registerDetail('audit', {
                 ['Action', <span className="mono">{e.action}</span>],
                 [
                   'Subject',
-                  e.subject ? (
-                    e.subject.kind === 'spaceRepo' ? (
-                      <SubjectLabel s={e.subject} />
-                    ) : (
-                      <button type="button" className="cxp-link" onClick={() => reviewSubject(e.subject!)}>
-                        <SubjectLabel s={e.subject} />
-                      </button>
-                    )
-                  ) : (
+                  !s ? (
                     '—'
+                  ) : isOperatorSubject(s) ? (
+                    <OperatorSubjectLink s={s} />
+                  ) : s.kind === 'spaceRepo' ? (
+                    <SubjectLabel s={s} />
+                  ) : (
+                    <button type="button" className="cxp-link" onClick={() => reviewSubject(s)}>
+                      <SubjectLabel s={s} />
+                    </button>
                   ),
                 ],
                 ['Reason', e.reason ?? '—'],
                 ['Case', e.caseId ? <button type="button" className="cxp-link mono" onClick={() => openPanel('case', e.caseId!)}>{e.caseId}</button> : '—'],
+                ...links.map(([to, text]): [string, ReactNode] => ['See', <Link to={to}>{text}</Link>]),
                 ['Id', <Copy text={e.id} />],
               ]}
             />

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { DataTable, type Col } from '../../components/console/DataTable'
 import { Chip, Empty, ErrorState, Loading, PageHead, Panel, Seg, Src, Tiles } from '../../components/console/kit'
 import { panelParam } from '../../components/console/nav'
-import { ago, authShort, fmtBytes } from '../../lib/console/fmt'
+import { ago, auditSubjectText, authShort, fmtBytes } from '../../lib/console/fmt'
 import {
   CASE_STATUSES,
   CASE_TONE,
@@ -21,7 +21,8 @@ import {
 } from '../../lib/console/moderation'
 import { useLoad } from '../../lib/hooks'
 import { navigate, useHash, useSearch } from '../../lib/router'
-import { auditTone, confirmModerate, newCaseDialog, reviewSubject, SubjectLabel } from './moderationUi'
+import { AuditAction } from './auditUi'
+import { confirmModerate, newCaseDialog, reviewSubject, SubjectLabel } from './moderationUi'
 import { AccountLink, Who } from './peopleUi'
 
 // Moderation: look up a subject, the cases queue, active takedowns and the audit log. Cases,
@@ -248,7 +249,7 @@ function AuditPanel({ v }: { v: number }) {
       right={<Seg label="Entries" value={scope} onChange={setScope} options={[{ v: 'all', label: 'all' }, { v: 'spaces', label: 'spaces' }]} />}
       foot={
         <>
-          <span>Every takedown, restore, purge, case change, quota change, factor reset and read of space data: who, from where, why.</span>
+          <span>Every operator change (takedowns, account and key changes, invites, mail, shards, domains, limits and relays) and every read of space data: who, how they signed in, from where, why.</span>
           {rows.length >= limit && limit < 200 && (
             <button type="button" className="cx-linklike" style={{ marginLeft: 'auto' }} onClick={() => setLimit((n) => Math.min(200, n * 2))}>
               Show more
@@ -283,17 +284,14 @@ function AuditPanel({ v }: { v: number }) {
             {
               id: 'act',
               label: 'Action',
-              render: (e) => {
-                const t = auditTone(e.action)
-                return t === 'plain' ? <span className="mono sm">{e.action}</span> : <Chip k={t}>{e.action}</Chip>
-              },
+              render: (e) => <AuditAction a={e.action} />,
             },
             {
               id: 'subj',
               label: 'Subject',
               className: 'trunc',
               style: { maxWidth: 220 },
-              render: (e) => (e.subject ? e.subject.kind === 'account' ? <Who did={e.subject.did} /> : <span className="mono sm t2">{shortUri(subjectQuery(e.subject))}</span> : <span className="muted">{e.reason ?? '—'}</span>),
+              render: (e) => (e.subject ? e.subject.kind === 'account' ? <Who did={e.subject.did} /> : <span className="mono sm t2">{shortUri(auditSubjectText(e.subject))}</span> : <span className="muted">{e.reason ?? '—'}</span>),
             },
           ]}
         />

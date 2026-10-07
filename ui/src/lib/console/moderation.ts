@@ -49,7 +49,11 @@ export type Case = {
   notes: { at: string; actor: string; auth?: string; ip?: string; text: string }[]
   actions: CaseAction[]
 }
-export type AuditEntry = { id: string; at: string; actor: string; auth?: string; ip?: string; node: string; action: string; subject?: SubjectRef; reason?: string; caseId?: string; detail?: any }
+/** An operator change's subject that isn't an account's (audit entries only): a shard, node, served handle domain or cluster setting. */
+export type OperatorSubject = { kind: 'shard' | 'node' | 'domain' | 'config'; id: string }
+export type AuditSubject = SubjectRef | OperatorSubject
+export const isOperatorSubject = (s: AuditSubject): s is OperatorSubject => s.kind === 'shard' || s.kind === 'node' || s.kind === 'domain' || s.kind === 'config'
+export type AuditEntry = { id: string; at: string; actor: string; auth?: string; ip?: string; node: string; action: string; subject?: AuditSubject; reason?: string; caseId?: string; detail?: any }
 export type TakedownEntry = {
   subject: SubjectRef
   reason?: string

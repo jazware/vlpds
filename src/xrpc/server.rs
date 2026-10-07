@@ -2468,7 +2468,7 @@ pub(super) const DELETING: &str = "deleting";
 #[derive(serde::Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Deleting {
-    handle: String,
+    pub handle: String,
     email: Option<String>,
     password_hash: String,
 }
@@ -2504,18 +2504,16 @@ pub(super) async fn delete_from(app: &App, did: &str) -> XResult<DeleteFrom> {
     }
 }
 
-/// Sessions, repo and account (#account deleted event), handle and email
-/// claims, private state. Retry-safe: a failure anywhere leaves either the
-/// account or its `DELETING` row, and a retry finishes from it.
-pub(super) async fn delete_account_fully(app: &App, did: &str) -> XResult<()> {
-    finish_delete(app, did, delete_from(app, did).await?, "admin", None).await
-}
-
 fn count_deleted(reason: &str) {
     crate::metrics::ACCOUNT_EVENTS.with_label_values(&["deleted"]).inc();
     crate::metrics::ACCOUNT_DELETIONS.with_label_values(&[reason]).inc();
 }
 
+/// Deletes sessions, repo and account (#account deleted event), handle and
+/// email claims, private state. Retry-safe: a failure anywhere leaves either
+/// the account or its `DELETING` row, and a retry from [`delete_from`]
+/// finishes it.
+///
 /// `reason` labels `vlpds_account_deletions_total`. `only_if` refuses the
 /// repo delete unless the account still passes it; a refused deletion
 /// leaves the account as it was.
@@ -2960,11 +2958,37 @@ struct CreateInviteCodeIn {
     for_account: Option<String>,
     /// vlpds: limit the code to handles under this served domain.
     handle_domain: Option<String>,
+    actor: Option<String>,
+}
+
+/// Admin-made codes, audited with their number and the accounts they're
+/// for (an account's DID is the subject when there's one), never the codes.
+async fn audit_invites(
+    app: &App,
+    who: &super::moderation::Who,
+    accounts: &[String],
+    codes: usize,
+    use_count: i64,
+    domain: Option<&str>,
+) -> XResult<()> {
+    use super::moderation::SubjectRef;
+    let subject = match accounts {
+        [one] if one.starts_with("did:") => Some(SubjectRef::account(one)),
+        _ => None,
+    };
+    let detail = json!({
+        "codes": codes,
+        "useCount": use_count,
+        "forAccounts": accounts.iter().take(50).collect::<Vec<_>>(),
+        "handleDomain": domain,
+    });
+    super::moderation::audit(app, who, "invites.create", subject.as_ref(), None, None, Some(detail)).await.map(|_| ())
 }
 
 async fn create_invite_code(
     State(app): AppState,
     Auth(creds): Auth,
+    super::moderation::ClientIp(ip): super::moderation::ClientIp,
     Json(inp): Json<CreateInviteCodeIn>,
 ) -> XResult<Json<J>> {
     super::admin::require_admin(&creds)?;
@@ -2973,6 +2997,8 @@ async fn create_invite_code(
     let domain = inp.handle_domain.as_deref();
     super::admin::create_invites(&app, &account, std::slice::from_ref(&code), inp.use_count, false, "admin", domain)
         .await?;
+    let who = super::moderation::Who::of(&creds, inp.actor.as_deref(), ip);
+    audit_invites(&app, &who, std::slice::from_ref(&account), 1, inp.use_count, domain).await?;
     Ok(Json(json!({"code": code})))
 }
 
@@ -2984,25 +3010,45 @@ struct CreateInviteCodesIn {
     use_count: i64,
     for_accounts: Option<Vec<String>>,
     handle_domain: Option<String>,
+    actor: Option<String>,
 }
 
 fn one() -> usize {
     1
 }
 
+/// One audit entry for the call. Accounts whose codes were made before a
+/// failure are audited with it.
 async fn create_invite_codes(
     State(app): AppState,
     Auth(creds): Auth,
+    super::moderation::ClientIp(ip): super::moderation::ClientIp,
     Json(inp): Json<CreateInviteCodesIn>,
 ) -> XResult<Json<J>> {
     super::admin::require_admin(&creds)?;
     let accounts = inp.for_accounts.unwrap_or_else(|| vec!["admin".into()]);
+    let per = inp.code_count.min(1000);
+    let domain = inp.handle_domain.as_deref();
     let mut out = Vec::new();
+    let mut done = Vec::new();
+    let mut failed = None;
     for account in accounts {
-        let codes: Vec<String> = (0..inp.code_count.min(1000)).map(|_| super::admin::gen_invite_code(&app)).collect();
-        let domain = inp.handle_domain.as_deref();
-        super::admin::create_invites(&app, &account, &codes, inp.use_count, false, "admin", domain).await?;
+        let codes: Vec<String> = (0..per).map(|_| super::admin::gen_invite_code(&app)).collect();
+        if let Err(e) =
+            super::admin::create_invites(&app, &account, &codes, inp.use_count, false, "admin", domain).await
+        {
+            failed = Some(e);
+            break;
+        }
         out.push(json!({"account": account, "codes": codes}));
+        done.push(account);
+    }
+    if !done.is_empty() {
+        let who = super::moderation::Who::of(&creds, inp.actor.as_deref(), ip);
+        audit_invites(&app, &who, &done, per * done.len(), inp.use_count, domain).await?;
+    }
+    if let Some(e) = failed {
+        return Err(e);
     }
     Ok(Json(json!({"codes": out})))
 }

@@ -1,10 +1,12 @@
 //! com.atproto.admin.*, vlpds.admin.* operator methods, invite-code storage
 //! and subject takedowns (kept in the account's partition under `sec/td/`).
 
+use super::admin_audit::{bounded_note, node_subject, ActorIn};
 use super::authn::Credentials;
+use super::moderation::{audit, ClientIp, SubjectRef, Who};
 use super::server::{
-    ctl, delete_account_fully, ext, get_json, invalid_request, normalize_handle, pmut, put_sec, recompute_status,
-    scan_private_routing, set_deactivated, set_email, set_extra, to_json_bytes, update_account,
+    ctl, delete_from, ext, finish_delete, get_json, invalid_request, normalize_handle, pmut, put_sec, recompute_status,
+    scan_private_routing, set_deactivated, set_email, set_extra, to_json_bytes, update_account, DeleteFrom,
     NEW_PASSWORD_MAX_LENGTH, TAKEDOWN,
 };
 use super::*;
@@ -64,6 +66,7 @@ struct SplitIn {
     at: Option<u32>,
     #[serde(default)]
     wait: bool,
+    actor: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -72,14 +75,32 @@ struct MergeIn {
     right: crate::slots::ShardId,
     #[serde(default)]
     wait: bool,
+    actor: Option<String>,
 }
 
-/// With `wait`, returns once the op flipped or was aborted.
-async fn reshard(app: &Arc<App>, plan: crate::reshard::Plan, wait: bool) -> XResult<Json<J>> {
+/// With `wait`, returns once the op flipped or was aborted. Audited before
+/// it's planned (the planner may die right after), and again if the plan is
+/// refused.
+async fn reshard(app: &Arc<App>, plan: crate::reshard::Plan, wait: bool, who: &Who) -> XResult<Json<J>> {
+    use crate::reshard::Plan;
     let c = cluster_of(app)?;
     let host: Arc<dyn crate::cluster::ShardHost> = app.node.clone();
     let before = c.layout().version;
-    let op = c.plan_reshard(&host, plan).await.map_err(|e| invalid_request(format!("{e:#}")))?;
+    let (action, shard, detail) = match &plan {
+        Plan::Split { shard, at } => ("shard.split", *shard, json!({"at": at})),
+        Plan::Merge { left, right } => ("shard.merge", *left, json!({"right": right})),
+    };
+    let subject = SubjectRef::other("shard", shard);
+    let started = audit(app, who, action, Some(&subject), None, None, Some(detail)).await?;
+    let op = match c.plan_reshard(&host, plan).await {
+        Ok(op) => op,
+        Err(e) => {
+            let message = format!("{e:#}");
+            let detail = json!({"failed": message, "started": started.id});
+            audit(app, who, action, Some(&subject), None, None, Some(detail)).await?;
+            return Err(invalid_request(message));
+        }
+    };
     let mut out = json!({"op": op});
     if wait {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
@@ -107,22 +128,45 @@ async fn reshard(app: &Arc<App>, plan: crate::reshard::Plan, wait: bool) -> XRes
     Ok(Json(out))
 }
 
-async fn split_shard(State(app): AppState, Auth(creds): Auth, Json(inp): Json<SplitIn>) -> XResult<Json<J>> {
+async fn split_shard(
+    State(app): AppState,
+    Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
+    Json(inp): Json<SplitIn>,
+) -> XResult<Json<J>> {
     require_admin(&creds)?;
-    reshard(&app, crate::reshard::Plan::Split { shard: inp.shard, at: inp.at }, inp.wait).await
+    let who = Who::of(&creds, inp.actor.as_deref(), ip);
+    reshard(&app, crate::reshard::Plan::Split { shard: inp.shard, at: inp.at }, inp.wait, &who).await
 }
 
-async fn merge_shards(State(app): AppState, Auth(creds): Auth, Json(inp): Json<MergeIn>) -> XResult<Json<J>> {
+async fn merge_shards(
+    State(app): AppState,
+    Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
+    Json(inp): Json<MergeIn>,
+) -> XResult<Json<J>> {
     require_admin(&creds)?;
-    reshard(&app, crate::reshard::Plan::Merge { left: inp.left, right: inp.right }, inp.wait).await
+    let who = Who::of(&creds, inp.actor.as_deref(), ip);
+    reshard(&app, crate::reshard::Plan::Merge { left: inp.left, right: inp.right }, inp.wait, &who).await
 }
 
-/// Only before it flips.
-async fn abort_reshard(State(app): AppState, Auth(creds): Auth) -> XResult<Json<J>> {
+/// Only before it flips. Audited when there was an op to abort.
+async fn abort_reshard(
+    State(app): AppState,
+    Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
+    body: Option<Json<ActorIn>>,
+) -> XResult<Json<J>> {
     require_admin(&creds)?;
     let c = cluster_of(&app)?;
     let host: Arc<dyn crate::cluster::ShardHost> = app.node.clone();
     let op = c.abort_reshard(&host).await.map_err(XrpcError::from_err)?;
+    if let Some(o) = &op {
+        let actor = body.as_ref().and_then(|Json(b)| b.actor.as_deref());
+        let detail = json!({"op": o.id, "parents": o.parents});
+        let subject = o.parents.first().map(|p| SubjectRef::other("shard", p));
+        audit(&app, &Who::of(&creds, actor, ip), "shard.abort", subject.as_ref(), None, None, Some(detail)).await?;
+    }
     Ok(Json(json!({"aborted": op, "layout": layout_json(&app)?})))
 }
 
@@ -152,8 +196,8 @@ fn not_implemented(message: &str) -> XrpcError {
     XrpcError { status: StatusCode::NOT_FOUND, error: "MethodNotImplemented".into(), message: message.into() }
 }
 
-async fn ensure_account(app: &App, did: &str) -> XResult<()> {
-    app.account(did).await.map(|_| ()).map_err(|_| invalid_request(format!("Account not found: {did}")))
+async fn ensure_account(app: &App, did: &str) -> XResult<Account> {
+    app.account(did).await.map_err(|_| invalid_request(format!("Account not found: {did}")))
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -657,11 +701,13 @@ pub(super) fn partial_fields(
 struct UpdateHandleIn {
     did: String,
     handle: String,
+    actor: Option<String>,
 }
 
 async fn update_account_handle(
     State(app): AppState,
     Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
     Json(inp): Json<UpdateHandleIn>,
 ) -> XResult<StatusCode> {
     require_admin(&creds)?;
@@ -671,8 +717,11 @@ async fn update_account_handle(
     if app.handle_domains.under(&handle).is_some() {
         super::server::ensure_service_handle(&app, &handle, true)?;
     }
-    ensure_account(&app, &inp.did).await?;
+    let before = ensure_account(&app, &inp.did).await?;
     super::identity::set_handle(&app, &inp.did, &handle, false).await?;
+    let detail = json!({"handle": handle, "previous": before.handle});
+    let who = Who::of(&creds, inp.actor.as_deref(), ip);
+    audit(&app, &who, "account.handle", Some(&SubjectRef::account(&inp.did)), None, None, Some(detail)).await?;
     Ok(StatusCode::OK)
 }
 
@@ -680,18 +729,26 @@ async fn update_account_handle(
 struct UpdateEmailIn {
     account: String,
     email: String,
+    actor: Option<String>,
 }
 
+/// Audited with the old and new addresses' domains only, as the mail log
+/// keeps them.
 async fn update_account_email(
     State(app): AppState,
     Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
     Json(inp): Json<UpdateEmailIn>,
 ) -> XResult<StatusCode> {
     require_admin(&creds)?;
     let missing = || invalid_request(format!("Account does not exist: {}", inp.account));
     let did = app.resolve_repo(&inp.account).await.map_err(|_| missing())?;
-    app.account(&did).await.map_err(|_| missing())?;
+    let before = app.account(&did).await.map_err(|_| missing())?;
     set_email(&app, &did, &inp.email).await?;
+    let domain = crate::mail::recipient_domain;
+    let detail = json!({"domain": domain(&inp.email), "previousDomain": before.email.as_deref().map(domain)});
+    let who = Who::of(&creds, inp.actor.as_deref(), ip);
+    audit(&app, &who, "account.email", Some(&SubjectRef::account(&did)), None, None, Some(detail)).await?;
     Ok(StatusCode::OK)
 }
 
@@ -699,11 +756,13 @@ async fn update_account_email(
 struct UpdatePasswordIn {
     did: String,
     password: String,
+    actor: Option<String>,
 }
 
 async fn update_account_password(
     State(app): AppState,
     Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
     Json(inp): Json<UpdatePasswordIn>,
 ) -> XResult<StatusCode> {
     require_admin(&creds)?;
@@ -712,6 +771,8 @@ async fn update_account_password(
     }
     ensure_account(&app, &inp.did).await?;
     super::server::change_password(&app, &inp.did, &inp.password).await?;
+    let who = Who::of(&creds, inp.actor.as_deref(), ip);
+    audit(&app, &who, "account.password", Some(&SubjectRef::account(&inp.did)), None, None, None).await?;
     Ok(StatusCode::OK)
 }
 
@@ -720,24 +781,37 @@ async fn update_account_password(
 struct UpdateSigningKeyIn {
     did: String,
     signing_key: Option<String>,
+    actor: Option<String>,
 }
 
 /// The PDS signs commits, so it must hold the private key: `signingKey` is
 /// a did:key reserved with server.reserveSigningKey, or omitted/"generate"
 /// for a fresh key (src/xrpc/key_rotation.rs). With a rotation pending (an
-/// earlier call failed midway), the call finishes that one instead.
+/// earlier call failed midway), the call finishes that one instead. The
+/// audit entry has the new public did:key and where the key came from.
 async fn update_account_signing_key(
     State(app): AppState,
     Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
     Json(inp): Json<UpdateSigningKeyIn>,
 ) -> XResult<Json<J>> {
     require_admin(&creds)?;
     let acct = app.account(&inp.did).await.map_err(|_| invalid_request(format!("Account not found: {}", inp.did)))?;
     let requested = inp.signing_key.as_deref().filter(|k| !k.is_empty() && *k != "generate");
+    let audited = |did_key: String, source: &'static str| {
+        let (app, who) = (app.clone(), Who::of(&creds, inp.actor.as_deref(), ip));
+        let subject = SubjectRef::account(&inp.did);
+        async move {
+            let detail = json!({"publicKey": did_key, "source": source});
+            audit(&app, &who, "account.signing_key", Some(&subject), None, None, Some(detail)).await?;
+            Ok::<_, XrpcError>(Json(json!({"signingKey": did_key})))
+        }
+    };
     if let Some(p) = &acct.pending_signing_key {
         let did_key = super::key_rotation::finish_pending(&app, &inp.did, p, requested).await?;
-        return Ok(Json(json!({"signingKey": did_key})));
+        return audited(did_key, "pending").await;
     }
+    let source = if requested.is_some() { "reserved" } else { "generated" };
     let key = match requested {
         Some(dk) => {
             if !dk.starts_with("did:key:") {
@@ -752,7 +826,7 @@ async fn update_account_signing_key(
         None => Keypair::generate(),
     };
     let did_key = super::key_rotation::rotate(&app, &inp.did, key).await?;
-    Ok(Json(json!({"signingKey": did_key})))
+    audited(did_key, source).await
 }
 
 #[derive(Deserialize)]
@@ -767,6 +841,7 @@ struct UpdateSubjectStatusIn {
     subject: J,
     takedown: Option<StatusAttr>,
     deactivated: Option<StatusAttr>,
+    actor: Option<String>,
 }
 
 enum Subject {
@@ -828,23 +903,28 @@ async fn update_subject_status(
         return Err(invalid_request("Cannot activate and takedown an account at the same time"));
     }
     let subject = parse_subject(&inp.subject)?;
+    let who = Who::of(&creds, inp.actor.as_deref(), peer);
     if let Some(td) = &inp.takedown {
-        use super::moderation::SubjectRef;
         let s = match &subject {
             Subject::Repo(did) => SubjectRef::account(did),
-            Subject::Record { uri, did, cid } => {
-                SubjectRef { kind: "record".into(), did: did.clone(), uri: Some(uri.clone()), cid: cid.clone() }
-            }
+            Subject::Record { uri, did, cid } => SubjectRef {
+                kind: "record".into(),
+                did: did.clone(),
+                uri: Some(uri.clone()),
+                cid: cid.clone(),
+                id: None,
+            },
             Subject::Blob { did, cid } => SubjectRef::blob(did, cid),
             Subject::Space { uri, did } => SubjectRef::space(uri, did),
         };
-        let who = super::moderation::Who::of(&creds, None, peer);
         let act =
             super::moderation::Action { applied: td.applied, reason: None, r#ref: td.r#ref.clone(), case_id: None };
         super::moderation::apply(&app, &s, &act, &who).await?;
     }
     if let (Some(d), Subject::Repo(did)) = (&inp.deactivated, &subject) {
         set_deactivated(&app, did, d.applied, None).await?;
+        let action = if d.applied { "account.deactivate" } else { "account.activate" };
+        audit(&app, &who, action, Some(&SubjectRef::account(did)), None, None, None).await?;
     }
     if inp.takedown.is_none() && inp.deactivated.is_none() {
         if let Subject::Repo(did) = &subject {
@@ -931,29 +1011,48 @@ async fn current_record_cid(app: &App, uri: &str) -> Option<String> {
 #[derive(Deserialize)]
 struct DeleteAccountIn {
     did: String,
+    actor: Option<String>,
 }
 
+/// Audited before anything is deleted, and again if the deletion fails
+/// (a retry finishes it, and is audited as another deletion).
 async fn delete_account(
     State(app): AppState,
     Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
     Json(inp): Json<DeleteAccountIn>,
 ) -> XResult<StatusCode> {
     require_admin(&creds)?;
-    delete_account_fully(&app, &inp.did).await.map_err(|e| match e.error.as_str() {
-        "AccountNotFound" => invalid_request(format!("Account not found: {}", inp.did)),
+    let did = inp.did.as_str();
+    let from = delete_from(&app, did).await.map_err(|e| match e.error.as_str() {
+        "AccountNotFound" => invalid_request(format!("Account not found: {did}")),
         _ => e,
     })?;
+    let (handle, retry) = match &from {
+        DeleteFrom::Account(d) => (Some(d.handle.clone()), false),
+        DeleteFrom::Leftovers(d) => (Some(d.handle.clone()), true),
+        DeleteFrom::Unreadable => (None, false),
+    };
+    let (who, subject) = (Who::of(&creds, inp.actor.as_deref(), ip), SubjectRef::account(did));
+    let detail = json!({"handle": handle, "retry": retry});
+    let started = audit(&app, &who, "account.delete", Some(&subject), None, None, Some(detail)).await?;
+    if let Err(e) = finish_delete(&app, did, from, "admin", None).await {
+        let detail = json!({"handle": handle, "failed": e.message, "started": started.id});
+        audit(&app, &who, "account.delete", Some(&subject), None, None, Some(detail)).await?;
+        return Err(e);
+    }
     Ok(StatusCode::OK)
 }
 
 #[derive(Deserialize)]
 struct AccountIn {
     account: String,
-    #[allow(dead_code)]
     note: Option<String>,
+    actor: Option<String>,
 }
 
-async fn set_account_invites_disabled(app: &App, account: &str, disabled: bool) -> XResult<()> {
+/// The account's DID and how many of its codes there are.
+async fn set_account_invites_disabled(app: &App, account: &str, disabled: bool) -> XResult<(String, usize)> {
     let did = app.resolve_repo(account).await?;
     update_account(app, &did, false, false, move |a| {
         set_extra(a, "invitesDisabled", json!(disabled));
@@ -961,27 +1060,43 @@ async fn set_account_invites_disabled(app: &App, account: &str, disabled: bool) 
     })
     .await?;
     let codes: Vec<String> = account_invites(app, &did).await?.into_iter().map(|c| c.code).collect();
-    set_invites_disabled(app, &codes, disabled).await
+    set_invites_disabled(app, &codes, disabled).await?;
+    Ok((did.to_string(), codes.len()))
+}
+
+async fn account_invites_toggle(
+    app: &App,
+    creds: &Credentials,
+    ip: Option<std::net::IpAddr>,
+    inp: AccountIn,
+    disabled: bool,
+) -> XResult<StatusCode> {
+    require_moderator(creds)?;
+    let (did, codes) = set_account_invites_disabled(app, &inp.account, disabled).await?;
+    let action = if disabled { "invites.disable_account" } else { "invites.enable_account" };
+    let who = Who::of(creds, inp.actor.as_deref(), ip);
+    let note = bounded_note(inp.note.as_deref());
+    let detail = json!({"codes": codes});
+    audit(app, &who, action, Some(&SubjectRef::account(&did)), note.as_deref(), None, Some(detail)).await?;
+    Ok(StatusCode::OK)
 }
 
 async fn disable_account_invites(
     State(app): AppState,
     Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
     Json(inp): Json<AccountIn>,
 ) -> XResult<StatusCode> {
-    require_moderator(&creds)?;
-    set_account_invites_disabled(&app, &inp.account, true).await?;
-    Ok(StatusCode::OK)
+    account_invites_toggle(&app, &creds, ip, inp, true).await
 }
 
 async fn enable_account_invites(
     State(app): AppState,
     Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
     Json(inp): Json<AccountIn>,
 ) -> XResult<StatusCode> {
-    require_moderator(&creds)?;
-    set_account_invites_disabled(&app, &inp.account, false).await?;
-    Ok(StatusCode::OK)
+    account_invites_toggle(&app, &creds, ip, inp, false).await
 }
 
 #[derive(Deserialize, Default)]
@@ -990,11 +1105,15 @@ struct DisableCodesIn {
     codes: Vec<String>,
     #[serde(default)]
     accounts: Vec<String>,
+    note: Option<String>,
+    actor: Option<String>,
 }
 
+/// Audited with how many codes and which accounts, never the codes.
 async fn disable_invite_codes(
     State(app): AppState,
     Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
     Json(inp): Json<DisableCodesIn>,
 ) -> XResult<StatusCode> {
     require_moderator(&creds)?;
@@ -1006,6 +1125,13 @@ async fn disable_invite_codes(
         codes.extend(account_invites(&app, a).await?.into_iter().map(|c| c.code));
     }
     set_invites_disabled(&app, &codes, true).await?;
+    let subject = match inp.accounts.as_slice() {
+        [one] if inp.codes.is_empty() && one.starts_with("did:") => Some(SubjectRef::account(one)),
+        _ => None,
+    };
+    let detail = json!({"codes": codes.len(), "accounts": inp.accounts.iter().take(50).collect::<Vec<_>>()});
+    let (who, note) = (Who::of(&creds, inp.actor.as_deref(), ip), bounded_note(inp.note.as_deref()));
+    audit(&app, &who, "invites.disable_codes", subject.as_ref(), note.as_deref(), None, Some(detail)).await?;
     Ok(StatusCode::OK)
 }
 
@@ -1123,16 +1249,26 @@ struct SendEmailIn {
     subject: Option<String>,
     #[allow(dead_code)]
     sender_did: Option<String>,
-    #[allow(dead_code)]
     comment: Option<String>,
+    actor: Option<String>,
 }
 
-async fn send_email(State(app): AppState, Auth(creds): Auth, Json(inp): Json<SendEmailIn>) -> XResult<Json<J>> {
+/// Audited with the recipient's domain and the comment, never the address
+/// or the message. The mail itself is in the mail log (purpose `admin`).
+async fn send_email(
+    State(app): AppState,
+    Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
+    Json(inp): Json<SendEmailIn>,
+) -> XResult<Json<J>> {
     require_moderator(&creds)?;
     let a = app.account(&inp.recipient_did).await.map_err(|_| invalid_request("Recipient not found"))?;
     let to = a.email.ok_or_else(|| invalid_request("account does not have an email address"))?;
     let subject = inp.subject.unwrap_or_else(|| "Message via your PDS".into());
     super::server::deliver_moderation(&app, &a.did, &to, &subject, &inp.content);
+    let (who, comment) = (Who::of(&creds, inp.actor.as_deref(), ip), bounded_note(inp.comment.as_deref()));
+    let detail = json!({"toDomain": crate::mail::recipient_domain(&to), "purpose": "admin"});
+    audit(&app, &who, "mail.send", Some(&SubjectRef::account(&a.did)), comment.as_deref(), None, Some(detail)).await?;
     Ok(Json(json!({"sent": true})))
 }
 
@@ -1376,6 +1512,7 @@ struct RotatePlcIn {
     #[serde(default)]
     dry_run: bool,
     shards: Option<Vec<crate::slots::ShardId>>,
+    actor: Option<String>,
 }
 
 /// The directory rate-limits.
@@ -1383,8 +1520,13 @@ const ROTATE_PLC_CONCURRENCY: usize = 4;
 
 /// Moves this node's did:plc accounts off a retired server rotation key
 /// (DESIGN.md "PLC identity"). Idempotent. `foreign`: DIDs that list none of
-/// our keys (migrated away).
-async fn rotate_plc_keys(State(app): AppState, Auth(creds): Auth, body: Option<Json<RotatePlcIn>>) -> XResult<Json<J>> {
+/// our keys (migrated away). Audited per node unless a dry run.
+async fn rotate_plc_keys(
+    State(app): AppState,
+    Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
+    body: Option<Json<RotatePlcIn>>,
+) -> XResult<Json<J>> {
     use futures::StreamExt;
     require_admin(&creds)?;
     let plc = app.plc.clone().ok_or_else(|| invalid_request("PLC registration is off on this PDS"))?;
@@ -1429,6 +1571,14 @@ async fn rotate_plc_keys(State(app): AppState, Auth(creds): Auth, body: Option<J
     );
     let failed = errors.len();
     errors.truncate(20);
+    if !dry {
+        let detail = json!({
+            "rotationKey": plc.rotation_did_key(), "accounts": accounts, "rotated": rotated,
+            "current": current, "foreign": foreign, "failed": failed, "shards": coverage["scanned"].as_array().map_or(0, Vec::len),
+        });
+        let who = Who::of(&creds, inp.actor.as_deref(), ip);
+        audit(&app, &who, "plc.rotate_keys", Some(&node_subject(&app)), None, None, Some(detail)).await?;
+    }
     Ok(Json(with_coverage(
         coverage,
         json!({
@@ -1453,6 +1603,7 @@ struct EnsureRecoveryIn {
     /// DIDs started per second (each is a directory read, plus a submit
     /// when the key is added).
     per_second: Option<f64>,
+    actor: Option<String>,
 }
 
 const ENSURE_RECOVERY_PER_SECOND: f64 = 4.0;
@@ -1461,10 +1612,11 @@ const ENSURE_RECOVERY_CHANGES_SHOWN: usize = 50;
 /// Lists `--plc-recovery-did-key` in the rotation keys of this node's
 /// did:plc accounts that lack it (accounts made before it was set, or that
 /// arrived with other keys), just ahead of the server key so keys the user
-/// added stay first. Idempotent.
+/// added stay first. Idempotent. Audited per node unless a dry run.
 async fn ensure_recovery_key(
     State(app): AppState,
     Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
     body: Option<Json<EnsureRecoveryIn>>,
 ) -> XResult<Json<J>> {
     use crate::plc::RecoveryKeyOutcome as O;
@@ -1531,6 +1683,14 @@ async fn ensure_recovery_key(
     let failed = errors.len() as u64 - full;
     tracing::info!(accounts, present, added, foreign, full, failed, dry_run = dry, recovery_key = %recovery, "ensure PLC recovery key");
     errors.truncate(20);
+    if !dry {
+        let detail = json!({
+            "recoveryKey": recovery, "accounts": accounts, "added": added, "present": present,
+            "foreign": foreign, "full": full, "failed": failed, "shards": coverage["scanned"].as_array().map_or(0, Vec::len),
+        });
+        let who = Who::of(&creds, inp.actor.as_deref(), ip);
+        audit(&app, &who, "plc.recovery_key", Some(&node_subject(&app)), None, None, Some(detail)).await?;
+    }
     Ok(Json(with_coverage(
         coverage,
         json!({
@@ -1566,11 +1726,18 @@ struct RewrapIn {
     #[serde(default)]
     check_versions: bool,
     shards: Option<Vec<crate::slots::ShardId>>,
+    actor: Option<String>,
 }
 
 /// Rewraps this node's secrets at rest (signing keys, reserved keys, TOTP)
-/// under the current KEK (DESIGN.md "Secrets at rest"). Idempotent.
-async fn rewrap_secrets(State(app): AppState, Auth(creds): Auth, body: Option<Json<RewrapIn>>) -> XResult<Json<J>> {
+/// under the current KEK (DESIGN.md "Secrets at rest"). Idempotent. Audited
+/// per node with the counts and the KEK's id unless a dry run.
+async fn rewrap_secrets(
+    State(app): AppState,
+    Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
+    body: Option<Json<RewrapIn>>,
+) -> XResult<Json<J>> {
     use crate::secrets::Purpose;
     use futures::StreamExt;
     require_admin(&creds)?;
@@ -1692,6 +1859,14 @@ async fn rewrap_secrets(State(app): AppState, Auth(creds): Auth, body: Option<Js
     );
     let failed = errors.len();
     errors.truncate(20);
+    if !dry {
+        let detail = json!({
+            "kek": app.secrets.current_kid(), "accounts": accounts, "signingKeys": keys, "totpSecrets": totp,
+            "reservedKeys": reserved, "failed": failed, "shards": coverage["scanned"].as_array().map_or(0, Vec::len),
+        });
+        let who = Who::of(&creds, inp.actor.as_deref(), ip);
+        audit(&app, &who, "secrets.rewrap", Some(&node_subject(&app)), None, None, Some(detail)).await?;
+    }
     Ok(Json(with_coverage(
         coverage,
         json!({

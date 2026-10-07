@@ -574,11 +574,6 @@ struct DidQ {
     did: String,
 }
 
-#[derive(Deserialize)]
-pub(super) struct DidIn {
-    pub did: String,
-}
-
 fn secs_ms(s: u64) -> u64 {
     s * 1000
 }
@@ -1278,9 +1273,15 @@ async fn get_config(State(app): AppState, Auth(creds): Auth) -> XResult<Json<J>>
 struct KickIn {
     /// The `conn` listFirehoseSubscribers shows.
     conn: String,
+    actor: Option<String>,
 }
 
-async fn kick_subscriber(State(app): AppState, Auth(creds): Auth, Json(inp): Json<KickIn>) -> XResult<Json<J>> {
+async fn kick_subscriber(
+    State(app): AppState,
+    Auth(creds): Auth,
+    ClientIp(ip): ClientIp,
+    Json(inp): Json<KickIn>,
+) -> XResult<Json<J>> {
     require_admin(&creds)?;
     let id =
         inp.conn.trim().trim_start_matches('#').parse::<u64>().map_err(|_| bad("conn: not a connection number"))?;
@@ -1290,6 +1291,8 @@ async fn kick_subscriber(State(app): AppState, Auth(creds): Auth, Json(inp): Jso
             format!("no subscriber #{id} on {} (name its node with x-vlpds-node)", node_id(&app)),
         ));
     }
-    tracing::info!(conn = id, node = %node_id(&app), "firehose subscriber kicked by the operator");
+    let who = Who::of(&creds, inp.actor.as_deref(), ip);
+    let subject = super::admin_audit::node_subject(&app);
+    audit(&app, &who, "firehose.kick", Some(&subject), None, None, Some(json!({"conn": id.to_string()}))).await?;
     Ok(Json(json!({"node": node_id(&app), "conn": id.to_string()})))
 }
