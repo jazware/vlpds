@@ -71,6 +71,24 @@ pub trait Renumber: Send + Sync + 'static {
     fn emitted(&self, keys: &[i64], first: i64, bound: i64);
 }
 
+/// Events emitted before they're in the bucket, read back from the
+/// producer's own copy (vlRelay's quorum log: its commitlog holds every
+/// committed entry above the last flush, which the bucket holds up to).
+/// Opt-in through [`Firehose::set_local_tail`], counted streams only: the
+/// backfill reads the bucket up to `floor()` and this above it.
+pub trait LocalTail: Send + Sync + 'static {
+    /// Every emitted event above this is readable here.
+    fn floor(&self) -> i64;
+    /// Events in (`after`, `until`], in order, about `max_bytes` of them (at
+    /// least one if any); an error if `after` fell below the floor meanwhile.
+    fn read(
+        &self,
+        after: i64,
+        until: i64,
+        max_bytes: usize,
+    ) -> futures::future::BoxFuture<'_, anyhow::Result<Vec<(i64, Bytes)>>>;
+}
+
 pub struct MergedBatch {
     pub first: i64,
     pub last: i64,
@@ -395,6 +413,11 @@ pub struct Options {
     /// Connections with their own `vlpds_firehose_subscriber_*` series; the
     /// rest share `conn="other"`.
     pub max_labelled: usize,
+    /// None: seqs are log keys (time-based) and the stream starts at the
+    /// clock. Some(f): seqs are a plain counter (vlRelay's quorum log) and
+    /// the stream starts above `f`; a cursor past the head then gets the
+    /// counted stream's grace instead of a comparison with the clock.
+    pub start_floor: Option<i64>,
 }
 
 impl Default for Options {
@@ -409,6 +432,7 @@ impl Default for Options {
             write_idle: DEFAULT_WRITE_IDLE,
             runtime: None,
             max_labelled: DEFAULT_MAX_LABELLED,
+            start_floor: None,
         }
     }
 }
@@ -456,6 +480,7 @@ pub struct Firehose {
     ring_floor_key: AtomicI64,
     renumber: OnceLock<Arc<dyn Renumber>>,
     filter: OnceLock<Arc<dyn FrameFilter>>,
+    local_tail: OnceLock<Arc<dyn LocalTail>>,
     /// False while renumbered and not anchored yet: nothing is served.
     ready: watch::Sender<bool>,
     /// The merged stream's start floor F: events <= F are only served by the
@@ -493,11 +518,13 @@ pub struct Firehose {
     /// `max_labelled`.
     labelled: AtomicUsize,
     max_labelled: usize,
+    /// Seqs are a counter, not time (`Options::start_floor`).
+    counted: bool,
 }
 
 impl Firehose {
     pub fn new(opts: Options) -> Arc<Firehose> {
-        let floor = crate::nodelog::seq_floor(crate::tid::now_micros());
+        let floor = opts.start_floor.unwrap_or_else(|| crate::nodelog::seq_floor(crate::tid::now_micros()));
         Arc::new(Firehose {
             head: watch::channel(0).0,
             ring: RwLock::new(VecDeque::new()),
@@ -509,6 +536,7 @@ impl Firehose {
             ring_floor_key: AtomicI64::new(floor),
             renumber: OnceLock::new(),
             filter: OnceLock::new(),
+            local_tail: OnceLock::new(),
             ready: watch::channel(true).0,
             start_floor: floor,
             settled: AtomicI64::new(i64::MIN),
@@ -530,6 +558,7 @@ impl Firehose {
             gone: Default::default(),
             labelled: AtomicUsize::new(0),
             max_labelled: opts.max_labelled,
+            counted: opts.start_floor.is_some(),
         })
     }
 
@@ -595,6 +624,13 @@ impl Firehose {
     /// boundary: they reconnect and resume from their cursors.
     pub fn close_subscribers(&self) {
         self.closing.send_replace(true);
+    }
+
+    /// Backfills what the bucket doesn't hold yet from the producer (see
+    /// [`LocalTail`]). Counted streams only.
+    pub fn set_local_tail(&self, t: Arc<dyn LocalTail>) {
+        assert!(self.counted, "a local tail needs a counted stream");
+        let _ = self.local_tail.set(t);
     }
 
     /// Serves renumbered seqs (see [`Renumber`]). Set before `spawn_merger`.
@@ -818,8 +854,10 @@ impl Firehose {
                 STATS.firehose_events.fetch_add(batch.events.len() as u64, Ordering::Relaxed);
                 metrics::FIREHOSE_EVENTS.inc_by(batch.events.len() as u64);
                 metrics::FIREHOSE_BATCH.observe(batch.events.len() as f64);
-                metrics::FIREHOSE_EMIT_DELAY
-                    .observe(crate::tid::now_micros().saturating_sub((batch.key(0) >> 8) as u64) as f64 / 1e6);
+                if !fh.counted {
+                    metrics::FIREHOSE_EMIT_DELAY
+                        .observe(crate::tid::now_micros().saturating_sub((batch.key(0) >> 8) as u64) as f64 / 1e6);
+                }
                 fh.push(batch);
             }
         }));
@@ -1057,7 +1095,7 @@ impl Firehose {
             // current clock can't have been issued by us. Renumbered seqs
             // aren't: another node's stream may just be ahead of ours (an
             // edge trails the cores), so give ours a moment to get there.
-            let future = if self.renumbered() {
+            let future = if self.renumbered() || self.counted {
                 let deadline = tokio::time::Instant::now() + FUTURE_CURSOR_GRACE;
                 while c > self.last_emitted.load(Ordering::Acquire) && tokio::time::Instant::now() < deadline {
                     tokio::select! {
@@ -1195,8 +1233,11 @@ impl Firehose {
         last: &mut i64,
         shard: Option<SlotRange>,
     ) -> Result<bool, &'static str> {
-        let Some(store) = self.store.read().clone() else { return Ok(false) };
-        let reader = Reader { store, cache: self.backfill_cache.clone(), readahead_bytes: self.readahead_bytes, shard };
+        let tail = self.local_tail.get().cloned();
+        let store = self.store.read().clone();
+        if store.is_none() && tail.is_none() {
+            return Ok(false);
+        }
         let (mut overtaken, mut failures) = (0u32, 0u32);
         // a running-backfill slot, taken once there is something to read
         let mut slot: Option<BackfillSlot> = None;
@@ -1224,6 +1265,59 @@ impl Firehose {
                 slot = Some(self.backfill_slot(out).await?);
                 continue; // the floor moved while it waited
             }
+            if let Some(t) = tail.as_ref().filter(|t| *last >= t.floor()) {
+                match t.read(*last, floor_key, BACKFILL_CHANNEL * 4096).await {
+                    Ok(evs) => {
+                        let Some(&(top, _)) = evs.last() else {
+                            // nothing between the cursor and the ring
+                            *last = (*last).max(floor);
+                            continue;
+                        };
+                        let filter = self.filter.get().filter(|f| f.generation().is_some());
+                        let mut buf = Vec::new();
+                        let mut n = 0;
+                        for (_, f) in &evs {
+                            if filter.is_some_and(|x| x.skip(&frame_meta(f))) {
+                                continue;
+                            }
+                            push_message(&mut buf, OP_BINARY, f);
+                            n += 1;
+                        }
+                        if n > 0 {
+                            out.write(&buf).await?;
+                            metrics::FIREHOSE_SENT.inc_by(n as u64);
+                            metrics::FIREHOSE_BACKFILL_EVENTS.inc_by(n as u64);
+                        }
+                        *last = top;
+                        out.sent(n, buf.len(), *last);
+                        while let Ok(c) = out.ctl.try_recv() {
+                            out.control(Some(c)).await?;
+                        }
+                        failures = 0;
+                    }
+                    Err(e) => {
+                        failures += 1;
+                        if failures >= BACKFILL_ATTEMPTS {
+                            tracing::warn!(
+                                after = *last,
+                                "firehose backfill: the local tail failed, disconnecting: {e:#}"
+                            );
+                            out.close(1011).await;
+                            return Err("backfill_failed");
+                        }
+                        tokio::time::sleep(Duration::from_millis(100) * failures).await;
+                    }
+                }
+                continue;
+            }
+            let Some(store) = store.clone() else { return Ok(false) };
+            let reader =
+                Reader { store, cache: self.backfill_cache.clone(), readahead_bytes: self.readahead_bytes, shard };
+            // the bucket up to where the local tail takes over
+            let (floor, floor_key) = match &tail {
+                Some(t) => (floor.min(t.floor()), floor_key.min(t.floor())),
+                None => (floor, floor_key),
+            };
             // Where to read from, in keys, and the seq of the last event at
             // or below it (renumbered: the next event read is `seq + 1`).
             let (from, mut seq) = match &renumber {
@@ -1366,8 +1460,8 @@ impl Firehose {
     }
 }
 
-/// One subscriber's progress, for an operator's view of who is connected
-/// (opt-in: [`Firehose::upgrade_tracked`]). Updated once per batch written.
+/// One subscriber's progress, for [`Firehose::subscribers`]. Updated once
+/// per batch written.
 #[derive(Default)]
 pub struct ConnStats {
     /// Events written to the subscriber.
@@ -2927,6 +3021,61 @@ mod tests {
         assert!(live.is_empty());
         assert_eq!((gone[0].conn.as_str(), gone[0].reason.as_deref()), ("7", Some("client_gone")));
         assert!(gone[0].disconnected_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn kick_reaches_a_listed_subscriber_only() {
+        let fh = Firehose::new(Options::default());
+        let (conn, _series) = tracked(&fh, "192.0.2.45", None);
+        let entry = SubscriberEntry {
+            id: 9,
+            labelled: false,
+            ip: None,
+            user_agent: String::new(),
+            relay: None,
+            connected_at_ms: now_ms(),
+            cursor: None,
+            shard: None,
+            stats: conn.clone(),
+        };
+        let listed = Listed::new(&fh, entry);
+        assert!(!fh.kick(10), "unknown conn");
+        assert!(fh.kick(9));
+        tokio::time::timeout(Duration::from_secs(1), conn.kick.notified()).await.expect("kick delivered");
+        drop(listed);
+        assert!(!fh.kick(9), "gone");
+    }
+
+    /// A counted stream (`Options::start_floor`) starts above its floor
+    /// rather than the clock: small seqs are emitted, in order, up to the
+    /// watermark, and nothing at or below the floor is.
+    #[tokio::test]
+    async fn counted_stream_starts_at_its_floor() {
+        let fh = Firehose::new(Options { start_floor: Some(100), ..Options::default() });
+        assert_eq!(fh.position(), 100);
+        let (floor, wm) = fh.add_remote("q");
+        assert_eq!(floor, 100);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut sub = fh.subscribe();
+        let mut last = 100;
+        fh.spawn_merger(rx);
+        let ev = |s: i64| (s, Bytes::from(vec![s as u8; 8]));
+        tx.send(LogBatch { log_id: "q".into(), ordinal: 0, events: (99..=103).map(ev).collect() }).unwrap();
+        wm.store(102, Ordering::Release);
+        let got: Vec<i64> = next_batches(&fh, &mut sub, &mut last)
+            .await
+            .iter()
+            .flat_map(|b| b.events.iter().map(|(s, _)| *s))
+            .collect();
+        assert_eq!(got, vec![101, 102], "held at the watermark, nothing at or below the floor");
+        wm.store(103, Ordering::Release);
+        let got: Vec<i64> = next_batches(&fh, &mut sub, &mut last)
+            .await
+            .iter()
+            .flat_map(|b| b.events.iter().map(|(s, _)| *s))
+            .collect();
+        assert_eq!(got, vec![103]);
+        assert_eq!(fh.last_emitted.load(Ordering::Acquire), 103);
     }
 
     /// A stalled log holds the min watermark back while another keeps
