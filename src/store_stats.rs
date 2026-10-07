@@ -1144,7 +1144,7 @@ mod tests {
         assert_eq!(d.phase, "running");
         let capped = wait_phase(&a, "capped").await;
         assert_eq!((capped.requests, capped.keys), (2, 2_000));
-        assert!(matches!(start_backfill(&a, sa.clone(), opts(1), quiet()).await, Ok(_)));
+        assert!(start_backfill(&a, sa.clone(), opts(1), quiet()).await.is_ok());
         let capped = wait_phase(&a, "capped").await;
         assert_eq!((capped.requests, capped.keys), (3, 3_000), "resumed after its cursor");
         // a write during the run, after the listing passed its key: kept

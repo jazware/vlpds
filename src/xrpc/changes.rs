@@ -377,9 +377,9 @@ async fn relay(app: std::sync::Weak<App>) {
             let peers: Vec<_> = c.peers().into_iter().filter(|l| l.node_id != c.cfg.node_id).collect();
             legs.retain(|node, leg| peers.iter().any(|l| l.node_id == *node && l.addr == leg.addr));
             for l in peers {
-                if !legs.contains_key(&l.node_id) {
-                    let task = tokio::spawn(follow(Arc::downgrade(&app), l.node_id.clone(), l.addr.clone()));
-                    legs.insert(l.node_id, Leg { addr: l.addr, task });
+                if let std::collections::hash_map::Entry::Vacant(e) = legs.entry(l.node_id.clone()) {
+                    let task = tokio::spawn(follow(Arc::downgrade(&app), l.node_id, l.addr.clone()));
+                    e.insert(Leg { addr: l.addr, task });
                 }
             }
             let now = cluster_shape(c);
