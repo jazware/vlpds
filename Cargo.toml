@@ -13,6 +13,12 @@ publish = false
 # instead of one per file.
 autotests = false
 
+# crates/slate-metrics shares this lockfile and fork patch; vlrelay and
+# delta depend on it by path. bench/results holds standalone harnesses.
+[workspace]
+members = ["crates/slate-metrics"]
+exclude = ["bench", "checker-rs", "passkey-differential"]
+
 [features]
 default = ["jemalloc", "slatedb-metrics"]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
@@ -26,8 +32,9 @@ mimalloc = ["dep:mimalloc"]
 # on demand. Both use pyroscope's pprof-rs backend (the standalone pprof
 # crate's SIGPROF handler symbol collides with it), one at a time.
 profiling = ["dep:pyroscope", "dep:prost", "dep:inferno"]
-# SlateDB's own stats (block cache hits, memtable, L0, flushes) in /metrics
-slatedb-metrics = ["dep:slatedb-common"]
+# SlateDB's own stats (block cache hits, memtable, L0, flushes) in /metrics,
+# one `db` label per shard (crates/slate-metrics)
+slatedb-metrics = ["dep:slate-metrics"]
 # TEST ONLY, never in a release image: adds the test feature level
 # (src/version.rs TEST_LEVEL = newest real level + 1), which changes the
 # segment magic/header and a retain/ report field, so rolling upgrades are
@@ -85,7 +92,7 @@ mimalloc = { version = "0.1", optional = true }
 pyroscope = { version = "2.1", default-features = false, features = ["backend-pprof-rs"], optional = true }
 prost = { version = "0.14", optional = true }
 inferno = { version = "0.12", default-features = false, optional = true }
-slatedb-common = { version = "0.17", optional = true }
+slate-metrics = { path = "crates/slate-metrics", optional = true }
 prometheus = { version = "0.14", default-features = false }
 hyper = { version = "1", features = ["server", "client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service"] }
@@ -174,7 +181,7 @@ required-features = ["test-level"]
 #    returns BackgroundTaskCancelled instead of panicking.
 [patch.crates-io]
 slatedb = { git = "https://github.com/jazware/slatedb", rev = "11b27b89caeff4b6fd788fab4919aa835fe04f03" }
-# the same rev, so the metrics recorder (src/metrics.rs) and slatedb share one slatedb-common
+# the same rev, so the metrics recorder (crates/slate-metrics) and slatedb share one slatedb-common
 slatedb-common = { git = "https://github.com/jazware/slatedb", rev = "11b27b89caeff4b6fd788fab4919aa835fe04f03" }
 
 # Fat LTO + 1 codegen unit: ~4 min of a release build is this crate's

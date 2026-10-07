@@ -898,14 +898,16 @@ pub async fn open_db(store: &Store, partition: ShardId, cache: Option<&DiskCache
     let path = db_path(store, partition);
     let codec = settings.compression_codec;
     let id = cache_id(&path);
-    let db = crate::metrics::with_slatedb_metrics(Db::builder(path.clone(), store.raw.clone()))
+    let label = crate::metrics::slatedb_label(partition);
+    let db = crate::metrics::with_slatedb_metrics(Db::builder(path.clone(), store.raw.clone()), &label)
         .with_settings(settings)
         .with_db_cache(shared_db_cache(), id)
         .with_sst_block_size(SST_BLOCK_SIZE)
         .build()
         .await?;
+    crate::metrics::register_slatedb(&label, &db);
     let raw = external_sst_redirect(&db, &path, store.raw.clone());
-    spawn_compactor(&db, path, raw, codec, id);
+    spawn_compactor(&db, path, raw, codec, id, label);
     Ok(db)
 }
 
@@ -994,12 +996,16 @@ pub async fn open_reader(store: &Store, partition: ShardId) -> anyhow::Result<sl
         manifest_poll_interval: Duration::from_secs(3600),
         ..Default::default()
     };
-    Ok(slatedb::DbReader::builder(path.clone(), store.raw.clone())
+    let label = crate::metrics::slatedb_label(partition) + "_reader";
+    let b = slatedb::DbReader::builder(path.clone(), store.raw.clone())
         .with_reader_mode(slatedb::DbReaderMode::FollowLatest)
         .with_options(opts)
-        .with_db_cache(shared_db_cache(), cache_id(&path))
-        .build()
-        .await?)
+        .with_db_cache(shared_db_cache(), cache_id(&path));
+    #[cfg(feature = "slatedb-metrics")]
+    let b = b.with_metrics_recorder(crate::metrics::slatedb_recorder(&label));
+    let reader = b.build().await?;
+    crate::metrics::register_slatedb_reader(&label, &reader);
+    Ok(reader)
 }
 
 /// Cache ids only need to be distinct per DB in this process (tests open
@@ -1291,6 +1297,7 @@ fn spawn_compactor(
     raw: Arc<dyn object_store::ObjectStore>,
     codec: Option<slatedb::config::CompressionCodec>,
     cache_id: u64,
+    label: String,
 ) {
     spawn_deep_refresh(db);
     let mut status = db.subscribe();
@@ -1299,7 +1306,7 @@ fn spawn_compactor(
         let polling = compaction_polling();
         let mut fast = polling == CompactionPolling::Fast;
         loop {
-            let (compactor, worker) = match build_compactor(&path, &raw, codec, fast, cache_id).await {
+            let (compactor, worker) = match build_compactor(&path, &raw, codec, fast, cache_id, &label).await {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::error!(%path, "compaction worker failed to start: {e}");
@@ -1437,6 +1444,7 @@ async fn build_compactor(
     codec: Option<slatedb::config::CompressionCodec>,
     fast: bool,
     cache_id: u64,
+    label: &str,
 ) -> Result<(slatedb::compactor::Compactor, slatedb::CompactionWorker), slatedb::Error> {
     use slatedb::config::{CompactionWorkerOptions, CompactorOptions};
     let poll = if cfg!(test) {
@@ -1467,9 +1475,11 @@ async fn build_compactor(
         .with_db_cache(shared_db_cache(), cache_id);
     #[cfg(feature = "slatedb-metrics")]
     let (compactor, worker) = (
-        compactor.with_metrics_recorder(crate::metrics::slatedb_recorder()),
-        worker.with_metrics_recorder(crate::metrics::slatedb_recorder()),
+        compactor.with_metrics_recorder(crate::metrics::slatedb_recorder(label)),
+        worker.with_metrics_recorder(crate::metrics::slatedb_recorder(label)),
     );
+    #[cfg(not(feature = "slatedb-metrics"))]
+    let _ = label;
     Ok((compactor.build(), worker.build().await?))
 }
 

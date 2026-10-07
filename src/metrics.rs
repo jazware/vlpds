@@ -1040,19 +1040,43 @@ mod sys {
     }
 }
 
+/// The `db` label of a shard's SlateDB series (its read-only warm-up
+/// handle adds `_reader`).
+pub fn slatedb_label(shard: crate::slots::ShardId) -> String {
+    format!("shard_{}", shard.0)
+}
+
 pub fn with_slatedb_metrics<P: Into<slatedb::object_store::path::Path>>(
     b: slatedb::DbBuilder<P>,
+    db: &str,
 ) -> slatedb::DbBuilder<P> {
     #[cfg(feature = "slatedb-metrics")]
-    let b = b.with_metrics_recorder(slatedb_bridge::RECORDER.clone());
+    let b = b.with_metrics_recorder(slate_metrics::recorder(db));
+    #[cfg(not(feature = "slatedb-metrics"))]
+    let _ = db;
     b
+}
+
+/// Adds an open shard DB to the `slatedb_lsm_*` series and `slate_metrics::shapes()`.
+pub fn register_slatedb(db: &str, handle: &slatedb::Db) {
+    #[cfg(feature = "slatedb-metrics")]
+    slate_metrics::register(db, handle);
+    #[cfg(not(feature = "slatedb-metrics"))]
+    let _ = (db, handle);
+}
+
+pub fn register_slatedb_reader(db: &str, handle: &slatedb::DbReader) {
+    #[cfg(feature = "slatedb-metrics")]
+    slate_metrics::register_reader(db, handle);
+    #[cfg(not(feature = "slatedb-metrics"))]
+    let _ = (db, handle);
 }
 
 /// A SlateDB gauge (its dotted name) summed over this node's open DBs;
 /// None if no DB registered it.
 pub fn slatedb_gauge(name: &str) -> Option<i64> {
     #[cfg(feature = "slatedb-metrics")]
-    return slatedb_bridge::gauge_sum(name);
+    return slate_metrics::gauge_sum(name);
     #[allow(unreachable_code)]
     {
         let _ = name;
@@ -1061,194 +1085,8 @@ pub fn slatedb_gauge(name: &str) -> Option<i64> {
 }
 
 #[cfg(feature = "slatedb-metrics")]
-pub fn slatedb_recorder() -> std::sync::Arc<dyn slatedb_common::metrics::MetricsRecorder> {
-    slatedb_bridge::RECORDER.clone()
-}
-
-/// SlateDB's metrics recorder, bridged into the default registry as
-/// `slatedb_*` (dots -> underscores; counters get `_total`). Every shard DB
-/// registers the same names: counters and histograms are shared (they sum
-/// naturally), gauges add each DB's delta so the exported value is the sum
-/// over this node's open DBs (a closed DB's handle subtracts its share).
-#[cfg(feature = "slatedb-metrics")]
-mod slatedb_bridge {
-    use parking_lot::Mutex;
-    use prometheus::{HistogramOpts, Opts};
-    use slatedb_common::metrics::{CounterFn, GaugeFn, HistogramFn, MetricsRecorder, UpDownCounterFn};
-    use std::collections::HashMap;
-    use std::sync::atomic::{AtomicI64, Ordering};
-    use std::sync::{Arc, LazyLock};
-
-    static BRIDGE: LazyLock<Arc<Bridge>> = LazyLock::new(Default::default);
-    pub static RECORDER: LazyLock<Arc<dyn MetricsRecorder>> = LazyLock::new(|| BRIDGE.clone());
-
-    pub fn gauge_sum(name: &str) -> Option<i64> {
-        use prometheus::core::Collector;
-        let v = BRIDGE.gauges.lock().get(name)?.clone()?;
-        Some(v.collect().iter().flat_map(|f| f.get_metric()).map(|m| m.get_gauge().get_value() as i64).sum())
-    }
-
-    #[derive(Default)]
-    struct Bridge {
-        counters: Mutex<HashMap<String, Option<super::IntCounterVec>>>,
-        gauges: Mutex<HashMap<String, Option<super::IntGaugeVec>>>,
-        hists: Mutex<HashMap<String, Option<super::HistogramVec>>>,
-    }
-
-    fn prom_name(name: &str) -> String {
-        name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect()
-    }
-
-    fn help(description: &str, name: &str) -> String {
-        if description.is_empty() {
-            name.to_string()
-        } else {
-            description.to_string()
-        }
-    }
-
-    /// One vec per name (first registration's label keys win; a mismatching
-    /// later registration gets a no-op handle).
-    fn vec<V: Clone>(
-        map: &Mutex<HashMap<String, Option<V>>>,
-        name: &str,
-        labels: &[(&str, &str)],
-        make: impl FnOnce(&[&str]) -> prometheus::Result<V>,
-    ) -> Option<V> {
-        let mut m = map.lock();
-        m.entry(name.to_string())
-            .or_insert_with(|| {
-                let keys: Vec<&str> = labels.iter().map(|(k, _)| *k).collect();
-                make(&keys).ok()
-            })
-            .clone()
-    }
-
-    struct Noop;
-    impl CounterFn for Noop {
-        fn increment(&self, _: u64) {}
-    }
-    impl GaugeFn for Noop {
-        fn set(&self, _: i64) {}
-    }
-    impl UpDownCounterFn for Noop {
-        fn increment(&self, _: i64) {}
-    }
-    impl HistogramFn for Noop {
-        fn record(&self, _: f64) {}
-    }
-
-    struct Counter(prometheus::IntCounter);
-    impl CounterFn for Counter {
-        fn increment(&self, v: u64) {
-            self.0.inc_by(v);
-        }
-    }
-
-    /// This DB's share of a summed gauge.
-    struct Share {
-        g: prometheus::IntGauge,
-        last: AtomicI64,
-    }
-    impl GaugeFn for Share {
-        fn set(&self, v: i64) {
-            self.g.add(v - self.last.swap(v, Ordering::Relaxed));
-        }
-    }
-    impl UpDownCounterFn for Share {
-        fn increment(&self, v: i64) {
-            self.last.fetch_add(v, Ordering::Relaxed);
-            self.g.add(v);
-        }
-    }
-    impl Drop for Share {
-        fn drop(&mut self) {
-            self.g.sub(self.last.load(Ordering::Relaxed));
-        }
-    }
-
-    struct Hist(prometheus::Histogram);
-    impl HistogramFn for Hist {
-        fn record(&self, v: f64) {
-            self.0.observe(v);
-        }
-    }
-
-    /// Drops per-instance ids (compactor `worker_id` ULIDs: new series every
-    /// start); the instances' values aggregate instead.
-    fn keep<'a>(labels: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
-        labels.iter().filter(|(k, _)| !k.ends_with("_id")).copied().collect()
-    }
-
-    fn values<'a>(labels: &'a [(&'a str, &'a str)]) -> Vec<&'a str> {
-        labels.iter().map(|(_, v)| *v).collect()
-    }
-
-    impl Bridge {
-        fn share(&self, name: &str, description: &str, labels: &[(&str, &str)]) -> Option<Share> {
-            let labels = &keep(labels);
-            let v = vec(&self.gauges, name, labels, |keys| {
-                prometheus::register_int_gauge_vec!(Opts::new(prom_name(name), help(description, name)), keys)
-            })?;
-            let g = v.get_metric_with_label_values(&values(labels)).ok()?;
-            Some(Share { g, last: AtomicI64::new(0) })
-        }
-    }
-
-    impl MetricsRecorder for Bridge {
-        fn register_counter(&self, name: &str, description: &str, labels: &[(&str, &str)]) -> Arc<dyn CounterFn> {
-            let labels = &keep(labels);
-            let v = vec(&self.counters, name, labels, |keys| {
-                prometheus::register_int_counter_vec!(
-                    Opts::new(prom_name(name) + "_total", help(description, name)),
-                    keys
-                )
-            });
-            match v.and_then(|v| v.get_metric_with_label_values(&values(labels)).ok()) {
-                Some(c) => Arc::new(Counter(c)),
-                None => Arc::new(Noop),
-            }
-        }
-
-        fn register_gauge(&self, name: &str, description: &str, labels: &[(&str, &str)]) -> Arc<dyn GaugeFn> {
-            match self.share(name, description, labels) {
-                Some(s) => Arc::new(s),
-                None => Arc::new(Noop),
-            }
-        }
-
-        fn register_up_down_counter(
-            &self,
-            name: &str,
-            description: &str,
-            labels: &[(&str, &str)],
-        ) -> Arc<dyn UpDownCounterFn> {
-            match self.share(name, description, labels) {
-                Some(s) => Arc::new(s),
-                None => Arc::new(Noop),
-            }
-        }
-
-        fn register_histogram(
-            &self,
-            name: &str,
-            description: &str,
-            labels: &[(&str, &str)],
-            boundaries: &[f64],
-        ) -> Arc<dyn HistogramFn> {
-            let labels = &keep(labels);
-            let v = vec(&self.hists, name, labels, |keys| {
-                prometheus::register_histogram_vec!(
-                    HistogramOpts::new(prom_name(name), help(description, name)).buckets(boundaries.to_vec()),
-                    keys
-                )
-            });
-            match v.and_then(|v| v.get_metric_with_label_values(&values(labels)).ok()) {
-                Some(h) => Arc::new(Hist(h)),
-                None => Arc::new(Noop),
-            }
-        }
-    }
+pub fn slatedb_recorder(db: &str) -> std::sync::Arc<dyn slate_metrics::MetricsRecorder> {
+    slate_metrics::recorder(db)
 }
 
 pub fn method_label(path: &str) -> &str {

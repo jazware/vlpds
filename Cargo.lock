@@ -4032,6 +4032,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
+name = "slate-metrics"
+version = "0.1.0"
+dependencies = [
+ "object_store",
+ "parking_lot",
+ "prometheus",
+ "serde",
+ "serde_json",
+ "slatedb",
+ "slatedb-common",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "slatedb"
 version = "0.17.0"
 source = "git+https://github.com/jazware/slatedb?rev=11b27b89caeff4b6fd788fab4919aa835fe04f03#11b27b89caeff4b6fd788fab4919aa835fe04f03"
@@ -4882,8 +4897,8 @@ dependencies = [
  "sha1 0.11.0",
  "sha2 0.11.0",
  "shrike",
+ "slate-metrics",
  "slatedb",
- "slatedb-common",
  "thiserror 2.0.21",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",

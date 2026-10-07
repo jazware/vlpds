@@ -1,0 +1,23 @@
+[package]
+name = "slate-metrics"
+version = "0.1.0"
+edition = "2021"
+description = "SlateDB metrics in Prometheus, labeled per database, and each database's LSM shape for admin views"
+license = "MIT"
+publish = false
+
+# Kept light so any SlateDB user (vlpds, vlrelay, delta) can take it: only
+# slatedb's types, its recorder trait, and the prometheus crate.
+[dependencies]
+slatedb = { version = "0.17", default-features = false }
+slatedb-common = "0.17"
+prometheus = { version = "0.14", default-features = false }
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", default-features = false, features = ["sync"] }
+tracing = "0.1"
+
+[dev-dependencies]
+object_store = "0.14"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -58,6 +58,7 @@ RUN case "$TARGETARCH" in amd64) t=x86_64-unknown-linux-gnu ;; arm64) t=aarch64-
     && rustup show active-toolchain && rustup target add "$t" && echo "$t" > /rust-target
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY crates ./crates
 COPY lexicons ./lexicons
 # embedded by `vlpds dashboards` (src/cli/dashboards.rs)
 COPY bench/obs/grafana/dashboards ./bench/obs/grafana/dashboards
