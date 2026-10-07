@@ -154,6 +154,9 @@ async fn scan(store: &object_store::memory::InMemory, at_most: Option<u32>) -> S
             "state" => continue,
             // existence claims and content-addressed blobs: no level
             "handle" | "email" | "blob" | "blob-gc" | "blob-tmp" => continue,
+            // storage counters and the backfill cursor: observability only, a
+            // backfill rebuilds them, so an older build ignoring them is safe
+            "stats" => continue,
             other => panic!("unclassified object family {other:?} ({path}): give it a rule in level_gating.rs"),
         }
         if !matches!(family, "log") {
