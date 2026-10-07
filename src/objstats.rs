@@ -288,6 +288,7 @@ impl ObjectStore for Counting {
         req.finish(&r);
         Ok(Box::new(CountingUpload {
             inner: r?,
+            latency: self.latency,
             comp,
             client: self.client,
             stats: self.stats.clone(),
@@ -395,6 +396,7 @@ impl ObjectStore for Counting {
 #[derive(Debug)]
 struct CountingUpload {
     inner: Box<dyn MultipartUpload>,
+    latency: Option<Latency>,
     comp: &'static str,
     client: &'static str,
     stats: Option<Arc<crate::store_stats::StoreStats>>,
@@ -410,7 +412,13 @@ impl MultipartUpload for CountingUpload {
         bytes("up", self.comp, self.client, data.content_length() as u64);
         self.size += data.content_length() as u64;
         let part = self.inner.put_part(data);
+        let latency = self.latency;
         Box::pin(async move {
+            // a part is a PUT: a slow bucket holds each one, and the
+            // writer's buffered parts with it
+            if let Some(l) = latency {
+                sleep_lognormal(l.write_ms, l.sigma).await;
+            }
             let r = part.await;
             req.finish(&r);
             r
