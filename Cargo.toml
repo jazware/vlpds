@@ -169,10 +169,13 @@ required-features = ["test-level"]
 #    ~10 allocations per SST section a get touches (~16% fewer instructions
 #    per cached get in the fork's alloc bench). MetaCache and BlockCache use
 #    the default peek, their get_*.
+# 7. SafeSender: a send into a channel whose receiving task was dropped
+#    without a recorded close result (a runtime shut down under an open DB)
+#    returns BackgroundTaskCancelled instead of panicking.
 [patch.crates-io]
-slatedb = { git = "https://github.com/jazware/slatedb", rev = "cec4b86fad717081fca9e9522c498c0269087cf8" }
+slatedb = { git = "https://github.com/jazware/slatedb", rev = "11b27b89caeff4b6fd788fab4919aa835fe04f03" }
 # the same rev, so the metrics recorder (src/metrics.rs) and slatedb share one slatedb-common
-slatedb-common = { git = "https://github.com/jazware/slatedb", rev = "cec4b86fad717081fca9e9522c498c0269087cf8" }
+slatedb-common = { git = "https://github.com/jazware/slatedb", rev = "11b27b89caeff4b6fd788fab4919aa835fe04f03" }
 
 # Fat LTO + 1 codegen unit: ~4 min of a release build is this crate's
 # single-threaded optimization and LTO, but cheaper settings cost runtime
