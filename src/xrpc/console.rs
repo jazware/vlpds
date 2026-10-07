@@ -2,7 +2,8 @@
 //! them (docs/operations/admin-console.md, "Console API"): accounts with their repo stats, an
 //! account's sign-in security, sessions and recent repo events, each node's
 //! metrics, log segments, mail and factor lockouts, the effective config,
-//! and kicking a firehose subscriber. Admin token only.
+//! and kicking a firehose subscriber. Admin only: the token, or an operator
+//! a proxy named on the admin listener (getSession says which).
 //!
 //! Per-account calls name the account as `did` and are routed to its owner
 //! (crate::forward). Per-node reads gather every live peer over the
@@ -18,6 +19,7 @@ use std::collections::{BinaryHeap, HashMap};
 
 pub fn routes() -> Router<Arc<App>> {
     Router::new()
+        .route("/xrpc/vlpds.admin.getSession", get(get_session))
         .route("/xrpc/vlpds.admin.listAccounts", get(list_accounts))
         .route("/xrpc/vlpds.admin.getAccountSecurity", get(get_account_security))
         .route("/xrpc/vlpds.admin.listSessions", get(list_sessions))
@@ -31,6 +33,16 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/xrpc/vlpds.admin.clearLockout", post(clear_lockout))
         .route("/xrpc/vlpds.admin.getConfig", get(get_config))
         .route("/xrpc/vlpds.admin.kickSubscriber", post(kick_subscriber))
+}
+
+/// How the caller got in: `token`, or `proxy` with the operator's login.
+/// The console asks first, without a token, to skip its token form.
+async fn get_session(Auth(creds): Auth) -> XResult<Json<J>> {
+    require_admin(&creds)?;
+    Ok(Json(match creds.operator() {
+        Some(login) => json!({"auth": "proxy", "operator": login}),
+        None => json!({"auth": "token"}),
+    }))
 }
 
 pub fn internal_routes() -> Router<Arc<App>> {
@@ -758,14 +770,6 @@ struct RevokeSessionsIn {
     actor: Option<String>,
 }
 
-fn who(actor: Option<String>, ip: Option<std::net::IpAddr>) -> Who {
-    let actor = actor
-        .map(|a| a.trim().chars().take(64).collect::<String>())
-        .filter(|a| !a.is_empty())
-        .unwrap_or_else(|| "admin".into());
-    Who { actor, ip: ip.map(|i| i.to_string()) }
-}
-
 fn reason_of(r: &Option<String>) -> XResult<Option<String>> {
     let r = r.as_deref().map(str::trim).filter(|r| !r.is_empty());
     if r.is_some_and(|r| r.chars().count() > 2000) {
@@ -816,7 +820,7 @@ async fn revoke_sessions(
     let detail = json!({"all": inp.ids.is_none(), "oauth": oauth, "legacy": legacy});
     let e = audit(
         &app,
-        &who(inp.actor, ip),
+        &Who::of(&creds, inp.actor.as_deref(), ip),
         "sessions.revoke",
         Some(&SubjectRef::account(did)),
         reason.as_deref(),
@@ -857,7 +861,7 @@ async fn revoke_app_password(
     }
     let e = audit(
         &app,
-        &who(inp.actor, ip),
+        &Who::of(&creds, inp.actor.as_deref(), ip),
         "app_password.revoke",
         Some(&SubjectRef::account(&inp.did)),
         reason.as_deref(),
@@ -1230,9 +1234,16 @@ async fn clear_lockout(
     if !done {
         return Err(crate::totp::conflict());
     }
-    let e =
-        audit(&app, &who(inp.actor, ip), "lockout.clear", Some(&SubjectRef::account(did)), Some(&reason), None, None)
-            .await?;
+    let e = audit(
+        &app,
+        &Who::of(&creds, inp.actor.as_deref(), ip),
+        "lockout.clear",
+        Some(&SubjectRef::account(did)),
+        Some(&reason),
+        None,
+        None,
+    )
+    .await?;
     Ok(Json(json!({"did": did, "auditId": e.id})))
 }
 

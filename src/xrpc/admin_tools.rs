@@ -467,18 +467,7 @@ async fn check_space(
     if check::authority(&q.space).is_none() {
         return Err(invalid(format!("not a space URI: {}", q.space)));
     }
-    let who = super::moderation::Who {
-        actor: q
-            .actor
-            .as_deref()
-            .map(str::trim)
-            .filter(|a| !a.is_empty())
-            .unwrap_or("admin")
-            .chars()
-            .take(64)
-            .collect(),
-        ip: ip.map(|i| i.to_string()),
-    };
+    let who = super::moderation::Who::of(&creds, q.actor.as_deref(), ip);
     let subject = super::moderation::SubjectRef::space_repo(&q.space, &q.did);
     let reason = q.reason.as_deref().map(str::trim).filter(|r| !r.is_empty());
     let detail = json!({"space": q.space, "repo": q.did, "method": "checkSpace"});

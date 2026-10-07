@@ -1,13 +1,13 @@
-import { useState, type JSX, type ReactNode } from 'react'
+import { useEffect, useState, type JSX, type ReactNode } from 'react'
 import '../../console.css'
 import { DetailPage, detailKind } from '../../components/console/Drawer'
 import { Empty } from '../../components/console/kit'
 import { Shell } from '../../components/console/Shell'
 import { SECTION, sectionOf, type Section } from '../../components/console/sections'
 import { ErrorNotice, Field, Spinner, Topbar } from '../../components/ui'
-import { useAdminToken } from '../../lib/hooks'
+import { useAdminUnlock } from '../../lib/hooks'
 import { Link, match } from '../../lib/router'
-import { basic, call, setAdminToken } from '../../lib/xrpc'
+import { basic, call, setAdminOperator, setAdminToken, XrpcError } from '../../lib/xrpc'
 import { Accounts } from './Accounts'
 import { Cluster } from './Cluster'
 import './clusterDetails'
@@ -25,7 +25,8 @@ import { SpaceByUri, Spaces } from './Spaces'
 import { Storage } from './Storage'
 import './systemDetails'
 
-// The operator console: the token gate, then the shell around one page per route. Sections
+// The operator console: the gate (a proxy's sign-in, else the token), then the shell around one
+// page per route. Sections
 // still on their pre-console pages render them inside <Legacy> until they're rebuilt
 // (CONSOLE.md lists which).
 
@@ -88,8 +89,8 @@ function route(p: string): Route {
 }
 
 export function AdminApp({ path }: { path: string }) {
-  const token = useAdminToken()
-  if (!token) return <AdminLogin />
+  const unlocked = useAdminUnlock()
+  if (!unlocked) return <AdminLogin />
   const r = route(path.replace(/\/+$/, '') || '/admin')
   return (
     <Shell section={r.section} crumbs={r.crumbs}>
@@ -98,10 +99,42 @@ export function AdminApp({ path }: { path: string }) {
   )
 }
 
+type Session = { auth: 'token' | 'proxy'; operator?: string }
+
+// Asked without a token: a proxy in front of the admin listener may already have named the
+// operator (docs/operations/admin-console.md "Sign-in through a proxy"). A 403 is a proxy
+// sign-in that was refused (not an operator, or a cross-site request): shown above the token form.
+function useProxySignIn() {
+  const [state, setState] = useState<{ checking: boolean; refused?: unknown }>({ checking: true })
+  useEffect(() => {
+    let live = true
+    call<Session>('vlpds.admin.getSession')
+      .then((s) => {
+        if (s.auth === 'proxy' && s.operator) setAdminOperator(s.operator)
+        else if (live) setState({ checking: false })
+      })
+      .catch((e) => live && setState({ checking: false, refused: e instanceof XrpcError && e.status === 403 ? e : undefined }))
+    return () => {
+      live = false
+    }
+  }, [])
+  return state
+}
+
 function AdminLogin() {
   const [token, setToken] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>()
+  const proxy = useProxySignIn()
+  if (proxy.checking)
+    return (
+      <>
+        <Topbar where="Operator console" />
+        <main className="signin">
+          <Spinner />
+        </main>
+      </>
+    )
   return (
     <>
       <Topbar where="Operator console" />
@@ -125,7 +158,7 @@ function AdminLogin() {
             >
               <h1>Operator console</h1>
               <p className="sub">Cluster health, live metrics and account administration. The token stays in this tab only.</p>
-              <ErrorNotice error={error} />
+              <ErrorNotice error={error ?? proxy.refused} />
               <Field label="Admin token" hint="The server's --admin-token (VLPDS_ADMIN_TOKEN).">
                 <input type="password" value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" required autoFocus />
               </Field>

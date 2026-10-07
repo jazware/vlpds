@@ -537,8 +537,7 @@ async fn remove_registration(
         return Err(XrpcError::bad("InvalidRequest", "service: not a registered service"));
     }
     app.partition(&space.authority)?;
-    let actor = inp.actor.as_deref().map(|a| a.trim().chars().take(64).collect::<String>()).filter(|a| !a.is_empty());
-    let who = Who { actor: actor.unwrap_or_else(|| "admin".into()), ip: ip.map(|i| i.to_string()) };
+    let who = Who::of(&creds, inp.actor.as_deref(), ip);
     let subject = SubjectRef::space(&space.uri, &space.authority);
     let detail = json!({"space": space.uri, "service": inp.service});
     let e = audit(&app, &who, "space.registration.remove", Some(&subject), Some(reason), None, Some(detail)).await?;

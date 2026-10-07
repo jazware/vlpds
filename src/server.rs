@@ -123,6 +123,9 @@ pub struct Config {
     pub cluster: Option<ClusterConfig>,
     pub rate_limits_enabled: bool,
     pub trusted_proxies: Vec<String>,
+    /// Operator identity from a proxy's header, read on the admin listener
+    /// only ([`spawn_admin_listener`]). None: token auth alone.
+    pub admin_proxy: Option<Arc<crate::admin_proxy::Settings>>,
     pub peer_connections: usize,
     /// None: a lone node, with no peer listener, no `/internal/*`, and peer
     /// calls that fail.
@@ -329,6 +332,7 @@ impl Default for Config {
             well_known_fetcher: None,
             rate_limits_enabled: true,
             trusted_proxies: Vec::new(),
+            admin_proxy: None,
             peer_connections: crate::http::DEFAULT_PEER_CONNECTIONS,
             peer_tls: None,
             rate_limit_bypass_key: None,
@@ -700,11 +704,12 @@ pub fn spawn_peer_listener(app: &Arc<xrpc::App>, listener: tokio::net::TcpListen
 }
 
 /// Stripped on [`public_router`], so a client's copy means nothing.
-const PEER_ONLY_HEADERS: [&str; 4] = [
+const PEER_ONLY_HEADERS: [&str; 5] = [
     crate::forward::FORWARDED_HEADER,
     "x-vlpds-internal",
     crate::ratelimit::CLIENT_IP_HEADER,
     crate::forward::RESEND_HEADER,
+    crate::admin_proxy::OPERATOR_HEADER,
 ];
 
 /// [`router`] without `/internal/*`, and with the peer-only headers dropped
@@ -723,6 +728,25 @@ pub fn public_router(app: &Arc<xrpc::App>) -> axum::Router {
             next.run(req).await
         },
     ))
+}
+
+/// The admin listener's router: [`public_router`] under the proxy identity
+/// layer ([`crate::admin_proxy`]), the one place `--admin-proxy-header` is
+/// read. Without `--admin-proxy-header` it is the public router.
+pub fn admin_router(app: &Arc<xrpc::App>) -> axum::Router {
+    public_router(app).layer(axum::middleware::from_fn_with_state(app.clone(), crate::admin_proxy::layer))
+}
+
+/// `--admin-listen`: the console and admin XRPC for operators, never
+/// exposed publicly. Drained at shutdown with the public listener.
+pub fn spawn_admin_listener(app: &Arc<xrpc::App>, listener: tokio::net::TcpListener) {
+    let router = admin_router(app);
+    let opts = public_serve_options(app);
+    tokio::spawn(async move {
+        if let Err(e) = serve_with(listener, router, opts).await {
+            tracing::error!("admin server exited: {e:#}");
+        }
+    });
 }
 
 const METRICS_PATHS: [&str; 2] = ["/metrics", "/debug/pprof/"];

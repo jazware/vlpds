@@ -14,8 +14,8 @@ export class AdminApiError extends Error {
 }
 
 export type AdminClient = {
-  /** The admin token (`--admin-token`). */
-  token: string
+  /** The admin token (`--admin-token`); unset behind a proxy that names the operator. */
+  token?: string
   /** Another server's origin; default this one. */
   base?: string
 }
@@ -35,7 +35,7 @@ async function call<T>(
     if (v !== undefined && v !== null && v !== '') u.set(k, String(v))
   }
   const q = u.toString()
-  const headers: Record<string, string> = { Authorization: `Basic ${btoa(`admin:${c.token}`)}` }
+  const headers: Record<string, string> = c.token ? { Authorization: `Basic ${btoa(`admin:${c.token}`)}` } : {}
   if (o.body !== undefined) headers['Content-Type'] = 'application/json'
   if (o.node) headers[NODE_HEADER] = o.node
   const r = await fetch(`${c.base ?? ''}/xrpc/${nsid}${q ? `?${q}` : ''}`, {

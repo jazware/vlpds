@@ -264,6 +264,9 @@ bounce subdomain alone.
 The audit log, cases and the list of active takedowns are objects in the bucket under
 `moderation/` (one per entry). So any node shows them, and they survive restarts, failovers and the
 account itself. Each action is also logged on the node (`target=vlpds::audit`).
+Each entry names who acted. That's the login a proxy signed in ([Sign-in through a
+proxy](admin-console.md#sign-in-through-a-proxy)), the name the console sends with the admin token
+(`admin` if none), or the moderation service's DID.
 
 ### What a takedown does
 

@@ -61,9 +61,114 @@ edges:
   Every page works this way: the charts come from `getNodeMetrics`, not `/metrics`.
 - Unlock it with the node's `--admin-token`. The console checks the token with a
   `getClusterStatus` call and keeps it in that browser tab only. Lock console forgets it.
+- Or let a proxy sign you in, with no token, as the next section shows.
 
 Every node serves the console, and any node will do. The Cluster page is that node's view of the
 cluster, and account pages are routed to each account's owner.
+
+### Sign-in through a proxy
+
+A proxy that already knows who you are can sign you in to the console. vlpds reads the operator's
+login from one header the proxy sets, so the console opens without the token form and the audit
+log names the person (`alice@example.com`) where it would say `admin`. The token keeps working
+alongside it, for the CLI, scripts and anyone the proxy can't name.
+
+Three flags turn it on, and they come together.
+
+| Flag | Example | What it does |
+|---|---|---|
+| `--admin-listen` | `0.0.0.0:2585` | A second client listener, for operators. It serves what `--listen` serves, and it's the only listener that reads the header. Never route public traffic to it. |
+| `--admin-proxy-header` | `Tailscale-User-Login` | The header that names the operator. |
+| `--admin-proxy-from` | `172.18.0.0/24` | The proxy's addresses as `--admin-listen` sees them. The header from any other address is ignored. |
+| `--admin-operators` | `alice@example.com,bob@example.com` | The logins that may sign in. Anyone else gets a 403 and the token form. |
+
+What the node does with the header:
+
+- It reads the header only on `--admin-listen`, and only from `--admin-proxy-from`. Sent to
+  `--listen`, or from anywhere else, it's dropped before anything sees it. So the proxy must
+  remove any copy the client sent and set its own (every example below does).
+- A request with an `Authorization` header is token auth, whatever else it carries.
+- The login is ambient, like a cookie, and vlpds answers every origin (CORS `*`). So a write signed
+  in this way needs `Sec-Fetch-Site: same-origin` or an `Origin` that matches the host, which
+  every browser sends from the console. A read is refused only when the browser marks it
+  cross-site. That means another site you visit can't drive the console through your browser, and
+  `curl` through the proxy can still read. Scripts that write use the token.
+- A signed-in request skips rate limits as the token does, and a call routed to an account's owner
+  carries the login with it (in `x-vlpds-operator`, which only a peer with the internal token can
+  set).
+
+On load the console calls `vlpds.admin.getSession` without a token. If the answer is
+`{"auth": "proxy", "operator": "alice@example.com"}` it opens straight away and shows who you are
+in the top bar. A 403 (a login that isn't an operator, or a cross-site request) shows its reason
+above the token form.
+
+#### Tailscale
+
+Tailscale is the worked example because it knows every device's user already. Put the console at
+`https://admin.example.com`, with an A record pointing at the node's tailnet address (DNS-only,
+not proxied by a CDN). Caddy with the [caddy-tailscale](https://github.com/tailscale/caddy-tailscale)
+module asks the local tailscaled who each connection is (`tailscale_auth`), and passes the login on.
+
+```caddyfile
+admin.example.com {
+	tls {
+		dns cloudflare {env.CF_API_TOKEN}
+	}
+	@tailnet remote_ip 100.64.0.0/10 fd7a:115c:a1e0::/48
+	handle @tailnet {
+		route {
+			# tagged devices and failed lookups get a 401 here
+			tailscale_auth
+			reverse_proxy vlpds:2585 {
+				# replaces any copy the client sent
+				header_up Tailscale-User-Login {http.auth.user.id}
+				header_up -Tailscale-User-Name
+				header_up -Tailscale-User-Profile-Pic
+			}
+		}
+	}
+	handle {
+		respond 403
+	}
+}
+```
+
+Caddy needs the module (`xcaddy build --with github.com/tailscale/caddy-tailscale`) and
+tailscaled's socket (`/var/run/tailscale/tailscaled.sock`) mounted. The node then runs with:
+
+```bash
+VLPDS_ADMIN_LISTEN=0.0.0.0:2585
+VLPDS_ADMIN_PROXY_HEADER=Tailscale-User-Login
+VLPDS_ADMIN_PROXY_FROM=172.18.0.0/24   # Caddy's network, as vlpds sees it
+VLPDS_ADMIN_OPERATORS=alice@example.com
+```
+
+Two things trip this up on a Docker host. If tailscaled masquerades what it forwards into
+containers (`tailscale set --snat-subnet-routes=false` turns that off), every client reaches Caddy
+from the bridge gateway, so `remote_ip` refuses everyone and whois can't name anyone. And
+`--admin-listen` must not be published where anything but the proxy can reach it, since every
+address in `--admin-proxy-from` can claim any login.
+
+`tailscale serve` works too, with no Caddy at all. It sets `Tailscale-User-Login` for devices that
+belong to a user and drops the copy a client sent. Point it at the admin listener on loopback and
+trust only loopback:
+
+```bash
+tailscale serve --bg --https=8443 http://127.0.0.1:2585
+# VLPDS_ADMIN_LISTEN=127.0.0.1:2585  VLPDS_ADMIN_PROXY_FROM=127.0.0.1/32
+```
+
+Port 443 isn't free on a host where Docker publishes Caddy's 443, which is why this one uses 8443.
+Trusting loopback trusts every process on the host, so use it only where nothing else runs that
+you wouldn't hand the admin token.
+
+#### Other proxies
+
+Anything that authenticates the user and sets a header works the same way. Cloudflare Access
+(`Cf-Access-Authenticated-User-Email`, behind a tunnel so that only `cloudflared` reaches the
+listener), oauth2-proxy (`X-Auth-Request-Email`) and Pomerium are common choices. Set
+`--admin-proxy-header` to that header and `--admin-proxy-from` to the proxy's address, and make
+sure the proxy overwrites the header on every request.
 
 ## Pages
 
@@ -111,7 +216,8 @@ refresh. The `#conn` number is the `conn` label of
 ## Console API
 
 The console reads these `vlpds.admin.*` methods on top of the ones the pages above use. They take
-the admin token like the rest, and the role's Caddy keeps them off the public listener. The UI's
+the admin token like the rest (or a proxy's sign-in on `--admin-listen`), and the role's Caddy
+keeps them off the public listener. The UI's
 typed client is `ui/src/lib/adminApi.ts`. Every time in an answer is unix milliseconds and every
 seq is a string, because seqs are past 2^53.
 
@@ -123,6 +229,7 @@ another one over peer mTLS.
 
 | Method | Input | Answer |
 |---|---|---|
+| `getSession` (GET) | | `{auth: "token"}`, or `{auth: "proxy", operator}` for a login a proxy named ([Sign-in through a proxy](#sign-in-through-a-proxy)). The console asks it first, without a token |
 | `listAccounts` (GET) | `q?` (handle prefix, email prefix or DID), `filter?` (`all`, `attention`, `deactivated`, `takendown`, `no2fa`, `unconfirmed`), `sort?` (`recent` or `slot`), `cursor?`, `limit?` (1-200, default 50) | `accounts`, each with its status, shard and node, email and whether it's confirmed, second factors, records, MST nodes, blobs and blob bytes from the repo's kept counts, `repoBytes` (`recordBytes` + `mstBytes`, see below), head rev and `lastCommitAt` · `counts`: `total`, `active`, `deactivated`, `takendown`, `suspended`, `unconfirmed` and `no2fa` over every account, with `approximate` while a shard's totals are loading, a node didn't answer or a shard has no owner · `cursor` while there's more · `missingShards` like `searchAccounts` |
 | `getAccountSecurity` (GET) | `did` | Passkeys (name, created, last used, synced, suspect), TOTP, email codes, recovery codes left, wrong-code counts and locks, trusted browsers, app passwords, OAuth-only and app-password switches, recent sign-ins and refused ones (`failed`: `wrong_password`, `wrong_code`, `factor_locked` or `rate_limited`, with `count` and `firstAt`) |
 | `getAccountKeys` (GET) | `did`, `refresh?` | The account's signing key and any pending one · the DID document's `verificationMethods` (from the resolver's cache, refetched with `refresh=true`), each with `matchesAccount` · for a did:plc, the directory's `rotationKeys`, each with its role (`server` for this PDS's current or retired key, `operator_recovery`, `other`). The rotation keys cost one request to the directory, so only an operator opening this asks |

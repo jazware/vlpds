@@ -243,8 +243,9 @@ struct AddIn {
 async fn add_handle_domain(State(app): AppState, Auth(creds): Auth, Json(inp): Json<AddIn>) -> XResult<Json<J>> {
     require_admin(&creds)?;
     let domain = inp.domain.trim().to_string();
-    hd::add(&app.handle_domains, &app.store, &domain, "admin").await.map_err(save_error)?;
-    tracing::info!(target: "vlpds::audit", action = "handleDomains.add", %domain, node = %node_id(&app), "handle domain added");
+    let by = creds.operator().unwrap_or("admin");
+    hd::add(&app.handle_domains, &app.store, &domain, by).await.map_err(save_error)?;
+    tracing::info!(target: "vlpds::audit", action = "handleDomains.add", %domain, by, node = %node_id(&app), "handle domain added");
     let nodes = nudge_peers(&app).await;
     Ok(Json(json!({"domain": domain, "domains": rows(&app, None), "nodes": nodes})))
 }

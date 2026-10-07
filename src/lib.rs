@@ -1,5 +1,6 @@
 #![allow(clippy::type_complexity)]
 
+pub mod admin_proxy;
 pub mod asn;
 pub mod auth;
 pub mod backfill;

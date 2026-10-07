@@ -15,7 +15,9 @@
 //! served by the receiver whatever its routing table says (no loops). It is
 //! not `x-vlpds-internal`, which would exempt forwarded requests from the
 //! owner's rate limits. The entry node also sends the client address it
-//! resolved, trusted by the owner only next to a valid marker.
+//! resolved, and the operator an admin listener's proxy named
+//! (`admin_proxy::OPERATOR_HEADER`), both trusted by the owner only next to
+//! a valid marker.
 //!
 //! Deadlines and resends of not-applied writes: DESIGN.md "Forwarding
 //! deadlines and not-applied writes".
@@ -600,9 +602,13 @@ pub async fn route(
     // a client's copy never counts; a peer's only with its valid token
     let client_ip = req.headers_mut().remove(crate::ratelimit::CLIENT_IP_HEADER);
     let resent = req.headers_mut().remove(RESEND_HEADER);
+    let operator = req.headers_mut().remove(crate::admin_proxy::OPERATOR_HEADER);
     if take_forwarded(&mut req, app) {
         if let Some(ip) = client_ip.and_then(|v| v.to_str().ok()?.trim().parse::<std::net::IpAddr>().ok()) {
             req.extensions_mut().insert(crate::ratelimit::ClientIp(ip.to_canonical()));
+        }
+        if let Some(login) = operator.as_ref().and_then(|v| v.to_str().ok()).filter(|l| !l.is_empty()) {
+            req.extensions_mut().insert(crate::admin_proxy::ProxyIdentity::Operator(login.into()));
         }
         if let Some(r) = resent.as_ref().and_then(Resend::parse) {
             req.extensions_mut().insert(r);
@@ -897,6 +903,9 @@ async fn forward(
         .or_else(|| parts.extensions.get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|c| c.0.ip()));
     if let Some(ip) = client {
         rb = rb.header(crate::ratelimit::CLIENT_IP_HEADER, ip.to_string());
+    }
+    if let Some(login) = parts.extensions.get::<crate::admin_proxy::ProxyIdentity>().and_then(|p| p.operator()) {
+        rb = rb.header(crate::admin_proxy::OPERATOR_HEADER, login);
     }
     let progress = Arc::new(Progress {
         start: Instant::now(),

@@ -27,7 +27,11 @@ pub enum Credentials {
         client_id: String,
         scopes: super::oauth::ScopeSet,
     },
-    Admin,
+    /// The admin token, or (`operator`) a login the admin listener's proxy
+    /// named ([`crate::admin_proxy`]), which the audit log records.
+    Admin {
+        operator: Option<Arc<str>>,
+    },
     /// A taken-down account's session (`allowTakendown`), accepted only by
     /// [`TAKENDOWN_METHODS`].
     Takendown {
@@ -105,7 +109,15 @@ impl Credentials {
             | Credentials::OAuth { did, .. }
             | Credentials::Takendown { did }
             | Credentials::UserServiceAuth { did } => Some(did),
-            Credentials::Admin | Credentials::ModService { .. } | Credentials::SpaceCredential { .. } => None,
+            Credentials::Admin { .. } | Credentials::ModService { .. } | Credentials::SpaceCredential { .. } => None,
+        }
+    }
+
+    /// The proxy-named operator of an admin request.
+    pub fn operator(&self) -> Option<&str> {
+        match self {
+            Credentials::Admin { operator } => operator.as_deref(),
+            _ => None,
         }
     }
 
@@ -295,7 +307,24 @@ pub fn account_scope(attr: &str, action: &str) -> String {
     }
 }
 
+/// Without an Authorization header: the operator the admin listener's proxy
+/// named, if any.
+fn proxy_operator(parts: &Parts) -> Option<XResult<Credentials>> {
+    if parts.headers.contains_key(header::AUTHORIZATION) {
+        return None;
+    }
+    Some(match parts.extensions.get::<crate::admin_proxy::ProxyIdentity>()? {
+        crate::admin_proxy::ProxyIdentity::Operator(login) => Ok(Credentials::Admin { operator: Some(login.clone()) }),
+        crate::admin_proxy::ProxyIdentity::Refused(why) => {
+            Err(XrpcError { status: StatusCode::FORBIDDEN, error: "OperatorRefused".into(), message: why.clone() })
+        }
+    })
+}
+
 pub async fn authenticate(app: &App, parts: &Parts) -> XResult<Credentials> {
+    if let Some(r) = proxy_operator(parts) {
+        return r;
+    }
     let h = parts
         .headers
         .get(header::AUTHORIZATION)
@@ -322,7 +351,7 @@ pub async fn authenticate(app: &App, parts: &Parts) -> XResult<Credentials> {
     }
     if let Some(b) = h.strip_prefix("Basic ") {
         if crate::auth::basic_admin_ok(b, &app.admin_token) {
-            return Ok(Credentials::Admin);
+            return Ok(Credentials::Admin { operator: None });
         }
         return Err(XrpcError::auth("invalid admin credentials"));
     }
@@ -459,7 +488,8 @@ impl FromRequestParts<Arc<App>> for MaybeAuth {
     type Rejection = XrpcError;
     async fn from_request_parts(parts: &mut Parts, app: &Arc<App>) -> Result<Self, Self::Rejection> {
         if parts.headers.get(header::AUTHORIZATION).is_none() {
-            return Ok(MaybeAuth(None));
+            // a refused proxy identity reads as anonymous here
+            return Ok(MaybeAuth(proxy_operator(parts).and_then(Result::ok)));
         }
         authenticate_within(app, parts).await.map(|c| MaybeAuth(Some(c)))
     }

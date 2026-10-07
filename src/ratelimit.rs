@@ -942,6 +942,10 @@ impl Cidr {
         (bits <= max).then_some(Cidr { net: ip, bits })
     }
 
+    pub fn bits(&self) -> u8 {
+        self.bits
+    }
+
     pub fn contains(&self, ip: &IpAddr) -> bool {
         fn prefix_eq(a: &[u8], b: &[u8], bits: u8) -> bool {
             let (full, rem) = ((bits / 8) as usize, bits % 8);
@@ -1430,7 +1434,9 @@ pub async fn layer(
     if !oauth_form && !oauth_endpoint && (!path.starts_with("/xrpc/") || unlimited_path(path)) {
         return next.run(req).await;
     }
-    let bypass = limiter.bypassed(req.headers());
+    // the admin token's bypass, for the operator a proxy named
+    let operator = req.extensions().get::<crate::admin_proxy::ProxyIdentity>().is_some_and(|p| p.operator().is_some());
+    let bypass = operator || limiter.bypassed(req.headers());
     let ip_addr = request_client_ip(req.headers(), req.extensions(), &limiter.trusted);
     let ip = ip_addr.map(ip_key).unwrap_or_else(|| "unknown".into());
     let route: &[&Limit] = if oauth_endpoint { &[&OAUTH_IP] } else { ip_route_limits(path) };

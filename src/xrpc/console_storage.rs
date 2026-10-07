@@ -251,14 +251,8 @@ async fn backfill_storage_stats(
     }
     // before the run: an entry written once its window is open could be
     // counted on both sides of the listing
-    let actor = inp
-        .actor
-        .map(|a| a.trim().chars().take(64).collect::<String>())
-        .filter(|a| !a.is_empty())
-        .unwrap_or_else(|| "admin".into());
     let detail = json!({"maxRequests": max, "pagesPerSecond": pps, "resume": resume});
-    audit(&app, &Who { actor, ip: ip.map(|i| i.to_string()) }, "storage.backfill", None, None, None, Some(detail))
-        .await?;
+    audit(&app, &Who::of(&creds, inp.actor.as_deref(), ip), "storage.backfill", None, None, None, Some(detail)).await?;
     let opts = ss::BackfillOpts { max_requests: max, pages_per_second: pps, restart: inp.restart };
     let doc = match ss::start_backfill(&app.store_stats, app.store.clone(), opts, broadcast).await {
         Ok(d) => d,

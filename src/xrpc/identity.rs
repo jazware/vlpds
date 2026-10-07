@@ -377,7 +377,7 @@ async fn refresh_identity(
     let (acct, info) = identity_info(&app, &inp.identifier, true).await?;
     let Some(acct) = acct else { return Ok(Json(info)) };
     let may_emit = match &creds {
-        Some(Credentials::Admin) => true,
+        Some(Credentials::Admin { .. }) => true,
         Some(c) => c.did() == Some(acct.did.as_str()) && c.allows_identity("*"),
         None => false,
     };
@@ -748,7 +748,7 @@ fn plc_signer(creds: &Credentials) -> XResult<String> {
             error: "InvalidToken".into(),
             message: "Bad token scope".into(),
         }),
-        Credentials::Admin
+        Credentials::Admin { .. }
         | Credentials::ModService { .. }
         | Credentials::UserServiceAuth { .. }
         | Credentials::SpaceCredential { .. } => Err(XrpcError::auth("user credentials required")),

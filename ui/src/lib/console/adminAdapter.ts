@@ -1,9 +1,10 @@
 import * as api from '../adminApi'
 import { AdminApiError, type AdminClient } from '../adminApi'
-import { getAdminToken, setAdminToken, XrpcError } from '../xrpc'
+import { getAdminToken, getAdminOperator, setAdminToken, XrpcError } from '../xrpc'
 import { isUnsupported } from './live'
 
-// The console's way into lib/adminApi.ts. `withAdmin` hands a call the admin token and turns its
+// The console's way into lib/adminApi.ts. `withAdmin` hands a call the admin token (none when a
+// proxy signed the operator in) and turns its
 // errors into XrpcErrors, so a 401 sends the console back to the token form and the rest of the
 // console's error handling applies. The `optional` wrappers are for the methods older vlpds builds
 // don't have: they answer { supported: false } instead of throwing, so a page can show a
@@ -12,8 +13,8 @@ import { isUnsupported } from './live'
 export type Optional<T> = { supported: true; data: T } | { supported: false; nsid: string }
 
 export async function withAdmin<T>(run: (c: AdminClient) => Promise<T>): Promise<T> {
-  const token = getAdminToken()
-  if (!token) throw new XrpcError(401, 'AuthenticationRequired', 'Enter the admin token')
+  const token = getAdminToken() ?? undefined
+  if (!token && !getAdminOperator()) throw new XrpcError(401, 'AuthenticationRequired', 'Enter the admin token')
   try {
     return await run({ token })
   } catch (e) {

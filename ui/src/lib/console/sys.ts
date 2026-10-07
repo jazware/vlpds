@@ -1,5 +1,5 @@
 import { getConfig, getStorageStats, listMail, type MetricsPoint, type NodeConfig, type StorageStats } from '../adminApi'
-import { admin, basic, getAdminToken, setAdminToken, XrpcError } from '../xrpc'
+import { admin, adminHeaders, setAdminToken, XrpcError } from '../xrpc'
 import { clusterPoll, type ClusterStatus } from './cluster'
 import { withAdmin } from './adminAdapter'
 import { createPoller, isUnsupported } from './live'
@@ -176,10 +176,10 @@ async function leasedNodes() {
 
 /** An admin GET answered by one node (the `x-vlpds-node` relay over peer mTLS); no node: this one. */
 export async function adminAt<T>(nsid: string, node: string | undefined, params?: Record<string, string>): Promise<T> {
-  const token = getAdminToken()
-  if (!token) throw new XrpcError(401, 'AuthenticationRequired', 'Enter the admin token')
+  const auth = adminHeaders()
+  if (!auth) throw new XrpcError(401, 'AuthenticationRequired', 'Enter the admin token')
   const q = params ? `?${new URLSearchParams(params)}` : ''
-  const r = await fetch(`/xrpc/${nsid}${q}`, { headers: { authorization: basic(token), ...(node ? { 'x-vlpds-node': node } : {}) } })
+  const r = await fetch(`/xrpc/${nsid}${q}`, { headers: { ...auth, ...(node ? { 'x-vlpds-node': node } : {}) } })
   const body = await r.json().catch(() => ({}))
   if (!r.ok) {
     if (r.status === 401) setAdminToken(null)

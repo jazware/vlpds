@@ -139,7 +139,7 @@ pub(super) fn require_moderator(creds: &Credentials) -> XResult<()> {
 /// The reference's `authVerifier.adminToken`.
 pub(super) fn require_admin(creds: &Credentials) -> XResult<()> {
     match creds {
-        Credentials::Admin => Ok(()),
+        Credentials::Admin { .. } => Ok(()),
         _ => Err(XrpcError::auth("admin credentials required")),
     }
 }
@@ -838,11 +838,7 @@ async fn update_subject_status(
             Subject::Blob { did, cid } => SubjectRef::blob(did, cid),
             Subject::Space { uri, did } => SubjectRef::space(uri, did),
         };
-        let actor = match &creds {
-            Credentials::ModService { iss } => iss.clone(),
-            _ => "admin".into(),
-        };
-        let who = super::moderation::Who { actor, ip: peer.map(|ip| ip.to_string()) };
+        let who = super::moderation::Who::of(&creds, None, peer);
         let act =
             super::moderation::Action { applied: td.applied, reason: None, r#ref: td.r#ref.clone(), case_id: None };
         super::moderation::apply(&app, &s, &act, &who).await?;

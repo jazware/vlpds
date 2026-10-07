@@ -1,6 +1,7 @@
 // XRPC client for the account app (session JWTs) and the operator console
-// (Basic admin:<token>). Both live in sessionStorage: they survive a reload
-// but not a closed tab.
+// (Basic admin:<token>, or nothing when a proxy in front of the admin listener
+// names the operator). Both live in sessionStorage: they survive a reload but
+// not a closed tab.
 
 export class XrpcError extends Error {
   status: number
@@ -170,9 +171,30 @@ let adminToken: string | null = (() => {
 })()
 const adminListeners = new Set<() => void>()
 
+// The operator a proxy signed in (vlpds.admin.getSession said `proxy`). Memory only: the
+// console asks again on load.
+let adminOperator: string | null = null
+
 export const getAdminToken = () => adminToken
+export const getAdminOperator = () => adminOperator
+/** What unlocks the console: the token, or a proxy's sign-in. */
+export const getAdminUnlock = () => adminToken ?? (adminOperator ? `proxy:${adminOperator}` : null)
+
+export function setAdminOperator(login: string | null) {
+  adminOperator = login
+  adminListeners.forEach((l) => l())
+}
+
+/** Headers for an admin call: the token's Basic auth, none behind a signing proxy, null when locked. */
+export function adminHeaders(): Record<string, string> | null {
+  if (adminToken) return { authorization: basic(adminToken) }
+  return adminOperator ? {} : null
+}
+
+/** null also forgets a proxy's sign-in, so a 401 sends the console back to its gate. */
 export function setAdminToken(t: string | null) {
   adminToken = t
+  if (!t) adminOperator = null
   try {
     if (t) sessionStorage.setItem(AKEY, t)
     else sessionStorage.removeItem(AKEY)
@@ -191,9 +213,9 @@ export function subscribeAdmin(l: () => void) {
 export const basic = (token: string) => `Basic ${btoa(`admin:${token}`)}`
 
 export async function admin<T = any>(nsid: string, o: CallOpts = {}): Promise<T> {
-  if (!adminToken) throw new XrpcError(401, 'AuthenticationRequired', 'Enter the admin token')
+  if (!adminHeaders()) throw new XrpcError(401, 'AuthenticationRequired', 'Enter the admin token')
   try {
-    return await call<T>(nsid, { ...o, auth: basic(adminToken) })
+    return await call<T>(nsid, { ...o, auth: adminToken ? basic(adminToken) : undefined })
   } catch (e) {
     if (e instanceof XrpcError && e.status === 401) setAdminToken(null)
     throw e

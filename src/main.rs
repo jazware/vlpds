@@ -33,6 +33,26 @@ struct Args {
     /// (public: only behind a proxy that blocks /metrics).
     #[arg(long, env = "VLPDS_METRICS_LISTEN")]
     metrics_listen: Option<String>,
+    /// The admin listener: the console and admin XRPC, as on --listen, and
+    /// the only listener that reads --admin-proxy-header. For operators
+    /// only: never route public traffic to it. Unset: none.
+    #[arg(long, env = "VLPDS_ADMIN_LISTEN")]
+    admin_listen: Option<String>,
+    /// Header naming the operator, set by the proxy in front of
+    /// --admin-listen (e.g. Tailscale-User-Login). Taken only from
+    /// --admin-proxy-from peers, only for --admin-operators logins, and never
+    /// on --listen; the admin token works as before. Unset: token only.
+    #[arg(long, env = "VLPDS_ADMIN_PROXY_HEADER", requires_all = ["admin_listen", "admin_proxy_from", "admin_operators"])]
+    admin_proxy_header: Option<String>,
+    /// The proxy's addresses (IPs or CIDRs, comma-separated) as
+    /// --admin-listen sees them; --admin-proxy-header from anywhere else is
+    /// ignored.
+    #[arg(long, env = "VLPDS_ADMIN_PROXY_FROM", value_delimiter = ',', requires = "admin_proxy_header")]
+    admin_proxy_from: Vec<String>,
+    /// Logins (comma-separated, as the proxy sends them) let in by
+    /// --admin-proxy-header; the audit log names them.
+    #[arg(long, env = "VLPDS_ADMIN_OPERATORS", value_delimiter = ',', requires = "admin_proxy_header")]
+    admin_operators: Vec<String>,
     /// The peer listener: node-to-node traffic (forwards, /internal, log
     /// streams) over mTLS only (--peer-tls-dir), with the large peer HTTP/2
     /// windows and stream count; --advertise-url names it to peers
@@ -1538,6 +1558,14 @@ async fn run(args: Args) -> anyhow::Result<()> {
         import_body_idle: vlpds::xrpc::import_stream::BODY_IDLE,
         import_body_deadline: vlpds::xrpc::import_stream::BODY_DEADLINE,
         trusted_proxies: args.trusted_proxies.clone(),
+        admin_proxy: match &args.admin_proxy_header {
+            Some(h) => Some(std::sync::Arc::new(vlpds::admin_proxy::Settings::parse(
+                h,
+                &args.admin_proxy_from,
+                &args.admin_operators,
+            )?)),
+            None => None,
+        },
         peer_connections: args.peer_connections,
         peer_tls,
         rate_limit_bypass_key: args.rate_limit_bypass_key.clone(),
@@ -1597,6 +1625,10 @@ async fn run(args: Args) -> anyhow::Result<()> {
         Some(a) => Some(bind(a, args.listen_backlog).await?),
         None => None,
     };
+    let admin_listener = match &args.admin_listen {
+        Some(a) => Some(bind(a, args.listen_backlog).await?),
+        None => None,
+    };
     let app = server::build(cfg).await?;
     if let Some(c) = app.node.shard_disk_cache() {
         tracing::info!(dir = %c.dir.display(), shard_mb = c.shard_bytes >> 20, "SST disk cache (per shard)");
@@ -1605,6 +1637,15 @@ async fn run(args: Args) -> anyhow::Result<()> {
     tracing::info!(listen = %args.listen, metrics_listen = metrics_addr.as_deref().unwrap_or("(app port)"), "vlpds serving");
     if let Some(l) = metrics_listener {
         server::spawn_metrics_listener(&app, l);
+    }
+    if let Some(l) = admin_listener {
+        server::spawn_admin_listener(&app, l);
+        let proxy = app.config.admin_proxy.as_ref().map(|p| p.header.to_string());
+        tracing::info!(
+            admin_listen = args.admin_listen.as_deref().unwrap_or(""),
+            proxy_header = proxy.as_deref().unwrap_or("(token only)"),
+            "admin listener"
+        );
     }
     vlpds::xrpc::spawn_blob_gc(app.clone());
     vlpds::xrpc::export_account_totals(&app);

@@ -124,12 +124,7 @@ async fn create_account(
         super::server::CreateAccountIn { handle: inp.handle, email: Some(inp.email), password, ..Default::default() },
     )
     .await?;
-    let actor = inp
-        .actor
-        .map(|a| a.trim().chars().take(64).collect::<String>())
-        .filter(|a| !a.is_empty())
-        .unwrap_or_else(|| "admin".into());
-    let who = Who { actor, ip: ip.map(|i| i.to_string()) };
+    let who = Who::of(&creds, inp.actor.as_deref(), ip);
     let detail = json!({"handle": acct.handle, "generatedPassword": generated.is_some()});
     let e = audit(
         &app,

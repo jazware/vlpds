@@ -6,9 +6,9 @@ import { ago, clock, dur, factorName, plural } from '../../lib/console/fmt'
 import { isSlow, lockoutsPoll, openCasesPoll, subscribersPoll } from '../../lib/console/polls'
 import { heldSignInKeys, KEY_SHORT, rlPoll, shortName } from '../../lib/console/ratelimits'
 import { crawlersPoll } from '../../lib/console/sys'
-import { setTheme, useResolvedTheme } from '../../lib/hooks'
+import { setTheme, useAdminOperator, useResolvedTheme } from '../../lib/hooks'
 import { Link, navigate, usePath } from '../../lib/router'
-import { setAdminToken } from '../../lib/xrpc'
+import { getAdminOperator, setAdminToken } from '../../lib/xrpc'
 import { closeDialog, DialogHost, isDialogOpen, openDialog } from './dialogs'
 import { detailPath, Drawer } from './Drawer'
 import { GLYPH, Kbd, Swatch, type Tone } from './kit'
@@ -97,6 +97,7 @@ function Side({ current }: { current: Section }) {
   const badges = useBadges()
   const { view } = useClusterView()
   const live = useLiveState()
+  const operator = useAdminOperator()
   let group = ''
   const v = view?.raw.version
   return (
@@ -129,12 +130,21 @@ function Side({ current }: { current: Section }) {
             <br />
           </>
         )}
-        Admin token kept in this tab only.
-        <br />
-        <button type="button" className="cx-linklike" onClick={lock}>
-          Lock console
-        </button>{' '}
-        ·{' '}
+        {operator ? (
+          <>
+            Signed in as <span className="mono">{operator}</span> by the proxy.
+            <br />
+          </>
+        ) : (
+          <>
+            Admin token kept in this tab only.
+            <br />
+            <button type="button" className="cx-linklike" onClick={lock}>
+              Lock console
+            </button>{' '}
+            ·{' '}
+          </>
+        )}
         <button type="button" className="cx-linklike" onClick={shortcutsDialog}>
           shortcuts
         </button>
@@ -232,7 +242,7 @@ function useCorePalette() {
           { group: 'Actions', title: 'Keyboard shortcuts', keys: ['?'], always: true, run: shortcutsDialog },
           { group: 'Actions', title: 'Live metrics (all charts)', desc: 'this node’s /metrics', run: () => navigate('/admin/metrics') },
           { group: 'Actions', title: live.showSources ? 'Hide data sources' : 'Show data sources', desc: 'which endpoint feeds each panel', run: toggleSources },
-          { group: 'Actions', title: 'Lock console', desc: 'forget the admin token in this tab', run: lock },
+          ...(getAdminOperator() ? [] : [{ group: 'Actions', title: 'Lock console', desc: 'forget the admin token in this tab', run: lock }]),
         ]
         const nodes: PalItem[] = (viewRef.current?.nodes ?? []).map((n) => ({
           group: 'Nodes',
@@ -349,6 +359,7 @@ export function Shell({ section, crumbs, children }: { section: Section; crumbs?
   const live = useLiveState()
   const { view } = useClusterView()
   const { theme, toggle } = useTheme()
+  const operator = useAdminOperator()
   useKeyboard(path)
   useCorePalette()
   const palOpen = usePaletteOpen()
@@ -385,6 +396,11 @@ export function Shell({ section, crumbs, children }: { section: Section; crumbs?
           <div className="cx-via" title="The console is served by any node. Account calls are routed to each account's owner.">
             via <Swatch color={self.color} />
             <span className="mono">{self.node}</span>
+          </div>
+        )}
+        {operator && (
+          <div className="cx-via" title="Signed in by the proxy in front of this node's admin listener">
+            as <span className="mono">{operator}</span>
           </div>
         )}
         <StreamChip />

@@ -65,11 +65,28 @@ impl axum::extract::FromRequestParts<Arc<App>> for ClientIp {
     }
 }
 
-/// Who acted: "admin" (or a name the console sends), the moderation
-/// service's DID, or "system" (quarantine expiry).
+/// Who acted: the operator a proxy named, "admin" (or a name the console
+/// sends with the admin token), the moderation service's DID, or "system"
+/// (quarantine expiry).
 pub struct Who {
     pub actor: String,
     pub ip: Option<String>,
+}
+
+impl Who {
+    /// An operator call's actor. A proxy-named operator is who the proxy
+    /// said, whatever `actor` the body claims; the token can't tell people
+    /// apart, so the name the console sends stands for it.
+    pub fn of(creds: &Credentials, actor: Option<&str>, ip: Option<std::net::IpAddr>) -> Who {
+        let actor = match creds {
+            Credentials::ModService { iss } => iss.clone(),
+            _ => match creds.operator() {
+                Some(login) => login.to_string(),
+                None => actor_of(actor),
+            },
+        };
+        Who { actor, ip: ip.map(|i| i.to_string()) }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, Deserialize)]
@@ -846,7 +863,8 @@ struct ModerateIn {
     actor: Option<String>,
 }
 
-fn actor_of(a: Option<String>) -> String {
+/// A console-sent name, or "admin".
+pub(super) fn actor_of(a: Option<&str>) -> String {
     a.map(|a| a.trim().chars().take(64).collect::<String>()).filter(|a| !a.is_empty()).unwrap_or_else(|| "admin".into())
 }
 
@@ -910,7 +928,7 @@ async fn moderate(
     if let Some(c) = &case_id {
         get_obj::<Case>(&app, &case_path(&app, c)?).await?.ok_or_else(|| case_not_found(c))?;
     }
-    let who = Who { actor: actor_of(inp.actor), ip: ip.map(|i| i.to_string()) };
+    let who = Who::of(&creds, inp.actor.as_deref(), ip);
     let act = Action { applied, reason: Some(reason), r#ref: None, case_id };
     let detail = apply(&app, &s, &act, &who).await?;
     Ok(Json(json!({"subject": s, "applied": applied, "result": detail})))
@@ -1077,7 +1095,7 @@ async fn create_case(
         return Err(XrpcError::bad("InvalidRequest", "describe the case's source (e.g. who sent the notice)"));
     }
     inp.subjects.iter().try_for_each(check_subject)?;
-    let who = Who { actor: actor_of(inp.actor), ip: ip.map(|i| i.to_string()) };
+    let who = Who::of(&creds, inp.actor.as_deref(), ip);
     let now = crate::events::now_rfc3339();
     let mut notes = Vec::new();
     if let Some(n) =
@@ -1137,7 +1155,7 @@ async fn update_case(
     let source =
         inp.source.as_deref().map(|s| bounded_text("source", s, MAX_REASON)).transpose()?.filter(|s| !s.is_empty());
     let note = inp.note.as_deref().map(|n| bounded_text("note", n, MAX_NOTE)).transpose()?.filter(|n| !n.is_empty());
-    let who = Who { actor: actor_of(inp.actor.clone()), ip: ip.map(|i| i.to_string()) };
+    let who = Who::of(&creds, inp.actor.as_deref(), ip);
     let at = crate::events::now_rfc3339();
     let mut changes = Vec::new();
     if let Some(s) = &inp.status {
@@ -1225,7 +1243,7 @@ async fn reset_second_factors(
             e
         }
     })?;
-    let who = Who { actor: actor_of(inp.actor), ip: ip.map(|i| i.to_string()) };
+    let who = Who::of(&creds, inp.actor.as_deref(), ip);
     let subject = SubjectRef::account(&inp.did);
     // recorded before anything changes: no reset without its audit entry
     let started = audit(
@@ -1279,7 +1297,7 @@ async fn set_blob_quota(
     let reason = inp.reason.as_deref().map(|r| bounded_text("reason", r, MAX_REASON)).transpose()?;
     let l = super::blob_quota::Limits { bytes: inp.bytes, uploads_per_day: inp.uploads_per_day };
     super::blob_quota::set_limits(&app, &inp.did, l.clone()).await?;
-    let who = Who { actor: actor_of(inp.actor), ip: ip.map(|i| i.to_string()) };
+    let who = Who::of(&creds, inp.actor.as_deref(), ip);
     audit(
         &app,
         &who,

@@ -19,6 +19,7 @@ mod account_totals;
 mod account_totals_lazy;
 mod admin_cli;
 mod admin_cluster;
+mod admin_proxy;
 mod api_mail;
 mod app_passwords;
 mod auth;

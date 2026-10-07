@@ -12,7 +12,7 @@ import type { Setting } from '../../lib/adminApi'
 // with a fingerprint, the settings stored in the bucket, and anything that differs between nodes.
 
 /** Flags that differ between nodes on purpose (addresses, the node's own name). */
-export const PER_NODE = new Set(['--node-id', '--listen', '--public-url', '--peer-listen', '--advertise-url', '--metrics-listen', '--exit-state-file'])
+export const PER_NODE = new Set(['--node-id', '--listen', '--public-url', '--peer-listen', '--advertise-url', '--metrics-listen', '--admin-listen', '--exit-state-file'])
 
 const GROUPS: [string, RegExp][] = [
   ['Storage', /^--(s3-|prefix$|memory$|inject-|cache-dir|disk-cache|block-cache|meta-cache|sst-|compaction|slatedb-|log-compression|log-retention|fence-|max-segment|log-inflight|store-inflight|log-store-inflight|hedge-|checkpoint|full-compaction|reshard|forced-detach|blob-|max-blob)/],
@@ -21,7 +21,7 @@ const GROUPS: [string, RegExp][] = [
   ['Keys & secrets at rest', /^--(kek|gcp-|vault-|kms-|plc-rotation|wrap-plc|generate-did-key|jwt-secret|admin-token|internal-token|rate-limit-bypass)/],
   ['Mail & moderation', /^--(email-|moderation-|mail-|mod-service|report-service|trusted-device|delete-after|no-rate-limits)/],
   ['Spaces', /^--(spaces$|space-)/],
-  ['Identity & listeners', /^--(listen|metrics-listen|max-connections|public-url|handle-domain|service-did|trusted-proxies|appview|bsky-|plc-|invite-|privacy|terms|contact|lexicon|resolve-lexicons|dev-mode|ui-dir|log-format|pyroscope|allow-bulk)/],
+  ['Identity & listeners', /^--(listen|metrics-listen|admin-|max-connections|public-url|handle-domain|service-did|trusted-proxies|appview|bsky-|plc-|invite-|privacy|terms|contact|lexicon|resolve-lexicons|dev-mode|ui-dir|log-format|pyroscope|allow-bulk)/],
 ]
 export const groupOf = (flag: string) => GROUPS.find(([, re]) => re.test(flag))?.[0] ?? 'Other'
 const ORDER = ['Identity & listeners', 'Storage', 'Cluster & capacity', 'Firehose & relays', 'Mail & moderation', 'Spaces', 'Keys & secrets at rest', 'Other']

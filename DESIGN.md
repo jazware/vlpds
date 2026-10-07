@@ -757,7 +757,12 @@ An edge proxy must still not pass `/internal/` (nor `/metrics`, `/debug/`)
 from the internet: the Ansible role's Caddy answers 404 for them and
 publishes the app port on loopback only. `/metrics` and `/debug/pprof` are
 on `--metrics-listen` (default `127.0.0.1:9583`; on the app port only with
-`--dev-mode` or `--metrics-listen app`).
+`--dev-mode` or `--metrics-listen app`). `--admin-listen` serves what
+`--listen` does plus the one thing it never does: it reads the operator a
+proxy names in `--admin-proxy-header` (`admin_proxy`), from
+`--admin-proxy-from` peers only. A forward to an account's owner carries
+that login in `x-vlpds-operator`, a peer-only header like the client
+address, stripped on both client listeners.
 
 Cost (laptop A/B, `bench/results/peer-mtls-2026-10-02`, 2 in-process
 nodes): forwarded getRecord 104-105 µs CPU/request and 0.88-0.89 ms p50 /
@@ -787,8 +792,8 @@ fill a connection window. Cost: one allocation and an uncontended shard
 lock per watched body, an uncontended lock per chunk; small proxied
 responses (the common case) are buffered and not watched.
 
-Server (`server::serve_with`, HTTP/1.1 + h2 auto: cleartext on `--listen`
-and `--metrics-listen`, and on `--peer-listen` over TLS (`ServeOptions::tls`)
+Server (`server::serve_with`, HTTP/1.1 + h2 auto: cleartext on `--listen`,
+`--admin-listen` and `--metrics-listen`, and on `--peer-listen` over TLS (`ServeOptions::tls`)
 with ALPN h2 / http/1.1 and a 10 s handshake deadline on the connection's
 task): h1 header read timeout 30 s
 (slowloris; also the idle keep-alive bound), 32 KiB header list, PING every

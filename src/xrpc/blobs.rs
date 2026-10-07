@@ -308,7 +308,7 @@ struct BlobQ {
 async fn get_blob(State(app): AppState, MaybeAuth(creds): MaybeAuth, Query(q): Query<BlobQ>) -> XResult<Response> {
     let cid = Cid::parse(&q.cid).map_err(|_| XrpcError::bad("InvalidRequest", "Invalid cid"))?;
     assert_available(&app, &q.did, creds.as_ref()).await?;
-    let is_admin = matches!(creds, Some(Credentials::Admin));
+    let is_admin = matches!(creds, Some(Credentials::Admin { .. }));
     if !is_admin && super::admin::is_blob_takendown(&app, &q.did, &cid.to_string()).await? {
         return Err(XrpcError::bad("BlobNotFound", "Blob not found"));
     }

@@ -35,7 +35,7 @@ pub(super) async fn assert_available(app: &App, did: &str, creds: Option<&Creden
         .await?
         .ok_or_else(|| XrpcError::bad("RepoNotFound", format!("Could not find repo for DID: {did}")))?;
     let self_or_admin = match creds {
-        Some(Credentials::Admin) => true,
+        Some(Credentials::Admin { .. }) => true,
         Some(c) => c.did() == Some(did),
         None => false,
     };
@@ -107,7 +107,7 @@ async fn get_head(State(app): AppState, MaybeAuth(creds): MaybeAuth, Query(q): Q
 }
 
 async fn get_repo_status(State(app): AppState, Query(q): Query<DidQ>) -> XResult<Json<J>> {
-    let acct = assert_available(&app, &q.did, Some(&Credentials::Admin)).await?;
+    let acct = assert_available(&app, &q.did, Some(&Credentials::Admin { operator: None })).await?;
     let active = acct.status.is_none();
     let mut out = json!({"did": q.did, "active": active});
     if let Some(st) = &acct.status {

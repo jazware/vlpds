@@ -19,17 +19,6 @@ pub fn routes() -> Router<Arc<App>> {
 
 const MAX_REASON: usize = 2000;
 
-fn who(creds: &Credentials, actor: Option<&str>, ip: Option<std::net::IpAddr>) -> Who {
-    let actor = match creds {
-        Credentials::ModService { iss } => iss.clone(),
-        _ => actor
-            .map(|a| a.trim().chars().take(64).collect::<String>())
-            .filter(|a| !a.is_empty())
-            .unwrap_or("admin".into()),
-    };
-    Who { actor, ip: ip.map(|i| i.to_string()) }
-}
-
 fn reason(r: Option<&str>) -> XResult<Option<&str>> {
     let r = r.map(str::trim).filter(|r| !r.is_empty());
     if r.is_some_and(|r| r.chars().count() > MAX_REASON) {
@@ -79,7 +68,7 @@ async fn get_space_repo(
     Query(q): Query<RepoQ>,
 ) -> XResult<Json<J>> {
     let space = Space::parse(&q.space)?;
-    let who = who(&creds, q.actor.as_deref(), ip);
+    let who = Who::of(&creds, q.actor.as_deref(), ip);
     let subject = SubjectRef::space_repo(&space.uri, &q.repo);
     let detail = json!({"space": space.uri, "repo": q.repo});
     audited(&app, &creds, &who, "getSpaceRepo", subject, reason(q.reason.as_deref())?, detail).await?;
@@ -124,7 +113,7 @@ async fn list_space_records(
         super::repo::check_path(c, None)?;
     }
     let limit = super::extract::limit_param(q.limit, 50, 1, 100)?;
-    let who = who(&creds, q.actor.as_deref(), ip);
+    let who = Who::of(&creds, q.actor.as_deref(), ip);
     let subject = SubjectRef::space_repo(&space.uri, &q.repo);
     let detail = json!({"space": space.uri, "repo": q.repo, "collection": q.collection, "cursor": q.cursor});
     audited(&app, &creds, &who, "listSpaceRecords", subject, reason(q.reason.as_deref())?, detail).await?;
@@ -185,7 +174,7 @@ async fn get_space_record(
     super::repo::check_path(&q.collection, Some(&q.rkey))?;
     let path = format!("{}/{}", q.collection, q.rkey);
     let uri = format!("{}/{}/{path}", space.uri, q.repo);
-    let who = who(&creds, q.actor.as_deref(), ip);
+    let who = Who::of(&creds, q.actor.as_deref(), ip);
     let subject = SubjectRef::record(&uri, &q.repo);
     let detail = json!({"space": space.uri, "repo": q.repo, "collection": q.collection, "rkey": q.rkey});
     audited(&app, &creds, &who, "getSpaceRecord", subject, reason(q.reason.as_deref())?, detail).await?;
