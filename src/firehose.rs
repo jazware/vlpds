@@ -1738,14 +1738,6 @@ impl Firehose {
             .collect();
         (live, gone)
     }
-
-    /// Disconnects connected subscriber `conn` (its [`SubscriberView::conn`])
-    /// at once, even an idle one; false if it isn't connected.
-    pub fn kick(&self, conn: u64) -> bool {
-        let Some(e) = self.subs.lock().get(&conn).cloned() else { return false };
-        e.stats.kick();
-        true
-    }
 }
 
 const BACKFILL_ATTEMPTS: u32 = 3;
