@@ -328,7 +328,7 @@ impl MetricsRecorder for DbRecorder {
     }
 }
 
-/// `slatedb_lsm_*` and `slatedb_cache_entries`, read from each registered
+/// `slatedb_lsm_*`, `slatedb_cache_entries` and `slatedb_cache_bytes`, read from each registered
 /// database's in-memory manifest (and each shared cache) at scrape time.
 pub(crate) struct LsmCollector {
     inner: Weak<Inner>,
@@ -340,6 +340,7 @@ pub(crate) struct LsmCollector {
     checkpoints: IntGaugeVec,
     manifest: IntGaugeVec,
     cache_entries: IntGaugeVec,
+    cache_bytes: IntGaugeVec,
 }
 
 impl LsmCollector {
@@ -371,11 +372,25 @@ impl LsmCollector {
             ),
             manifest: g("slatedb_lsm_manifest_id", "The manifest version this handle last saw", &[DB_LABEL]),
             cache_entries: g("slatedb_cache_entries", "Entries in a shared SlateDB block/metadata cache", &["cache"]),
+            cache_bytes: g(
+                "slatedb_cache_bytes",
+                "Bytes a shared SlateDB cache holds as it weighs entries, by part (block, meta; all for an unsplit cache)",
+                &["cache", "part"],
+            ),
         }
     }
 
-    fn all(&self) -> [&IntGaugeVec; 7] {
-        [&self.ssts, &self.bytes, &self.runs, &self.largest_run, &self.checkpoints, &self.manifest, &self.cache_entries]
+    fn all(&self) -> [&IntGaugeVec; 8] {
+        [
+            &self.ssts,
+            &self.bytes,
+            &self.runs,
+            &self.largest_run,
+            &self.checkpoints,
+            &self.manifest,
+            &self.cache_entries,
+            &self.cache_bytes,
+        ]
     }
 }
 
@@ -404,6 +419,13 @@ impl Collector for LsmCollector {
         }
         for (name, cache) in inner.caches.lock().iter() {
             self.cache_entries.with_label_values(&[name]).set(cache.entry_count() as i64);
+            match cache.split_weighted_size() {
+                Some((block, meta)) => {
+                    self.cache_bytes.with_label_values(&[name.as_str(), "block"]).set(block as i64);
+                    self.cache_bytes.with_label_values(&[name.as_str(), "meta"]).set(meta as i64);
+                }
+                None => self.cache_bytes.with_label_values(&[name.as_str(), "all"]).set(cache.weighted_size() as i64),
+            }
         }
         self.all().into_iter().flat_map(|v| v.collect()).collect()
     }

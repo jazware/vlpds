@@ -116,8 +116,9 @@ impl Exporter {
         dbs.push(Registered { name: db.to_string(), role, status });
     }
 
-    /// Exports `slatedb_cache_entries{cache=<name>}` for a cache several
-    /// databases share (its hits and misses are per database already).
+    /// Exports `slatedb_cache_entries{cache=<name>}` and
+    /// `slatedb_cache_bytes{cache=<name>,part=block|meta|all}` for a cache
+    /// several databases share (its hits and misses are per database already).
     pub fn register_cache(&self, name: &str, cache: Arc<dyn DbCache>) {
         let mut caches = self.inner.caches.lock();
         caches.retain(|(n, _)| n != name);

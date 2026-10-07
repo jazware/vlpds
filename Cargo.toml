@@ -182,10 +182,13 @@ required-features = ["test-level"]
 # 8. SplitCache::fetch_block/fetch_index clamp the loaded entry to its own
 #    allocation, as insert does: an uncompressed block was a slice of the
 #    HTTP read buffer and pinned all of it (vlRelay's seeds: ~1 GB uncounted).
+# 9. DbCache::weighted_size/split_weighted_size (bytes held, block vs meta
+#    for SplitCache) and a real FoyerCache::entry_count, for
+#    slatedb_cache_bytes / slatedb_cache_entries.
 [patch.crates-io]
-slatedb = { git = "https://github.com/jazware/slatedb", rev = "9bbeb849e6ead04556c831c50078568ca118903c" }
+slatedb = { git = "https://github.com/jazware/slatedb", rev = "87db9e3b3f5ba8d0473deb240990e33cb5e50208" }
 # the same rev, so the metrics recorder (crates/slate-metrics) and slatedb share one slatedb-common
-slatedb-common = { git = "https://github.com/jazware/slatedb", rev = "9bbeb849e6ead04556c831c50078568ca118903c" }
+slatedb-common = { git = "https://github.com/jazware/slatedb", rev = "87db9e3b3f5ba8d0473deb240990e33cb5e50208" }
 
 # Fat LTO + 1 codegen unit: ~4 min of a release build is this crate's
 # single-threaded optimization and LTO, but cheaper settings cost runtime

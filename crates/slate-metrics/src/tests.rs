@@ -197,3 +197,44 @@ async fn a_reader_shows_its_manifest_and_one_handle_shows_per_name() {
     r.close().await.unwrap();
     w.close().await.unwrap();
 }
+
+/// A split cache's bytes show per part, and match what its two caches weigh.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_split_cache_exports_its_bytes_by_part() {
+    use slatedb::db_cache::foyer::{FoyerCache, FoyerCacheOptions};
+    use slatedb::db_cache::{DbCache, SplitCache};
+    let reg = Registry::new();
+    let ex = Exporter::new(&reg);
+    let foyer = |bytes: u64| -> Arc<dyn DbCache> {
+        Arc::new(FoyerCache::new_with_opts(FoyerCacheOptions { max_capacity: bytes, shards: 1 }))
+    };
+    let (blocks, meta) = (foyer(4 << 20), foyer(1 << 20));
+    let cache: Arc<dyn DbCache> =
+        Arc::new(SplitCache::new().with_block_cache(Some(blocks.clone())).with_meta_cache(Some(meta.clone())));
+    ex.register_cache("node", cache.clone());
+    ex.register_cache("plain", foyer(1 << 20));
+
+    let store = Arc::new(InMemory::new());
+    let db = slatedb::Db::builder("cached", store as Arc<dyn object_store::ObjectStore>)
+        .with_db_cache(cache.clone(), 0)
+        .build()
+        .await
+        .unwrap();
+    db.put(b"k", b"v").await.unwrap();
+    db.flush_with_options(slatedb::config::FlushOptions { flush_type: slatedb::config::FlushType::MemTable })
+        .await
+        .unwrap();
+    assert_eq!(db.get(b"k").await.unwrap().as_deref(), Some(&b"v"[..]));
+
+    let fams = reg.gather();
+    let block = value(&fams, "slatedb_cache_bytes", &[("cache", "node"), ("part", "block")]).unwrap();
+    let meta_bytes = value(&fams, "slatedb_cache_bytes", &[("cache", "node"), ("part", "meta")]).unwrap();
+    assert!(block > 0.0 && meta_bytes > 0.0, "block {block}, meta {meta_bytes}");
+    assert_eq!(block as u64, blocks.weighted_size());
+    assert_eq!(meta_bytes as u64, meta.weighted_size());
+    assert_eq!(value(&fams, "slatedb_cache_bytes", &[("cache", "plain"), ("part", "all")]), Some(0.0));
+    let entries = value(&fams, "slatedb_cache_entries", &[("cache", "node")]).unwrap();
+    assert_eq!(entries as u64, cache.entry_count());
+    assert!(entries >= 2.0, "{entries}");
+    db.close().await.unwrap();
+}
