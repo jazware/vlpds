@@ -167,9 +167,20 @@ checker-rs host="http://127.0.0.1:2620" *args:
 docker-build tag="vlpds:local":
     docker build -t {{tag}} .
 
-# Build the production amd64 image on this Mac from the committed tree and push it (build/mac-image.sh;
-# FEATURES=profiling, PUSH=0 to only load it)
-docker-push tag=`git rev-parse --short=12 HEAD`:
+# Build the production amd64 image from the committed tree and push it; prints the ref. In the
+# monorepo: zigbuild + crane onto the pinned base, no Docker build (build/oci-image.sh); elsewhere
+# the Dockerfile (build/mac-image.sh). FEATURES=profiling, PUSH=0 to only build it.
+image-push tag=`git rev-parse --short=12 HEAD`:
+    if [ -f ../../scripts/oci/lib.sh ]; then build/oci-image.sh {{tag}}; else build/mac-image.sh {{tag}}; fi
+
+alias docker-push := image-push
+
+# Rebuild the runtime base (Dockerfile's runtime-base stage) and pin its digest in build/oci-base
+image-base:
+    build/oci-image.sh base
+
+# The same image from the Dockerfile with docker buildx (build/mac-image.sh; PUSH=0 to only load it)
+docker-push-buildx tag=`git rev-parse --short=12 HEAD`:
     build/mac-image.sh {{tag}}
 
 # Observability stack for load tests (bench/obs/README.md): Prometheus (1 s scrapes) :9090,

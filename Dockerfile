@@ -4,6 +4,10 @@
 # slim non-root runtime. The two builds are independent stages, so a UI- or
 # docs-only change reuses the cached binary and rebuilds only the last layer.
 #
+# This is the reproducible build: CI's image workflow and anyone with docker
+# build from it. The monorepo's `just image-push` makes the same image without
+# Docker, putting a cross-compiled binary and the UI on the runtime-base stage.
+#
 #   docker build -t vlpds:local .            (or: just docker-build)
 #   docker run -p 2583:2583 -e VLPDS_S3_ENDPOINT=... -e VLPDS_JWT_SECRET=... \
 #     -e VLPDS_ADMIN_TOKEN=... -e VLPDS_INTERNAL_TOKEN=... vlpds:local
@@ -90,15 +94,15 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && if [ "$TARGETARCH" = "$BUILDARCH" ]; then /out/vlpds --help >/dev/null && /out/vlpds-bucket-probe --help >/dev/null; fi
 
 # --- runtime ----------------------------------------------------------------
-FROM debian:bookworm-slim AS runtime
+# runtime-base is everything but the binaries, the UI and the commit: the base
+# build/oci-image.sh puts its layers on (pinned in build/oci-base), so the image
+# config lives here for both builds.
+FROM debian:bookworm-slim AS runtime-base
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl tini \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 vlpds \
     && useradd --system --uid 10001 --gid vlpds --home-dir /var/lib/vlpds --create-home vlpds
-# vlpds-bucket-probe: the bucket pre-flight (DESIGN.md "Choosing a bucket"),
-# run with --entrypoint from the node's own env
-COPY --from=build /out/vlpds /out/vlpds-bucket-probe /usr/local/bin/
 USER vlpds:vlpds
 WORKDIR /var/lib/vlpds
 ENV VLPDS_LISTEN=0.0.0.0:2583 \
@@ -111,6 +115,11 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=60s --retries=3 \
     CMD curl -sf http://127.0.0.1:2583/xrpc/_health || exit 1
 # tini forwards SIGTERM so vlpds drains and releases its shards gracefully
 ENTRYPOINT ["/usr/bin/tini", "--", "vlpds"]
+
+FROM runtime-base AS runtime
+# vlpds-bucket-probe: the bucket pre-flight (DESIGN.md "Choosing a bucket"),
+# run with --entrypoint from the node's own env
+COPY --from=build /out/vlpds /out/vlpds-bucket-probe /usr/local/bin/
 # Last: the layer a UI-only change replaces (and pushes).
 COPY --from=ui /src/ui/dist /usr/share/vlpds/ui
 # vlpds_build_info's rev label (the build context has no .git to describe),
