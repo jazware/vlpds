@@ -1,16 +1,20 @@
-import { useEffect, useRef, useState } from 'react'
+import { useInfiniteQuery, useQueries } from '@tanstack/react-query'
+import { useEffect, useMemo, useState } from 'react'
 import { DataTable, type Col } from '../../components/console/DataTable'
-import { Banners, Chip, ErrorState, Kbd, Loading, NeedsVersion, PageHead, Panel, Seg, Spinner, Src, Swatch, type BannerSpec, type ChipKind } from '../../components/console/kit'
+import { Banners, Chip, ErrorState, Kbd, Loading, NeedsVersion, PageHead, Panel, Seg, Spinner, Src, Swatch, type BannerSpec } from '../../components/console/kit'
 import { openPanel } from '../../components/console/nav'
 import { SECTION } from '../../components/console/sections'
 import * as api from '../../lib/adminApi'
-import type { AccountFilter, AccountRow, ListAccountsResult } from '../../lib/adminApi'
+import type { AccountFilter, AccountRow } from '../../lib/adminApi'
 import { withAdmin } from '../../lib/console/adminAdapter'
 import { useClusterView, type ClusterView } from '../../lib/console/cluster'
 import { ago, fmtBytes, fmtNum, plural, shortDid } from '../../lib/console/fmt'
+import { K } from '../../lib/console/keys'
 import { isUnsupported } from '../../lib/console/live'
+import { every, hydrate, queryClient } from '../../lib/console/query'
+import { accountTone } from '../../lib/console/status'
 import { Link } from '../../lib/router'
-import { createAccount, useAccountsVersion } from './accountActions'
+import { createAccount } from './accountActions'
 import './accountDetail'
 import './accounts.css'
 
@@ -46,23 +50,8 @@ function filterOptions(counts?: api.AccountCounts) {
   })
 }
 
-/** The account's state as a chip: tone and word. */
-export function accountState(a: Pick<AccountRow, 'status' | 'deleteAfter'>): [ChipKind, string] {
-  switch (a.status) {
-    case 'active':
-      return ['ok', 'active']
-    case 'deactivated':
-      return ['warn', a.deleteAfter ? 'deleting' : 'deactivated']
-    case 'takendown':
-      return ['err', 'taken down']
-    case 'suspended':
-      return ['err', 'suspended']
-    case 'deleted':
-      return ['idle', 'deleted']
-    default:
-      return ['plain', a.status]
-  }
-}
+/** The account's state as a chip: tone and word (the console's one vocabulary, status.ts). */
+export const accountState = accountTone
 
 export function TwoFactor({ f }: { f: AccountRow['secondFactors'] }) {
   return (
@@ -161,20 +150,30 @@ function cols(view: ClusterView | undefined): Col<AccountRow>[] {
   ]
 }
 
-type Page = { rows: AccountRow[]; cursor?: string; last?: ListAccountsResult }
+/**
+ * One page of listAccounts; each row also becomes the account's own `['account', did, 'row']`,
+ * which is what the table draws, so an action or the drawer updating a row shows here at once.
+ */
+async function fetchPage(p: { q?: string; filter: AccountFilter }, cursor: string | undefined, signal: AbortSignal) {
+  const at = Date.now()
+  const r = await withAdmin((c) => api.listAccounts(c, { q: p.q, filter: p.filter, cursor, limit: PAGE }, signal))
+  for (const a of r.accounts) hydrate(K.accountRow(a.did), a, at)
+  return r
+}
+
+/** The rows as their per-account copies hold them now (absent: the list's own). */
+function useRows(rows: AccountRow[]): AccountRow[] {
+  const copies = useQueries({
+    queries: rows.map((r) => ({ queryKey: K.accountRow(r.did), queryFn: () => queryClient.getQueryData<AccountRow | null>(K.accountRow(r.did)) ?? r, enabled: false })),
+  })
+  return useMemo(() => rows.flatMap((r, i) => (copies[i]?.data === null ? [] : [copies[i]?.data ?? r])), [rows, copies])
+}
 
 export function Accounts() {
   const { view } = useClusterView()
-  const ver = useAccountsVersion()
   const [q, setQ] = useState('')
   const [qq, setQq] = useState('')
   const [filter, setFilter] = useState<AccountFilter>('all')
-  const [page, setPage] = useState<Page>()
-  const [counts, setCounts] = useState<api.AccountCounts>()
-  const [error, setError] = useState<unknown>()
-  const [busy, setBusy] = useState(false)
-  const [unsupported, setUnsupported] = useState(false)
-  const seq = useRef(0)
 
   // debounce the search box
   useEffect(() => {
@@ -182,28 +181,25 @@ export function Accounts() {
     return () => clearTimeout(t)
   }, [q])
 
-  const load = async (cursor?: string) => {
-    const my = ++seq.current
-    setBusy(true)
-    try {
-      const r = await withAdmin((c) => api.listAccounts(c, { q: qq || undefined, filter, cursor, limit: PAGE }))
-      if (my !== seq.current) return
-      setPage((p) => ({ rows: cursor && p ? [...p.rows, ...r.accounts] : r.accounts, cursor: r.cursor, last: r }))
-      if (r.counts) setCounts(r.counts)
-      setError(undefined)
-    } catch (e) {
-      if (my !== seq.current) return
-      if (isUnsupported(e)) setUnsupported(true)
-      else setError(e)
-    } finally {
-      if (my === seq.current) setBusy(false)
-    }
-  }
-
-  useEffect(() => {
-    load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [qq, filter, ver])
+  const params = { q: qq || undefined, filter }
+  const list = useInfiniteQuery({
+    queryKey: K.accounts(params),
+    queryFn: ({ pageParam, signal }) => fetchPage(params, pageParam, signal),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.cursor,
+    refetchInterval: every(60_000),
+    placeholderData: (prev) => prev,
+  })
+  const pages = list.data?.pages
+  const listed = useMemo(() => pages?.flatMap((p) => p.accounts) ?? [], [pages])
+  const rows = useRows(listed)
+  const last = pages?.[pages.length - 1]
+  const counts = pages?.find((p) => p.counts)?.counts
+  const busy = list.isFetching
+  const error = list.error
+  const unsupported = isUnsupported(error)
+  const page = pages ? { cursor: list.hasNextPage ? last?.cursor : undefined } : undefined
+  const load = (cursor?: string) => (cursor ? list.fetchNextPage() : list.refetch())
 
   if (unsupported)
     return (
@@ -215,8 +211,6 @@ export function Accounts() {
       </>
     )
 
-  const rows = page?.rows ?? []
-  const last = page?.last
   const banners: BannerSpec[] = []
   if (last?.unreachableNodes?.length)
     banners.push({ id: 'unreach', tone: 'warn', title: 'Some nodes didn’t answer', desc: `${last.unreachableNodes.join(', ')}: their shards’ accounts are missing from this list` })
@@ -235,6 +229,7 @@ export function Accounts() {
             {view && <span>{plural(view.table.length, 'shard')}</span>}
           </>
         }
+        updated={list.dataUpdatedAt || undefined}
         actions={
           <>
             <button type="button" className="cx-btn" onClick={() => createAccount()}>
@@ -288,7 +283,7 @@ export function Accounts() {
           />
           <Seg value={filter} options={filterOptions(counts)} onChange={setFilter} label="Filter accounts" />
         </form>
-        {error ? (
+        {error && !pages ? (
           <ErrorState error={error} retry={() => load()} />
         ) : !page ? (
           <Loading label="Asking every node…" />

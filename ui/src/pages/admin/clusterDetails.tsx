@@ -7,7 +7,9 @@ import { useClusterView } from '../../lib/console/cluster'
 import { findEvent, useFirehose, useHandle } from '../../lib/console/firehose'
 import { clock, dur, fmtBytes, fmtMs, fmtNum, fmtPct, fmtSec, fmtSi, plural, seqMillis, seqWriter } from '../../lib/console/fmt'
 import { col, last, nodeGauges, nodePoints, useMetrics } from '../../lib/console/metrics'
-import { isSlow, subscribersPoll } from '../../lib/console/polls'
+import { mutate } from '../../lib/console/mutate'
+import { isSlow, subscribersQ } from '../../lib/console/queries'
+import { subscriberState } from '../../lib/console/status'
 import { LeaseCell, NodeTag, ShardMap } from './clusterUi'
 
 // Slide-over / full-page details for the cluster sections: node, shard, firehose event,
@@ -18,9 +20,9 @@ registerDetail('node', {
   kind: 'Node',
   section: 'nodes',
   use: (id, mode) => {
-    const { view } = useClusterView()
+    const { view, at } = useClusterView()
     const m = useMetrics()
-    const subs = subscribersPoll.use()
+    const subs = subscribersQ.use()
     const n = view?.nodes.find((x) => x.node === id)
     if (!view) return { title: id, body: null, loading: true }
     if (!n) return { title: <span className="mono">{id}</span>, body: null, missing: `${id} holds no lease right now: it left the cluster or never joined.` }
@@ -32,6 +34,7 @@ registerDetail('node', {
     return {
       title: <span className="mono">{n.node}</span>,
       chip: n.health === 'err' ? <Chip k="err">down</Chip> : n.health === 'warn' ? <Chip k="warn">lease late</Chip> : <Chip k="ok">healthy</Chip>,
+      updated: at,
       foot: (
         <>
           <Src>getClusterStatus · 2 s</Src> {p ? `metrics from ${m.source === 'fanout' ? 'the peer fan-out' : 'this node’s /metrics'}` : 'no metrics for this node'}
@@ -126,7 +129,7 @@ registerDetail('shard', {
   kind: 'Shard',
   section: 'nodes',
   use: (id) => {
-    const { view } = useClusterView()
+    const { view, at } = useClusterView()
     const i = Number(id)
     if (!view) return { title: `Shard ${id}`, body: null, loading: true }
     if (!(i >= 0 && i < view.table.length)) return { title: `Shard ${id}`, body: null, missing: 'No shard at that position in the current layout.' }
@@ -136,6 +139,7 @@ registerDetail('shard', {
     return {
       title: <span className="mono">shard {r ? r.id : i}</span>,
       chip: o ? <Chip k="ok">owned</Chip> : <Chip k="err">unowned</Chip>,
+      updated: at,
       foot: <Src>getClusterStatus · table + layout</Src>,
       body: (
         <>
@@ -229,7 +233,7 @@ registerDetail('sub', {
   kind: 'Firehose connection',
   section: 'firehose',
   use: (id) => {
-    const subs = subscribersPoll.use()
+    const subs = subscribersQ.use()
     const m = useMetrics()
     const [node, conn] = id.split('/')
     const s = subs.data?.subscribers.find((x) => x.node === node && x.conn === conn)
@@ -246,8 +250,9 @@ registerDetail('sub', {
           <span className="mono">#{x.conn}</span> <span className="muted">on</span> <span className="mono">{x.node}</span>
         </>
       ),
-      chip: gone && !s ? <Chip k="idle">disconnected</Chip> : isSlow(x) ? <Chip k="warn">slow</Chip> : x.state === 'live' ? <Chip k="ok">live</Chip> : <Chip k="info">backfilling</Chip>,
-      foot: <Src>vlpds.admin.listFirehoseSubscribers · 5 s</Src>,
+      chip: <Chip k={subscriberState(x, isSlow(x), !!gone && !s)[0]}>{subscriberState(x, isSlow(x), !!gone && !s)[1]}</Chip>,
+      updated: subs.at,
+      foot: <Src>vlpds.admin.listFirehoseSubscribers · on change</Src>,
       body: (
         <>
           <Strip items={[['state', gone && !s ? (x.reason ?? 'gone') : x.state], ['lag', lag], ['events sent', fmtNum(x.events)], ['bytes sent', fmtBytes(x.bytes)], ['connected', dur((x.disconnectedAt ?? Date.now()) - x.connectedAt)]]} />
@@ -284,11 +289,14 @@ registerDetail('sub', {
                         word: `#${s.conn}`,
                         action: 'Disconnect',
                         call: `vlpds.admin.kickSubscriber {"conn": "${s.conn}"} → ${s.node}`,
-                        run: async () => {
-                          const r = await kickSubscriber(s.node, s.conn)
-                          if (!r.supported) throw new Error(`This server has no ${r.nsid} yet: update vlpds to disconnect subscribers from the console.`)
-                          subscribersPoll.refresh()
-                        },
+                        run: () =>
+                          mutate({
+                            run: async () => {
+                              const r = await kickSubscriber(s.node, s.conn)
+                              if (!r.supported) throw new Error(`This server has no ${r.nsid} yet: update vlpds to disconnect subscribers from the console.`)
+                            },
+                            changes: [{ kind: 'subscriber', id: `${s.node}/${s.conn}` }],
+                          }),
                         done: `Disconnected #${s.conn}`,
                       })
                     }

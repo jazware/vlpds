@@ -1,25 +1,23 @@
 import { useEffect, useState } from 'react'
 import { DataTable, type Col } from '../../components/console/DataTable'
-import { Chip, Empty, ErrorState, Loading, PageHead, Panel, Seg, Src, Tiles } from '../../components/console/kit'
+import { Chip, Empty, ErrorState, Loading, oldest, PageHead, Panel, Seg, Src, Tiles } from '../../components/console/kit'
 import { panelParam } from '../../components/console/nav'
 import { ago, auditSubjectText, authShort, fmtBytes } from '../../lib/console/fmt'
 import {
   CASE_STATUSES,
   CASE_TONE,
   fmtGB,
-  getAuditLog,
-  listCases,
-  listOverQuota,
-  listTakedowns,
   shortUri,
   subjectQuery,
-  useModVersion,
+  useAudit,
+  useCases,
+  useOverQuota,
+  useTakedowns,
   type AuditEntry,
   type Case,
   type SubjectRef,
   type TakedownEntry,
 } from '../../lib/console/moderation'
-import { useLoad } from '../../lib/hooks'
 import { navigate, useHash, useSearch } from '../../lib/router'
 import { AuditAction } from './auditUi'
 import { confirmModerate, newCaseDialog, reviewSubject, SubjectLabel } from './moderationUi'
@@ -40,7 +38,6 @@ export function ModerateButton({ subject, applied, onDone, caseId }: { subject: 
 }
 
 const ISO = (s: string) => Date.parse(s)
-const POLL = 15000
 type Status = Case['status'] | 'all'
 
 export function Moderation() {
@@ -71,10 +68,9 @@ export function Moderation() {
     }, 100)
     return () => clearInterval(t)
   }, [hash])
-  const v = useModVersion()
-  const cases = useLoad(() => listCases(), [v], POLL)
-  const takedowns = useLoad(() => listTakedowns(), [v], POLL)
-  const quota = useLoad(() => listOverQuota(), [v], 60000)
+  const cases = useCases()
+  const takedowns = useTakedowns()
+  const quota = useOverQuota()
   const [status, setStatus] = useState<Status>('open')
   const [lookup, setLookup] = useState('')
 
@@ -96,6 +92,7 @@ export function Moderation() {
             <span>only content stored on this PDS can be acted on</span>
           </>
         }
+        updated={oldest(cases.at, takedowns.at)}
         actions={
           <button type="button" className="cx-btn" onClick={() => newCaseDialog()}>
             New case…
@@ -154,7 +151,7 @@ export function Moderation() {
           <Panel title="Active takedowns" src={<Src>listTakedowns</Src>}>
             {takedowns.error && !takedowns.data ? <ErrorState error={takedowns.error} retry={takedowns.reload} /> : !takedowns.data ? <Loading /> : <TakedownsTable rows={tds} />}
           </Panel>
-          <AuditPanel v={v} />
+          <AuditPanel />
           {over.length > 0 && (
             <Panel title="Over blob quota" src={<Src>listOverQuota</Src>} foot="Only a migration can put an account here: blobs of a repo moving in are never refused.">
               <DataTable
@@ -234,11 +231,11 @@ function TakedownsTable({ rows }: { rows: TakedownEntry[] }) {
   )
 }
 
-function AuditPanel({ v }: { v: number }) {
+function AuditPanel() {
   const scope0 = new URLSearchParams(location.search).get('scope') === 'spaces' ? 'spaces' : 'all'
   const [scope, setScope] = useState<'all' | 'spaces'>(scope0)
   const [limit, setLimit] = useState(25)
-  const l = useLoad(() => getAuditLog({ limit, space: scope === 'spaces' ? '*' : undefined }), [limit, scope, v], 30000)
+  const l = useAudit({ limit, space: scope === 'spaces' ? '*' : undefined })
   const rows = l.data ?? []
   return (
     <Panel

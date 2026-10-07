@@ -1,8 +1,7 @@
 import { useMemo, useState } from 'react'
 import { CopyText, CopyValue, ErrorNotice, Loading, Notice, Panel, Status } from '../../components/ui'
+import { clusterQ } from '../../lib/console/cluster'
 import { fmtNum, fmtTime, relTime, seqMillis } from '../../lib/format'
-import { useLoad } from '../../lib/hooks'
-import { admin } from '../../lib/xrpc'
 
 export type ClusterNode = {
   node: string
@@ -74,11 +73,8 @@ export function useLive(updated?: number) {
 }
 
 export function Cluster() {
-  const c = useLoad<ClusterStatus & { fetchedAt: number }>(
-    async () => ({ ...(await admin('vlpds.admin.getClusterStatus')), fetchedAt: Date.now() }),
-    [],
-    2000,
-  )
+  // the console's one getClusterStatus copy (its own types are a superset of this page's)
+  const c = clusterQ.use() as { data?: ClusterStatus & { fetchedAt: number }; error?: unknown }
   const [focus, setFocus] = useState<string>()
   const d = c.data
   const live = useLive(d?.fetchedAt) && !c.error

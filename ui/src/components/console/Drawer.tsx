@@ -1,6 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import { Link, navigate } from '../../lib/router'
-import { Empty, Kbd, Loading, PageHead } from './kit'
+import { Empty, Kbd, Loading, PageHead, Updated } from './kit'
 import { closePanel, fullPath, openPanel, usePanel } from './nav'
 import { noteDetail } from './recent'
 import { SECTION, type SectionId } from './sections'
@@ -21,6 +21,8 @@ export type DetailView = {
   missing?: ReactNode
   /** The full page may grow past the usual reading width (wide tables). */
   wide?: boolean
+  /** When its data was read: shown as "updated … ago" in the foot (the page head on a full page). */
+  updated?: number
 }
 export type DetailKind = {
   /** Eyebrow over the title: "Node", "Firehose event". */
@@ -78,6 +80,7 @@ function Inner({ type, id, k }: { type: string; id: string; k: DetailKind }) {
       </div>
       <div className="dfoot">
         <span>{v.foot}</span>
+        {v.updated ? <Updated at={v.updated} /> : null}
         <span style={{ marginLeft: 'auto' }}>
           <Kbd k="o" /> full page · <Kbd k="esc" /> close
         </span>
@@ -118,6 +121,7 @@ export function DetailPage({ type, id }: { type: string; id: string }) {
             {v.foot && <span>{v.foot}</span>}
           </>
         }
+        updated={v.updated}
         actions={
           <>
             <Link className="cx-btn" to={sec.path}>

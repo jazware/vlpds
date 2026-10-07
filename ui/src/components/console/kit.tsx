@@ -1,4 +1,5 @@
-import { useState, type CSSProperties, type ReactNode } from 'react'
+import { useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
+import { dur } from '../../lib/console/fmt'
 import { useLiveState } from '../../lib/console/live'
 import { Link } from '../../lib/router'
 import { errText } from '../../lib/xrpc'
@@ -53,6 +54,56 @@ export function Swatch({ color, title }: { color?: string; title?: string }) {
 /** Wraps a value that updates live: hatched while the console is stale. */
 export function LiveVal({ children, className }: { children: ReactNode; className?: string }) {
   return <span className={`cx-live${className ? ` ${className}` : ''}`}>{children}</span>
+}
+
+// one clock for every "updated … ago" on screen, ticking while any is mounted
+let now = Date.now()
+const clockSubs = new Set<() => void>()
+let clockTimer: ReturnType<typeof setInterval> | undefined
+function subscribeClock(l: () => void) {
+  clockSubs.add(l)
+  clockTimer ??= setInterval(() => {
+    now = Date.now()
+    clockSubs.forEach((f) => f())
+  }, 1000)
+  return () => {
+    clockSubs.delete(l)
+    if (!clockSubs.size && clockTimer) {
+      clearInterval(clockTimer)
+      clockTimer = undefined
+    }
+  }
+}
+/** Now, to the second: re-renders once a second while mounted. */
+export const useNow = () => useSyncExternalStore(subscribeClock, () => now)
+
+/**
+ * How current a page's or a drawer's data is, said one way everywhere. While the change feed is
+ * live, data is current until the feed names a change, so it reads "● up to date" (the time it
+ * was read on hover). Polling (the feed is down) or paused, it reads "updated 12s ago", amber
+ * past `staleAfter`. Hatched with everything else while the console is stale.
+ */
+export function Updated({ at, staleAfter = 120_000 }: { at?: number; staleAfter?: number }) {
+  const t = useNow()
+  const live = useLiveState()
+  if (!at) return null
+  const age = Math.max(0, t - at)
+  const read = `Read at ${new Date(at).toLocaleTimeString()}`
+  if (live.push === 'live' && !live.paused && !live.stale)
+    return (
+      <span className="cx-upd" title={`${read}. The change feed is live: it refetches the moment something here changes.`}>
+        <span className="cx-g s-ok">●</span> up to date
+      </span>
+    )
+  const old = age > staleAfter
+  const why = live.paused ? 'Live updates are paused (space resumes).' : 'The change feed is down: this page polls until it reconnects.'
+  return (
+    <span className={`cx-upd${old ? ' old' : ''}`} title={`${read}. ${why}`}>
+      <LiveVal>
+        {live.paused ? 'paused · ' : ''}updated {age < 1500 ? 'just now' : `${dur(age)} ago`}
+      </LiveVal>
+    </span>
+  )
 }
 
 // ---------------------------------------------------------------- sparklines, meters
@@ -328,12 +379,24 @@ export function Sec({
   )
 }
 
-export function PageHead({ title, sub, actions }: { title: ReactNode; sub?: ReactNode; actions?: ReactNode }) {
+/** The oldest of several reads (unknown ones skipped): how fresh a page made of them is. */
+export const oldest = (...ats: (number | undefined)[]) => {
+  const xs = ats.filter((x): x is number => !!x)
+  return xs.length ? Math.min(...xs) : undefined
+}
+
+/** A page's title, its one-line facts, and `updated`: when its data was read (the last item of the facts line). */
+export function PageHead({ title, sub, actions, updated }: { title: ReactNode; sub?: ReactNode; actions?: ReactNode; updated?: number }) {
   return (
     <div className="cx-ph">
       <div style={{ minWidth: 0 }}>
         <h1>{title}</h1>
-        {sub && <div className="sub">{sub}</div>}
+        {(sub || updated) && (
+          <div className="sub">
+            {sub}
+            {updated ? <Updated at={updated} /> : null}
+          </div>
+        )}
       </div>
       {actions && <div className="acts">{actions}</div>}
     </div>

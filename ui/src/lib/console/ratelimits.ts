@@ -2,10 +2,12 @@ import { clearLockout } from '../adminApi'
 import { admin } from '../xrpc'
 import { useMemo } from 'react'
 import { withAdmin } from './adminAdapter'
-import { createPoller, type PollState } from './live'
+import { K } from './keys'
+import { mutate } from './mutate'
 import { getNodeMetricsState, refreshNodeMetrics, useNodeMetrics, type NodeMetricsState } from './nodeMetrics'
+import { shared, type Load } from './query'
 
-// Rate limits and lockouts: getRateLimits (src/xrpc/ratelimits.rs) polled with the 429 totals
+// Rate limits and lockouts: getRateLimits (src/xrpc/ratelimits.rs) read with the 429 totals
 // turned into per-bucket rates, the cluster's 429/s from getNodeMetrics, factor locks from
 // listLockouts, and the edit model: every change is a small edit of the stored config, shown
 // as a diff before updateRateLimits saves it.
@@ -105,15 +107,22 @@ let samples: Sample[] = []
 
 export type Loaded = RateLimits & { fetchedAt: number }
 
-export const rlPoll = createPoller(async (): Promise<Loaded> => {
-  const d = await admin<RateLimits>('vlpds.admin.getRateLimits', { params: { top: 10 } })
-  const t = Date.now()
-  const totals = new Map<string, number>()
-  for (const r of d.rejections) totals.set(r.limiter, (totals.get(r.limiter) ?? 0) + r.total)
-  samples = [...samples, { t: t / 1000, totals }].slice(-(KEEP + 1))
-  history = undefined
-  return { ...d, fetchedAt: t }
-}, POLL)
+/** Every node's buckets, top keys and 429 totals; its busiest keys move by the second, so it polls as a series. */
+export const rateLimitsQ = shared({
+  key: K.ratelimits,
+  fn: async (signal): Promise<Loaded> => {
+    const d = await admin<RateLimits>('vlpds.admin.getRateLimits', { params: { top: 10 }, signal })
+    const t = Date.now()
+    const totals = new Map<string, number>()
+    for (const r of d.rejections) totals.set(r.limiter, (totals.get(r.limiter) ?? 0) + r.total)
+    samples = [...samples, { t: t / 1000, totals }].slice(-(KEEP + 1))
+    history = undefined
+    return { ...d, fetchedAt: t }
+  },
+  poll: POLL,
+  stream: true,
+  version: (d) => d.time,
+})
 
 export type History = { byBucket: Map<string, number[]>; total: number[]; samples: number; pollSecs: number }
 let history: History | undefined
@@ -201,21 +210,22 @@ export function overrideTarget(kind: KeyKind, key: string): { ip?: string; did?:
 export type RatePoint = { t: number; v: number }
 export type Rate429 = { supported: boolean; nodes: { node: string; self: boolean; points: RatePoint[] }[]; intervalMs: number }
 
-function rate429Of(s: NodeMetricsState): PollState<Rate429> {
-  if (s.status === 'pending') return { loading: true }
-  if (s.status === 'unsupported') return { data: { supported: false, nodes: [], intervalMs: 0 }, at: s.at, loading: false }
-  if (s.status === 'error') return { error: s.error, loading: false }
+function rate429Of(s: NodeMetricsState): Load<Rate429> {
+  const reload = () => void refreshNodeMetrics()
+  if (s.status === 'pending') return { loading: true, reload }
+  if (s.status === 'unsupported') return { data: { supported: false, nodes: [], intervalMs: 0 }, at: s.at, loading: false, reload }
+  if (s.status === 'error') return { error: s.error, loading: false, reload }
   const nodes = s.nodes
     .filter((n) => n.series.length)
     .map((n) => ({ node: n.node, self: n.self, points: n.series.map((p) => ({ t: p.t, v: p.rateLimitedPerSec })) }))
     .sort((a, b) => a.node.localeCompare(b.node))
   const intervalMs = s.nodes.find((n) => n.raw.intervalMs)?.raw.intervalMs ?? 2000
-  return { data: { supported: true, nodes, intervalMs }, at: s.at, loading: false }
+  return { data: { supported: true, nodes, intervalMs }, at: s.at, loading: false, reload }
 }
 
-/** 429s per node per second, from the console's one getNodeMetrics poll. */
-export const rate429Poll = {
-  use: (): PollState<Rate429> => {
+/** 429s per node per second, from the console's one getNodeMetrics query. */
+export const rate429Q = {
+  use: (): Load<Rate429> => {
     const s = useNodeMetrics()
     return useMemo(() => rate429Of(s), [s])
   },
@@ -232,9 +242,16 @@ export function totalRate(r: Rate429 | undefined): number[] {
   return [...sum.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v)
 }
 
-// ---------------------------------------------------------------- factor locks (listLockouts: polls.ts lockoutsPoll)
+// ---------------------------------------------------------------- factor locks (listLockouts: queries.ts lockoutsQ)
 
-export const clearFactorLock = (did: string, reason: string) => withAdmin((c) => clearLockout(c, { did, reason }))
+export const clearFactorLock = (did: string, reason: string) =>
+  mutate({
+    run: () => withAdmin((c) => clearLockout(c, { did, reason })),
+    changes: [
+      { kind: 'lockout', id: did },
+      { kind: 'account', id: did },
+    ],
+  })
 
 export const FACTOR_LABEL: Record<string, string> = { second_factor: 'TOTP and recovery codes', email_code: 'email codes' }
 
@@ -327,12 +344,14 @@ export function diffDrafts(a: Draft, b: Draft): [string, string, string][] {
 
 export type SaveResult = { version: number; nodes: { node: string; ok: boolean; configVersion?: number; error?: string }[] }
 
-export async function saveDraft(d: RateLimits, draft: Draft, actor: string, note: string): Promise<SaveResult> {
-  const r = await admin<SaveResult>('vlpds.admin.updateRateLimits', {
-    body: { config: docOf(draft, d), ifVersion: baseVersion(d), actor: actor.trim() || undefined, note: note.trim() || undefined },
+export function saveDraft(d: RateLimits, draft: Draft, actor: string, note: string): Promise<SaveResult> {
+  return mutate({
+    run: () =>
+      admin<SaveResult>('vlpds.admin.updateRateLimits', {
+        body: { config: docOf(draft, d), ifVersion: baseVersion(d), actor: actor.trim() || undefined, note: note.trim() || undefined },
+      }),
+    changes: [{ kind: 'config', id: 'ratelimits' }],
   })
-  rlPoll.refresh()
-  return r
 }
 
 const ACTOR_KEY = 'vlpds.admin.actor'
@@ -352,9 +371,4 @@ export function rememberActor(a: string) {
 }
 
 /** The current config, fresh: edits start from what the server has now. */
-export async function freshLimits(): Promise<Loaded> {
-  await rlPoll.refresh()
-  const s = rlPoll.get()
-  if (!s.data) throw s.error ?? new Error('Couldn’t load the rate-limit config')
-  return s.data
-}
+export const freshLimits = (): Promise<Loaded> => rateLimitsQ.fresh()

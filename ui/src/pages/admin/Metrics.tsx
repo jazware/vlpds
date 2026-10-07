@@ -104,6 +104,7 @@ export function Metrics() {
           <span>history and alerts live in Grafana</span>
         </>
       }
+      updated={m.at}
       actions={
         <>
           <button type="button" className="cx-btn" disabled={busy} onClick={() => dl('vlpds', 'vlpds.json')} title="Grafana: Dashboards → New → Import">

@@ -4,10 +4,10 @@ import { Chip, Copy, KV, Mini, Minis, Sec, Spark, Src, Strip, Swatch } from '../
 import { closePanel } from '../../components/console/nav'
 import { useClusterView } from '../../lib/console/cluster'
 import { ago, clock, fmtMs, fmtNum } from '../../lib/console/fmt'
-import { configPoll, crawlersPoll, mailPoll, setCrawlers, sumSeries, useNodeMetrics } from '../../lib/console/sys'
+import { configQ, crawlersQ, mailQ, setCrawlers, sumSeries, useNodeMetrics } from '../../lib/console/sys'
 import { flagRows, groupOf, PER_NODE, shown, sourceChip } from './Config'
 import { crawlNow, RelayResult, RelaySubscribed } from './Firehose'
-import { subscribersPoll } from '../../lib/console/polls'
+import { subscribersQ } from '../../lib/console/queries'
 import { MailChip, mailId } from './Mail'
 import { AccountLink } from './peopleUi'
 import { COMPONENTS, componentName, componentRows } from './Storage'
@@ -27,8 +27,8 @@ registerDetail('relay', {
   kind: 'Relay',
   section: 'firehose',
   use: (id) => {
-    const cr = crawlersPoll.use()
-    const subs = subscribersPoll.use()
+    const cr = crawlersQ.use()
+    const subs = subscribersQ.use()
     const r = cr.data?.relays.find((x) => x.relay === id)
     if (!cr.data) return { title: id, body: null, loading: true }
     if (!r) return { title: <span className="mono">{id}</span>, body: null, missing: 'This relay is no longer on the list.' }
@@ -37,6 +37,7 @@ registerDetail('relay', {
     return {
       title: <span className="mono">{r.relay}</span>,
       chip: <RelayResult r={r} />,
+      updated: cr.at,
       foot: <Src>getCrawlers · requestCrawl · setCrawlers</Src>,
       body: (
         <>
@@ -80,7 +81,6 @@ registerDetail('relay', {
                       call: `vlpds.admin.setCrawlers {"relays": [${list.filter((x) => x !== r.relay).map((x) => `"${x}"`).join(', ')}]}`,
                       run: async () => {
                         await setCrawlers({ relays: list.filter((x) => x !== r.relay) })
-                        crawlersPoll.refresh()
                         closePanel()
                       },
                       done: `Removed ${r.relay}`,
@@ -102,7 +102,7 @@ registerDetail('mail', {
   kind: 'Mail',
   section: 'mail',
   use: (id) => {
-    const ml = mailPoll.use()
+    const ml = mailQ.use()
     const { view } = useClusterView()
     const m = ml.data?.mail.find((x) => mailId(x) === id)
     if (!ml.data) return { title: id, body: null, loading: true }
@@ -111,6 +111,7 @@ registerDetail('mail', {
     return {
       title: <span className="mono">{m.purpose}</span>,
       chip: <MailChip m={m} />,
+      updated: ml.at,
       foot: <Src>vlpds.admin.listMail</Src>,
       body: (
         <>
@@ -141,7 +142,7 @@ registerDetail('cfg', {
   kind: 'Setting',
   section: 'config',
   use: (flag) => {
-    const cfg = configPoll.use()
+    const cfg = configQ.use()
     const { view } = useClusterView()
     if (!cfg.data) return { title: <span className="mono">{flag}</span>, body: null, loading: true }
     const row = flagRows(cfg.data).find((r) => r.flag === flag)
@@ -151,6 +152,7 @@ registerDetail('cfg', {
     return {
       title: <span className="mono">{row.flag}</span>,
       chip: row.differs && !row.byDesign ? <Chip k="warn">differs</Chip> : sourceChip(any),
+      updated: cfg.at,
       foot: <Src>vlpds.admin.getConfig · every node</Src>,
       body: (
         <>

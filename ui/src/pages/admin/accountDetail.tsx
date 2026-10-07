@@ -9,13 +9,15 @@ import type { AccountRow, AccountSecurity, MailEntry, RepoOpsResult, Session, Si
 import { withAdmin } from '../../lib/console/adminAdapter'
 import { useClusterView } from '../../lib/console/cluster'
 import { ago, authName, dur, factorName, fmtBytes, fmtNum, plural, shortDid } from '../../lib/console/fmt'
+import { K } from '../../lib/console/keys'
 import { isUnsupported } from '../../lib/console/live'
-import { heldSignInKeys, rlPoll, shortName, type HeldKey } from '../../lib/console/ratelimits'
-import { useLoad } from '../../lib/hooks'
+import { useAudit, useCases, useSubject } from '../../lib/console/moderation'
+import { useAdminQuery, type Load } from '../../lib/console/query'
+import { heldSignInKeys, rateLimitsQ, shortName, type HeldKey } from '../../lib/console/ratelimits'
 import { Link } from '../../lib/router'
 import { admin, call, errText } from '../../lib/xrpc'
 import * as act from './accountActions'
-import { useAccountsVersion, type Quota, type Who } from './accountActions'
+import { type Who } from './accountActions'
 import { accountState, TwoFactor } from './Accounts'
 import { AuditAction } from './auditUi'
 import { NodeTag } from './clusterUi'
@@ -41,7 +43,6 @@ type AccountInfo = {
   invitedBy?: InviteCode
 }
 type SubjectStatus = { takedown?: { applied: boolean; ref?: string }; deactivated?: { applied: boolean } }
-type SubjectDetail = { quota: Quota }
 
 const when = (ms?: number | null) => (ms ? ago(ms) : '—')
 const iso = (s?: string | null) => (s ? ago(new Date(s).getTime()) : '—')
@@ -75,8 +76,6 @@ const btn = (label: string, run: () => unknown, danger?: boolean) => (
 )
 
 // ---------------------------------------------------------------- can they sign in?
-
-type Load<T> = ReturnType<typeof useLoad<T>>
 
 const FAILED: Record<SignInFailure, string> = { wrong_password: 'wrong password', wrong_code: 'wrong code', factor_locked: 'code locked', rate_limited: 'rate-limited' }
 const FAILED_TEXT: Record<SignInFailure, string> = {
@@ -157,7 +156,7 @@ function CanSignIn({ a, k, t, i, sec, held, mail }: { a: Who; k: ChipKind; t: st
 
 // ---------------------------------------------------------------- sections
 
-function Security({ a, sec }: { a: Who; sec: ReturnType<typeof useLoad<AccountSecurity>> }) {
+function Security({ a, sec }: { a: Who; sec: Load<AccountSecurity> }) {
   const s = sec.data
   const factors = s ? [s.passkeys.length ? plural(s.passkeys.length, 'passkey') : '', s.totp.enabled ? 'authenticator app' : '', s.emailCode.enabled ? 'email code' : ''].filter(Boolean) : []
   return (
@@ -245,7 +244,7 @@ const Device = ({ name, ua }: { name?: string | null; ua?: string | null }) => (
   </span>
 )
 
-function SignIns({ sec, mode }: { sec: ReturnType<typeof useLoad<AccountSecurity>>; mode: DetailMode }) {
+function SignIns({ sec, mode }: { sec: Load<AccountSecurity>; mode: DetailMode }) {
   const [more, setMore] = useState(false)
   const s = sec.data
   if (!s?.recentSignIns.length) return null
@@ -499,7 +498,7 @@ function useAccountKeys(did: string): KVRow {
   ]
 }
 
-function Placement({ did, row, mode }: { did: string; row?: AccountRow; mode: DetailMode }) {
+function Placement({ did, row, mode }: { did: string; row?: AccountRow | null; mode: DetailMode }) {
   const { view } = useClusterView()
   const check = useCheckRepo(did)
   if (!row) return null
@@ -569,9 +568,8 @@ function opRows(r: RepoOpsResult) {
 
 /** The account's newest commits and events from the firehose ring (also in Moderation's subject drawer). */
 export function Ops({ did, mode, open }: { did: string; mode: DetailMode; open?: boolean }) {
-  const v = useAccountsVersion()
   const n = mode === 'page' ? 40 : 12
-  const l = useLoad(() => withAdmin((c) => api.listRepoOps(c, did, n)), [did, n, v])
+  const l = useAdminQuery({ key: K.accountOps(did, n), fn: (signal) => withAdmin((c) => api.listRepoOps(c, did, n, signal)), poll: 30_000 })
   const rows = l.data ? opRows(l.data) : []
   const first = rows[0]
   return (
@@ -609,9 +607,8 @@ export function Ops({ did, mode, open }: { did: string; mode: DetailMode; open?:
   )
 }
 
-function Blobs({ a, row, mode }: { a: Who; row?: AccountRow; mode: DetailMode }) {
-  const v = useAccountsVersion()
-  const l = useLoad<SubjectDetail>(() => admin('vlpds.admin.getSubject', { params: { did: a.did } }), [a.did, v])
+function Blobs({ a, row, mode }: { a: Who; row?: AccountRow | null; mode: DetailMode }) {
+  const l = useSubject({ did: a.did })
   const q = l.data?.quota
   const pct = q && q.limitBytes ? (q.bytes / q.limitBytes) * 100 : undefined
   return (
@@ -694,11 +691,14 @@ const spaceLabel = (uri: string) => {
 const spacePath = (uri: string) => `/admin/spaces/space?uri=${encodeURIComponent(uri)}`
 
 function Spaces({ did }: { did: string }) {
-  const l = useLoad<AccountSpaces | null>(async () => {
-    const d = await call('com.atproto.server.describeServer')
-    if (!d?.vlpds?.spaces) return null
-    return admin('vlpds.admin.getAccountSpaces', { params: { did } })
-  }, [did])
+  const desc = useAdminQuery<{ vlpds?: { spaces?: boolean } }>({ key: K.describe, fn: (signal) => call('com.atproto.server.describeServer', { signal }), staleTime: Infinity })
+  const on = desc.data ? !!desc.data.vlpds?.spaces : undefined
+  const spaces = useAdminQuery<AccountSpaces>({
+    key: K.accountSpaces(did),
+    fn: (signal) => admin('vlpds.admin.getAccountSpaces', { params: { did }, signal }),
+    enabled: on === true,
+  })
+  const l = on === false ? { ...spaces, data: null } : spaces
   if (l.data === null) return null
   const d = l.data
   return (
@@ -728,13 +728,9 @@ function Spaces({ did }: { did: string }) {
   )
 }
 
-type Case = { id: string; createdAt: string; status: string; source: string; subjects: { kind: string; did: string }[] }
-type Audit = { id: string; at: string; actor: string; auth?: string; action: string; reason?: string; caseId?: string }
-
 function Moderation({ did, status, mode }: { did: string; status?: SubjectStatus; mode: DetailMode }) {
-  const v = useAccountsVersion()
-  const cases = useLoad(async () => (await admin<{ cases: Case[] }>('vlpds.admin.listCases', { params: { did } })).cases, [did, v])
-  const audit = useLoad(async () => (await admin<{ entries: Audit[] }>('vlpds.admin.getAuditLog', { params: { did, limit: 10 } })).entries, [did, v])
+  const cases = useCases({ did })
+  const audit = useAudit({ did, limit: 10 })
   const cs = cases.data ?? []
   const open = cs.filter((c) => c.status === 'open').length
   return (
@@ -816,8 +812,11 @@ function AccountMail({ did, l }: { did: string; l: Load<MailEntry[]> }) {
   )
 }
 
-function DevMail({ email }: { email: string }) {
-  const m = useLoad<{ messages?: unknown[]; token?: string }>(() => admin('vlpds.admin.getDevMail', { params: { email } }), [email])
+function DevMail({ did, email }: { did: string; email: string }) {
+  const m = useAdminQuery<{ messages?: unknown[]; token?: string }>({
+    key: K.accountDevMail(did, email),
+    fn: (signal) => admin('vlpds.admin.getDevMail', { params: { email }, signal }),
+  })
   if (m.error || !m.data) return null
   const msgs = m.data.messages ?? []
   return (
@@ -830,7 +829,7 @@ function DevMail({ email }: { email: string }) {
   )
 }
 
-function Danger({ a, row, status, mode }: { a: Who; row?: AccountRow; status?: SubjectStatus; mode: DetailMode }) {
+function Danger({ a, row, status, mode }: { a: Who; row?: AccountRow | null; status?: SubjectStatus; mode: DetailMode }) {
   const taken = !!status?.takedown?.applied || row?.status === 'takendown'
   const deact = !!status?.deactivated?.applied || row?.status === 'deactivated'
   return (
@@ -868,7 +867,7 @@ function Danger({ a, row, status, mode }: { a: Who; row?: AccountRow; status?: S
   )
 }
 
-function Identity({ a, i, r }: { a: Who; i?: AccountInfo; r?: AccountRow }) {
+function Identity({ a, i, r }: { a: Who; i?: AccountInfo; r?: AccountRow | null }) {
   const did = a.did
   const keys = useAccountKeys(did)
   return (
@@ -913,26 +912,34 @@ function Identity({ a, i, r }: { a: Who; i?: AccountInfo; r?: AccountRow }) {
 
 // ---------------------------------------------------------------- the detail
 
+/**
+ * Every read the detail makes, each its own query under ['account', did]: an action or a change
+ * from the feed refetches the lot. The row is the same copy the Accounts table shows (a list
+ * fetch hydrates it), so the drawer opens on it at once.
+ */
 function useAccount(did: string) {
-  const v = useAccountsVersion()
-  const row = useLoad<AccountRow | undefined>(async () => {
-    try {
-      const r = await withAdmin((c) => api.listAccounts(c, { q: did, limit: 1 }))
-      return r.accounts.find((x) => x.did === did)
-    } catch (e) {
-      if (isUnsupported(e)) return undefined
-      throw e
-    }
-  }, [did, v])
-  const info = useLoad<AccountInfo>(() => admin('com.atproto.admin.getAccountInfo', { params: { did } }), [did, v])
-  const status = useLoad<SubjectStatus>(() => admin('com.atproto.admin.getSubjectStatus', { params: { did } }), [did, v])
-  const sec = useLoad<AccountSecurity>(() => withAdmin((c) => api.getAccountSecurity(c, did)), [did, v])
-  const sessions = useLoad(() => withAdmin((c) => api.listSessions(c, did)), [did, v])
-  const mail = useLoad(async () => (await withAdmin((c) => api.listMail(c, 20, undefined, did))).mail, [did, v])
+  const row = useAdminQuery<AccountRow | null>({
+    key: K.accountRow(did),
+    fn: async (signal) => {
+      try {
+        const r = await withAdmin((c) => api.listAccounts(c, { q: did, limit: 1 }, signal))
+        return r.accounts.find((x) => x.did === did) ?? null
+      } catch (e) {
+        if (isUnsupported(e)) return null
+        throw e
+      }
+    },
+    poll: 60_000,
+  })
+  const info = useAdminQuery<AccountInfo>({ key: K.accountInfo(did), fn: (signal) => admin('com.atproto.admin.getAccountInfo', { params: { did }, signal }), poll: 60_000 })
+  const status = useAdminQuery<SubjectStatus>({ key: K.accountStatus(did), fn: (signal) => admin('com.atproto.admin.getSubjectStatus', { params: { did }, signal }), poll: 60_000 })
+  const sec = useAdminQuery<AccountSecurity>({ key: K.accountSecurity(did), fn: (signal) => withAdmin((c) => api.getAccountSecurity(c, did, signal)), poll: 60_000 })
+  const sessions = useAdminQuery({ key: K.accountSessions(did), fn: (signal) => withAdmin((c) => api.listSessions(c, did, signal)), poll: 60_000 })
+  const mail = useAdminQuery({ key: K.mail({ limit: 20, did }), fn: async (signal) => (await withAdmin((c) => api.listMail(c, 20, signal, did))).mail, poll: 60_000 })
   return { row, info, status, sec, sessions, mail }
 }
 
-function banners(a: Who, row: AccountRow | undefined, info: AccountInfo | undefined, status: SubjectStatus | undefined, sec: AccountSecurity | undefined): BannerSpec[] {
+function banners(a: Who, row: AccountRow | null | undefined, info: AccountInfo | undefined, status: SubjectStatus | undefined, sec: AccountSecurity | undefined): BannerSpec[] {
   const out: BannerSpec[] = []
   const locks = (sec?.lockouts ?? []).filter((l) => l.lockedUntil && l.lockedUntil > Date.now())
   if (locks.length)
@@ -956,7 +963,7 @@ registerDetail('account', {
   section: 'accounts',
   use: (did, mode) => {
     const { row, info, status, sec, sessions, mail } = useAccount(did)
-    const rl = rlPoll.use()
+    const rl = rateLimitsQ.use()
     const r = row.data
     const i = info.data
     const handle = i?.handle ?? r?.handle
@@ -997,7 +1004,7 @@ registerDetail('account', {
     const invites = <Invites a={a} info={i} />
     const spaces = <Spaces did={did} />
     const moder = <Moderation did={did} status={status.data} mode={mode} />
-    const dev = i?.email ? <DevMail email={i.email} /> : null
+    const dev = i?.email ? <DevMail did={did} email={i.email} /> : null
     const danger = <Danger a={a} row={r} status={status.data} mode={mode} />
     const top = (
       <>
@@ -1010,6 +1017,7 @@ registerDetail('account', {
       wide: true,
       title: `@${handle}`,
       chip: <Chip k={k}>{t}</Chip>,
+      updated: info.at,
       foot: (
         <>
           <Src>listAccounts · getAccountInfo · getSubjectStatus</Src> {r ? `on ${r.node}, shard ${r.shard}` : ''}

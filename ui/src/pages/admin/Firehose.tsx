@@ -9,8 +9,9 @@ import { registerPalette } from '../../components/console/Palette'
 import { toast } from '../../components/console/toast'
 import { useClusterView } from '../../lib/console/cluster'
 import { ago, dur, fmtBytes, fmtMs, fmtNum, fmtSi, plural, seqMillis, seqWriter } from '../../lib/console/fmt'
-import { isSlow, isThisBrowser, subscribersPoll, type Subscriber, type SubscriberList } from '../../lib/console/polls'
-import { crawlersPoll, maxLatest, requestCrawl, setCrawlers, subKey, useNodeMetrics, useSubRates, worstSeries, type CrawlResult, type Relay } from '../../lib/console/sys'
+import { isSlow, isThisBrowser, subscribersQ, type Subscriber, type SubscriberList } from '../../lib/console/queries'
+import { subscriberState } from '../../lib/console/status'
+import { crawlersQ, maxLatest, requestCrawl, setCrawlers, subKey, useNodeMetrics, useSubRates, worstSeries, type CrawlResult, type Relay } from '../../lib/console/sys'
 
 // Firehose & relays: every subscribeRepos connection on every node with its rate against the
 // PDS's, the relays asked to crawl, recent disconnects, and the merged live tail.
@@ -32,7 +33,6 @@ const lastOf = (xs?: number[]) => (xs?.length ? xs[xs.length - 1] : 0)
 export async function crawlNow(relays: string[]) {
   try {
     const r = await requestCrawl(relays)
-    crawlersPoll.refresh()
     const bad = r.results.filter((x) => !x.ok)
     if (!bad.length) toast(`Asked ${plural(r.results.length, 'relay')} to crawl: accepted`)
     else toast(bad.map((x: CrawlResult) => `${x.relay}: ${x.status ?? ''} ${x.error ?? 'refused'}`).join(' · '), { err: true, ms: 8000 })
@@ -48,7 +48,7 @@ function AddRelay({ close }: { close: () => void }) {
   const [v, setV] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>()
-  const list = crawlersPoll.get().data?.relays.map((r) => r.relay) ?? []
+  const list = crawlersQ.get().data?.relays.map((r) => r.relay) ?? []
   return (
     <FormDialog
       title="Add a relay"
@@ -63,7 +63,6 @@ function AddRelay({ close }: { close: () => void }) {
         setError(undefined)
         try {
           await setCrawlers({ relays: [...list, v.trim()] })
-          crawlersPoll.refresh()
           toast(`Added ${v.trim()}`)
           close()
         } catch (e) {
@@ -88,7 +87,7 @@ export function intervalDialog() {
   openDialog((close) => <Interval close={close} />)
 }
 function Interval({ close }: { close: () => void }) {
-  const d = crawlersPoll.get().data
+  const d = crawlersQ.get().data
   const [v, setV] = useState(d ? String(d.intervalSecs / 60) : '20')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>()
@@ -99,7 +98,6 @@ function Interval({ close }: { close: () => void }) {
     setError(undefined)
     try {
       await setCrawlers({ intervalSecs })
-      crawlersPoll.refresh()
       toast(intervalSecs === null ? 'Back to --crawl-interval-secs' : `Crawl interval set to ${v} min`)
       close()
     } catch (e) {
@@ -174,8 +172,8 @@ registerPalette({
       { group: 'Actions', title: 'Request a crawl from every relay', desc: 'requestCrawl', glyph: '↻', run: () => crawlNow([]) },
       { group: 'Actions', title: 'Add a relay…', desc: 'setCrawlers', glyph: '+', run: addRelayDialog },
     ]
-    const subs = subscribersPoll.get().data?.subscribers ?? []
-    const relays = crawlersPoll.get().data?.relays ?? []
+    const subs = subscribersQ.get().data?.subscribers ?? []
+    const relays = crawlersQ.get().data?.relays ?? []
     return [
       ...out,
       ...relays.map((r) => ({ group: 'Firehose', title: `Relay ${r.relay}`, desc: r.status ? (r.status.ok ? 'accepted' : 'rejected') : 'not asked', glyph: '⇄', run: () => openPanel('relay', r.relay) })),
@@ -199,15 +197,15 @@ function lagText(s: Subscriber) {
 }
 
 function stateChip(s: Subscriber) {
-  if (s.state === 'backfilling') return <Chip k="info">backfilling</Chip>
-  return isSlow(s) ? <Chip k="warn">live · slow</Chip> : <Chip k="ok">live</Chip>
+  const [k, t] = subscriberState(s, isSlow(s))
+  return <Chip k={k}>{t}</Chip>
 }
 
 export function Firehose() {
   const { view } = useClusterView()
   const { subs, rates } = useSubRates()
   const m = useNodeMetrics()
-  const cr = crawlersPoll.use()
+  const cr = crawlersQ.use()
   const d = subs.data
   const color = (node: string) => view?.nodes.find((n) => n.node === node)?.color
   // the node-metrics poll has the rate from its first answer; two subscriber polls take 10 s
@@ -336,6 +334,7 @@ export function Firehose() {
             {cr.data && <span>relays told about {cr.data.hostname}</span>}
           </>
         }
+        updated={subs.at}
         actions={
           <button type="button" className="cx-btn" disabled={!cr.data?.relays.length} onClick={() => crawlNow([])} title="com.atproto.sync.requestCrawl to every relay">
             Request crawl from all
@@ -381,7 +380,7 @@ export function Firehose() {
       <Panel
         className="cx-mt"
         title="Connected"
-        src={<Src>vlpds.admin.listFirehoseSubscribers · 5 s</Src>}
+        src={<Src>vlpds.admin.listFirehoseSubscribers · on change</Src>}
         right={<span className="muted sm">{d && d.total > d.subscribers.length ? `first ${fmtNum(d.subscribers.length)} of ${fmtNum(d.total)} · ` : ''}oldest first</span>}
       >
         {d ? (
@@ -394,7 +393,7 @@ export function Firehose() {
             label="Firehose subscribers"
           />
         ) : subs.error ? (
-          <ErrorState error={subs.error} retry={subscribersPoll.refresh} />
+          <ErrorState error={subs.error} retry={subscribersQ.refresh} />
         ) : (
           <Loading />
         )}
@@ -431,7 +430,6 @@ export function Firehose() {
                         onClick={async () => {
                           try {
                             await setCrawlers({ relays: null })
-                            crawlersPoll.refresh()
                             toast('Back to --crawlers')
                           } catch (e) {
                             toast(e instanceof Error ? e.message : String(e), { err: true })
@@ -476,7 +474,7 @@ export function Firehose() {
                 ]}
               />
             ) : cr.error ? (
-              <ErrorState error={cr.error} retry={crawlersPoll.refresh} />
+              <ErrorState error={cr.error} retry={crawlersQ.refresh} />
             ) : (
               <Loading />
             )}

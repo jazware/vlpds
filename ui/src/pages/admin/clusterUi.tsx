@@ -4,11 +4,11 @@ import { DataTable, type Col } from '../../components/console/DataTable'
 import { Chip, Meter, MiniBar, Spark, Swatch, type BannerSpec } from '../../components/console/kit'
 import { openPanel } from '../../components/console/nav'
 import type { ClusterView, NodeView } from '../../lib/console/cluster'
-import { clusterPoll } from '../../lib/console/cluster'
 import { dur, factorName, fmtBytes, fmtMs, fmtNum, fmtPct, fmtSec, fmtSi, plural } from '../../lib/console/fmt'
 import type { Optional, Lockout } from '../../lib/console/adminAdapter'
 import { col, last, nodeGauges, nodePoints, type MetricsState } from '../../lib/console/metrics'
-import { isSlow, type SubscriberList } from '../../lib/console/polls'
+import { mutate } from '../../lib/console/mutate'
+import { isSlow, type SubscriberList } from '../../lib/console/queries'
 import { admin } from '../../lib/xrpc'
 
 // Cluster pieces the Overview and Nodes & shards pages share.
@@ -27,11 +27,8 @@ export function finalizeLevel(level: number, view: ClusterView) {
     word: `level ${level}`,
     action: 'Finalize',
     call: `vlpds.admin.setFeatureLevel {"level": ${level}}`,
-    run: () => admin('vlpds.admin.setFeatureLevel', { body: { level } }),
+    run: () => mutate({ run: () => admin('vlpds.admin.setFeatureLevel', { body: { level } }), changes: [{ kind: 'config', id: 'featureLevel' }] }),
     done: `Feature level ${level} is active`,
-  }).then((ok) => {
-    if (ok) clusterPoll.refresh()
-    return ok
   })
 }
 

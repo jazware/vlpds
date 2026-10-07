@@ -1,5 +1,6 @@
 import { segmentFeed, type Segment } from './adminAdapter'
-import { createPoller } from './live'
+import { K } from './keys'
+import { shared } from './query'
 
 // vlpds.admin.listSegments every 2 s for the strata canvas: each node's sealed segments, kept for
 // 20 s by log. A poll asks from just before the previous answer, or from the oldest segment
@@ -40,4 +41,4 @@ async function fetchSegments(): Promise<{ supported: boolean; nsid?: string; lan
   return { supported: true, lanes }
 }
 
-export const segmentsPoll = createPoller(fetchSegments, 2000)
+export const segmentsQ = shared({ key: K.segments, fn: fetchSegments, poll: 2000, stream: true })

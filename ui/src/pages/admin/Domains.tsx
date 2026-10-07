@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { DataTable, type Col } from '../../components/console/DataTable'
-import { Banners, Chip, Empty, ErrorState, Loading, Meter, PageHead, Panel, Seg, Src, type BannerSpec } from '../../components/console/kit'
+import { Banners, Chip, Empty, ErrorState, Loading, Meter, oldest, PageHead, Panel, Seg, Src, type BannerSpec } from '../../components/console/kit'
 import { ago, fmtNum, plural } from '../../lib/console/fmt'
-import { addDomainDialog, createInvitesDialog, disableCodes, domainsPoll, InviteStatus, loadInvites, usable, useInvites, usesLeft, type Code, type Domain } from './domainsUi'
+import { addDomainDialog, createInvitesDialog, disableCodes, domainsQ, InviteStatus, usable, useInvites, usesLeft, type Code, type Domain } from './domainsUi'
 import { AccountLink, Who } from './peopleUi'
 
 // Domains & invites: the handle domains accounts can take a handle under, and invite codes.
@@ -16,11 +16,8 @@ const FILTERS: Record<Filter, (c: Code) => boolean> = {
 }
 
 export function Domains() {
-  const doms = domainsPoll.use()
+  const doms = domainsQ.use()
   const inv = useInvites()
-  useEffect(() => {
-    loadInvites()
-  }, [])
   const d = doms.data
   const nUsable = inv.codes.filter(usable).length
   const banners: BannerSpec[] = []
@@ -42,12 +39,13 @@ export function Domains() {
             {inv.loaded && <span>{plural(nUsable, 'usable code')}{inv.cursor ? '+' : ''}</span>}
           </>
         }
+        updated={oldest(doms.at, inv.at)}
       />
       <Banners items={banners} />
       <div className="cx-grid2 cxp-domgrid">
         <Panel
           title="Handle domains"
-          src={<Src>listHandleDomains · 5 s</Src>}
+          src={<Src>listHandleDomains</Src>}
           right={
             <button type="button" className="cx-btn sm" onClick={addDomainDialog}>
               Add domain…
@@ -55,9 +53,9 @@ export function Domains() {
           }
           foot={d ? `Each needs a wildcard DNS record pointing at the PDS and certificates for it. Every node picks up a change within ${d.refreshSecs} s.` : undefined}
         >
-          {!d ? doms.error ? <ErrorState error={doms.error} retry={domainsPoll.refresh} /> : <Loading /> : <DomainsTable domains={d.domains} />}
+          {!d ? doms.error ? <ErrorState error={doms.error} retry={domainsQ.refresh} /> : <Loading /> : <DomainsTable domains={d.domains} />}
         </Panel>
-        <Invites />
+        <Invites inv={inv} />
       </div>
     </>
   )
@@ -83,8 +81,7 @@ function DomainsTable({ domains }: { domains: Domain[] }) {
   return <DataTable rows={domains} cols={cols} rowKey={(x) => x.domain} open={(x) => ({ type: 'domain', id: x.domain })} label="Handle domains" />
 }
 
-function Invites() {
-  const inv = useInvites()
+function Invites({ inv }: { inv: ReturnType<typeof useInvites> }) {
   const [f, setF] = useState<Filter>('usable')
   const [sel, setSel] = useState<Set<string>>(new Set())
   const list = inv.codes.filter(FILTERS[f])
@@ -144,7 +141,7 @@ function Invites() {
             Disable selected…
           </button>
           {inv.cursor && (
-            <button type="button" className="cx-linklike" style={{ marginLeft: 'auto' }} disabled={inv.busy} onClick={() => loadInvites(true)}>
+            <button type="button" className="cx-linklike" style={{ marginLeft: 'auto' }} disabled={inv.busy} onClick={inv.more}>
               Load 100 more
             </button>
           )}
@@ -153,7 +150,7 @@ function Invites() {
     >
       {!inv.loaded ? (
         inv.error ? (
-          <ErrorState error={inv.error} retry={() => loadInvites()} />
+          <ErrorState error={inv.error} retry={inv.reload} />
         ) : (
           <Loading />
         )

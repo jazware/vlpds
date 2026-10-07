@@ -11,9 +11,9 @@ import {
   busiest,
   fmtWindow,
   held,
-  rate429Poll,
+  rate429Q,
   rejectionHistory,
-  rlPoll,
+  rateLimitsQ,
   shortName,
   totalRate,
   type Consumer,
@@ -21,7 +21,7 @@ import {
   type OverrideCfg,
 } from '../../lib/console/ratelimits'
 import type { Lockout } from '../../lib/adminApi'
-import { lockoutsPoll } from '../../lib/console/polls'
+import { lockoutsQ } from '../../lib/console/queries'
 import { addOverrideDialog, addRouteDialog, bucketRows, clearLock, KeyId, KeyUse, KeyWho, overrideFor, toggleEnforcement, type BucketRow } from './limitsUi'
 import { AccountLink, openAccount } from './peopleUi'
 
@@ -29,15 +29,15 @@ import { AccountLink, openAccount } from './peopleUi'
 // key, overrides and the config's change history. Edits go through limitsUi's diff dialog.
 
 export function Limits() {
-  const s = rlPoll.use()
+  const s = rateLimitsQ.use()
   const d = s.data
-  if (!d) return s.error ? <ErrorState error={s.error} retry={rlPoll.refresh} /> : <Loading label="Asking every node…" />
+  if (!d) return s.error ? <ErrorState error={s.error} retry={rateLimitsQ.refresh} /> : <Loading label="Asking every node…" />
   return <Page d={d} stale={!!s.error} />
 }
 
 function Page({ d, stale }: { d: Loaded; stale: boolean }) {
-  const locks = lockoutsPoll.use()
-  const rate = rate429Poll.use()
+  const locks = lockoutsQ.use()
+  const rate = rate429Q.use()
   const { view } = useClusterView()
   const rows = useMemo(() => bucketRows(d), [d])
   const hist = rejectionHistory()
@@ -86,6 +86,7 @@ function Page({ d, stale }: { d: Loaded; stale: boolean }) {
             </span>
           </>
         }
+        updated={d.fetchedAt}
         actions={
           <span className="cx-cellid sm t2">
             Rate limiting <Toggle on={enabled} label={enabled ? 'Turn rate limiting off' : 'Turn rate limiting on'} onChange={(on) => toggleEnforcement(on)} />

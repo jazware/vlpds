@@ -1,3 +1,4 @@
+import { QueryClientProvider } from '@tanstack/react-query'
 import { useEffect, useState, type JSX, type ReactNode } from 'react'
 import '../../console.css'
 import { DetailPage, detailKind } from '../../components/console/Drawer'
@@ -5,6 +6,7 @@ import { Empty } from '../../components/console/kit'
 import { Shell } from '../../components/console/Shell'
 import { SECTION, sectionOf, type Section } from '../../components/console/sections'
 import { ErrorNotice, Field, Spinner, Topbar } from '../../components/ui'
+import { queryClient } from '../../lib/console/query'
 import { useAdminUnlock } from '../../lib/hooks'
 import { Link, match } from '../../lib/router'
 import { basic, call, setAdminOperator, setAdminToken, XrpcError } from '../../lib/xrpc'
@@ -93,9 +95,11 @@ export function AdminApp({ path }: { path: string }) {
   if (!unlocked) return <AdminLogin />
   const r = route(path.replace(/\/+$/, '') || '/admin')
   return (
-    <Shell section={r.section} crumbs={r.crumbs}>
-      {r.page}
-    </Shell>
+    <QueryClientProvider client={queryClient}>
+      <Shell section={r.section} crumbs={r.crumbs}>
+        {r.page}
+      </Shell>
+    </QueryClientProvider>
   )
 }
 

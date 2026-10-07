@@ -1,10 +1,12 @@
 import { useMemo } from 'react'
 import { seqMillis } from '../format'
 import { admin } from '../xrpc'
-import { createPoller } from './live'
+import { K } from './keys'
+import { shared } from './query'
 
-// vlpds.admin.getClusterStatus, polled every 2 s while any console page shows it. It is the
-// console's heartbeat: when it fails the shell says "not updating".
+// vlpds.admin.getClusterStatus, read every 2 s while any console page shows it (and at once when
+// the change feed says leases, owners or the layout changed). It is the console's heartbeat: when
+// it fails the shell says "not updating".
 
 export type ClusterNode = {
   node: string
@@ -60,8 +62,8 @@ const HISTORY_MS = 20_000
 const history: LogSample[] = []
 export const logHistory = () => history
 
-async function fetchCluster(): Promise<ClusterStatus & { fetchedAt: number }> {
-  const c: ClusterStatus = await admin('vlpds.admin.getClusterStatus')
+async function fetchCluster(signal?: AbortSignal): Promise<ClusterStatus & { fetchedAt: number }> {
+  const c: ClusterStatus = await admin('vlpds.admin.getClusterStatus', { signal })
   const logs: LogSample['logs'] = {}
   for (const s of c.firehose.sources) logs[s.log] = { wmMs: seqMillis(s.watermark) }
   for (const n of c.nodes) logs[n.log] = { ...logs[n.log], ordinal: n.logDurableOrdinal ?? undefined }
@@ -71,8 +73,8 @@ async function fetchCluster(): Promise<ClusterStatus & { fetchedAt: number }> {
   return { ...c, fetchedAt: Date.now() }
 }
 
-export const clusterPoll = createPoller(fetchCluster, 2000, { heartbeat: true })
-export const useCluster = clusterPoll.use
+export const clusterQ = shared({ key: K.cluster, fn: fetchCluster, poll: 2000, stream: true, version: (c) => c.time })
+export const useCluster = clusterQ.use
 
 const SLOTS = ['c1', 'c2', 'c3', 'c4', 'c5', 'c6']
 

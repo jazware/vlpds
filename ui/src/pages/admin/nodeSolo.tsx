@@ -5,8 +5,8 @@ import { Strata } from '../../components/console/Strata'
 import type { ClusterView, NodeView } from '../../lib/console/cluster'
 import { ago, dur, fmtBytes, fmtMs, fmtNum, fmtPct, fmtSec, fmtSi, plural } from '../../lib/console/fmt'
 import { col, last, nodeGauges, nodePoints, type MetricsState } from '../../lib/console/metrics'
-import type { SubscriberList } from '../../lib/console/polls'
-import { segmentsPoll } from '../../lib/console/segments'
+import type { SubscriberList } from '../../lib/console/queries'
+import { segmentsQ } from '../../lib/console/segments'
 import { useNodeMetrics } from '../../lib/console/sys'
 import { finalizeLevel, LeaseCell, ShardMap } from './clusterUi'
 
@@ -15,7 +15,7 @@ import { finalizeLevel, LeaseCell, ShardMap } from './clusterUi'
 
 export function OneNode({ view, n, m, subs, at }: { view: ClusterView; n: NodeView; m: MetricsState; subs?: SubscriberList; at?: number }) {
   const nm = useNodeMetrics()
-  const feed = segmentsPoll.use().data?.supported
+  const feed = segmentsQ.use().data?.supported
   const raw = nm.nodes.find((x) => x.node === n.node)?.raw
   const p = nodePoints(m, n.node, n.self)
   const g = nodeGauges(m, n.node, n.self)

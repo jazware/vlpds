@@ -1,27 +1,31 @@
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useInfiniteQuery, type InfiniteData } from '@tanstack/react-query'
+import { useState } from 'react'
 import { confirmAction, FormDialog, openDialog } from '../../components/console/dialogs'
 import { registerDetail } from '../../components/console/Drawer'
 import { Chip, Copy, KV, RRow, Sec, Src, Strip } from '../../components/console/kit'
 import { panelParam } from '../../components/console/nav'
 import { registerPalette } from '../../components/console/Palette'
 import { toast } from '../../components/console/toast'
-import { clusterPoll } from '../../lib/console/cluster'
+import { clusterQ } from '../../lib/console/cluster'
 import { ago, fmtNum, plural } from '../../lib/console/fmt'
-import { createPoller } from '../../lib/console/live'
+import { K } from '../../lib/console/keys'
+import { mutate } from '../../lib/console/mutate'
+import { every, queryClient, shared } from '../../lib/console/query'
+import { inviteTone } from '../../lib/console/status'
 import { useAction } from '../../lib/hooks'
 import { navigate } from '../../lib/router'
 import { admin, call, errText } from '../../lib/xrpc'
 import { AccountLink } from './peopleUi'
 
-// Domains & invites: the handle-domain list (polled), invite codes (paged), their slide-overs,
-// dialogs and ⌘K entries.
+// Domains & invites: the handle-domain list, invite codes (paged), their slide-overs, dialogs and
+// ⌘K entries. Both are queries the change feed refreshes (`domain`, `invite`).
 
 // ---------------------------------------------------------------- handle domains
 
 export type Domain = { domain: string; primary: boolean; accounts: number | null; addedAt?: string | null; addedBy?: string | null }
 export type DomainList = { primary: string; domains: Domain[]; updatedAt?: string | null; refreshSecs: number; countsPartial?: boolean; unreachableNodes?: string[] }
 
-export const domainsPoll = createPoller(() => admin<DomainList>('vlpds.admin.listHandleDomains'), 5000)
+export const domainsQ = shared({ key: K.domains, fn: (signal) => admin<DomainList>('vlpds.admin.listHandleDomains', { signal }), poll: 30_000 })
 
 type Applied = { nodes?: { node: string; ok: boolean; error?: string }[] }
 const appliedText = (r: Applied) => {
@@ -38,8 +42,7 @@ function AddDomain({ close }: { close: () => void }) {
   const [v, setV] = useState('')
   const typed = v.trim().toLowerCase().replace(/^\.+/, '')
   const add = useAction(async () => {
-    const r = await admin<Applied>('vlpds.admin.addHandleDomain', { body: { domain: typed } })
-    domainsPoll.refresh()
+    const r = await mutate({ run: () => admin<Applied>('vlpds.admin.addHandleDomain', { body: { domain: typed } }), changes: [{ kind: 'domain', id: typed }] })
     close()
     toast(`Added ${typed}.${appliedText(r)}`)
   })
@@ -72,11 +75,11 @@ export function removeDomain(d: Domain) {
     word: d.domain,
     action: 'Remove domain',
     call: `vlpds.admin.removeHandleDomain {domain${inUse ? ', force' : ''}}`,
-    run: async (v) => {
-      const r = await admin<{ accounts?: number }>('vlpds.admin.removeHandleDomain', { body: { domain: d.domain, force: v.force ? true : undefined } })
-      domainsPoll.refresh()
-      return r
-    },
+    run: (v) =>
+      mutate({
+        run: () => admin<{ accounts?: number }>('vlpds.admin.removeHandleDomain', { body: { domain: d.domain, force: v.force ? true : undefined } }),
+        changes: [{ kind: 'domain', id: d.domain }],
+      }),
     done: (r) => {
       const n = (r as { accounts?: number }).accounts
       return n ? `Removed ${d.domain}. ${plural(n, 'account')} still under it.` : `Removed ${d.domain}`
@@ -88,7 +91,7 @@ registerDetail('domain', {
   kind: 'Handle domain',
   section: 'domains',
   use: (id) => {
-    const s = domainsPoll.use()
+    const s = domainsQ.use()
     const d = s.data?.domains.find((x) => x.domain === id)
     if (!s.data) return { title: id, body: null, loading: !s.error, missing: s.error ? errText(s.error) : undefined }
     if (!d) return { title: <span className="mono">.{id}</span>, body: null, missing: `${id} isn’t a handle domain here (any more).` }
@@ -96,7 +99,8 @@ registerDetail('domain', {
     return {
       title: <span className="mono">.{d.domain}</span>,
       chip: d.primary ? <Chip k="acc">primary</Chip> : <Chip k="ok">served</Chip>,
-      foot: <Src>listHandleDomains · 5 s</Src>,
+      updated: s.at,
+      foot: <Src>listHandleDomains</Src>,
       body: (
         <>
           <Strip
@@ -137,39 +141,48 @@ export type Code = { code: string; available: number; disabled: boolean; forAcco
 export const usesLeft = (c: Code) => Math.max(0, c.available - c.uses.length)
 export const usable = (c: Code) => !c.disabled && usesLeft(c) > 0
 
-type InvState = { codes: Code[]; cursor?: string; loaded: boolean; error?: unknown; busy: boolean; unreachableNodes?: string[] }
-let inv: InvState = { codes: [], loaded: false, busy: false }
-const invSubs = new Set<() => void>()
-const setInv = (p: Partial<InvState>) => {
-  inv = { ...inv, ...p }
-  invSubs.forEach((l) => l())
-}
-export const useInvites = () =>
-  useSyncExternalStore(
-    (l) => {
-      invSubs.add(l)
-      return () => {
-        invSubs.delete(l)
-      }
-    },
-    () => inv,
-  )
+type CodePage = { codes: Code[]; cursor?: string; unreachableNodes?: string[] }
 
-/** The newest page again, or (`more`) the next one. */
-export async function loadInvites(more = false) {
-  if (inv.busy) return
-  setInv({ busy: true })
-  try {
-    const r = await admin<{ codes: Code[]; cursor?: string; unreachableNodes?: string[] }>('com.atproto.admin.getInviteCodes', { params: { sort: 'recent', limit: 100, cursor: more ? inv.cursor : undefined } })
-    setInv({ codes: more ? [...inv.codes, ...r.codes] : r.codes, cursor: r.cursor, loaded: true, error: undefined, unreachableNodes: r.unreachableNodes })
-  } catch (e) {
-    setInv({ error: e })
-  } finally {
-    setInv({ busy: false })
+/** Every loaded code, newest first, across the pages fetched so far. */
+const codesOf = (d?: InfiniteData<CodePage>) => d?.pages.flatMap((p) => p.codes) ?? []
+export const cachedCodes = () => codesOf(queryClient.getQueryData<InfiniteData<CodePage>>(K.invites))
+
+/** Invite codes, 100 a page; the change feed's `invite` refetches the pages loaded. */
+export function useInvites() {
+  const q = useInfiniteQuery({
+    queryKey: K.invites,
+    queryFn: ({ pageParam, signal }) =>
+      admin<CodePage>('com.atproto.admin.getInviteCodes', { params: { sort: 'recent', limit: 100, cursor: pageParam }, signal }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.cursor,
+    refetchInterval: every(60_000),
+  })
+  const pages = q.data?.pages
+  return {
+    codes: codesOf(q.data),
+    cursor: q.hasNextPage ? pages?.[pages.length - 1]?.cursor : undefined,
+    loaded: !!pages,
+    error: q.error ?? undefined,
+    busy: q.isFetching,
+    at: q.dataUpdatedAt || undefined,
+    unreachableNodes: pages?.[pages.length - 1]?.unreachableNodes,
+    more: () => void q.fetchNextPage(),
+    reload: () => void q.refetch(),
   }
 }
 
-const publicBase = () => (clusterPoll.get().data?.publicUrl ?? location.origin).replace(/\/+$/, '')
+/** Marks codes disabled in every loaded page: the answer is obvious, so it shows before the call returns. */
+function markDisabled(codes: string[]): () => void {
+  const before = queryClient.getQueryData<InfiniteData<CodePage>>(K.invites)
+  if (before)
+    queryClient.setQueryData<InfiniteData<CodePage>>(K.invites, {
+      ...before,
+      pages: before.pages.map((p) => ({ ...p, codes: p.codes.map((c) => (codes.includes(c.code) ? { ...c, disabled: true } : c)) })),
+    })
+  return () => queryClient.setQueryData(K.invites, before)
+}
+
+const publicBase = () => (clusterQ.get().data?.publicUrl ?? location.origin).replace(/\/+$/, '')
 export const inviteLinks = (code: string) => {
   const q = `?invite=${encodeURIComponent(code)}`
   return { signup: `${publicBase()}/account/signup${q}`, migrate: `${publicBase()}/migrate${q}` }
@@ -183,9 +196,12 @@ export function disableCodes(codes: string[], after?: () => void) {
     action: codes.length === 1 ? 'Disable code' : `Disable ${codes.length} codes`,
     call: 'com.atproto.admin.disableInviteCodes {codes}',
     run: async () => {
-      await admin('com.atproto.admin.disableInviteCodes', { body: { codes } })
+      await mutate({
+        run: () => admin('com.atproto.admin.disableInviteCodes', { body: { codes } }),
+        optimistic: () => markDisabled(codes),
+        changes: [{ kind: 'invite', id: '*' }],
+      })
       after?.()
-      await loadInvites()
     },
     done: codes.length === 1 ? 'Code disabled' : `${codes.length} codes disabled`,
   })
@@ -202,10 +218,13 @@ function CreateInvites({ close }: { close: () => void }) {
   const go = useAction(async () => {
     let did: string | undefined = forAcc.trim().replace(/^@/, '') || undefined
     if (did && !did.startsWith('did:')) did = (await call<{ did: string }>('com.atproto.identity.resolveHandle', { params: { handle: did } })).did
-    const r = await admin<{ codes: { account: string; codes: string[] }[] }>('com.atproto.server.createInviteCodes', {
-      body: { codeCount: Number(count), useCount: Number(uses), forAccounts: did ? [did] : undefined },
+    const r = await mutate({
+      run: () =>
+        admin<{ codes: { account: string; codes: string[] }[] }>('com.atproto.server.createInviteCodes', {
+          body: { codeCount: Number(count), useCount: Number(uses), forAccounts: did ? [did] : undefined },
+        }),
+      changes: [{ kind: 'invite', id: '*' }],
     })
-    loadInvites()
     openDialog((c) => <Created codes={r.codes.flatMap((x) => x.codes)} close={c} />)
   })
   const ok = Number(count) >= 1 && Number(count) <= 100 && Number(uses) >= 1 && Number(uses) <= 1000
@@ -264,7 +283,8 @@ function Created({ codes, close }: { codes: string[]; close: () => void }) {
 }
 
 export function InviteStatus({ c }: { c: Code }) {
-  return c.disabled ? <Chip k="idle">disabled</Chip> : usesLeft(c) === 0 ? <Chip k="plain">used up</Chip> : <Chip k="ok">usable</Chip>
+  const [k, t] = inviteTone(c)
+  return <Chip k={k}>{t}</Chip>
 }
 
 /** "admin" or an account. */
@@ -277,15 +297,13 @@ registerDetail('invite', {
   section: 'domains',
   use: (id) => {
     const s = useInvites()
-    useEffect(() => {
-      if (!inv.loaded && !inv.busy) loadInvites()
-    }, [])
     const c = s.codes.find((x) => x.code === id)
     if (!c) return { title: <span className="mono">{id}</span>, body: null, loading: !s.loaded || s.busy, missing: s.error ? errText(s.error) : `Not among the ${fmtNum(s.codes.length)} newest codes.` }
     const l = inviteLinks(c.code)
     return {
       title: <span className="mono">{c.code}</span>,
       chip: <InviteStatus c={c} />,
+      updated: s.at,
       foot: <Src>getInviteCodes · disableInviteCodes</Src>,
       body: (
         <>
@@ -366,14 +384,14 @@ registerPalette({
         },
       },
     ]
-    const doms = (domainsPoll.get().data?.domains ?? []).map((d) => ({
+    const doms = (domainsQ.get().data?.domains ?? []).map((d) => ({
       group: 'Domains',
       glyph: '.',
       title: `.${d.domain}`,
       desc: `${d.accounts === null ? '?' : fmtNum(d.accounts)} accounts${d.primary ? ' · primary' : ''}`,
       run: () => navigate(`/admin/domains?open=${encodeURIComponent(panelParam('domain', d.domain))}`),
     }))
-    const codes = q.length >= 4 ? inv.codes.filter((c) => c.code.toLowerCase().includes(q.toLowerCase())).slice(0, 6) : []
+    const codes = q.length >= 4 ? cachedCodes().filter((c) => c.code.toLowerCase().includes(q.toLowerCase())).slice(0, 6) : []
     return [
       ...out,
       ...doms,

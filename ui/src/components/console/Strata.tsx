@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { logHistory, type ClusterView } from '../../lib/console/cluster'
 import { getLive } from '../../lib/console/live'
-import { segmentsPoll } from '../../lib/console/segments'
+import { segmentsQ } from '../../lib/console/segments'
 
 // "Logs → watermark → firehose": one lane per node's log over the last 15 s. Each block is a
 // log segment (a batch of commits written with one PUT), placed where it was sealed, sized by
@@ -17,7 +17,7 @@ type Seg = { start: number; log: string; events?: number; inflight?: boolean }
 
 function segmentsFrom(): { segs: Seg[]; latest?: number } {
   const h = logHistory()
-  const feed = segmentsPoll.get().data?.lanes
+  const feed = segmentsQ.get().data?.lanes
   if (feed) {
     const segs: Seg[] = []
     for (const [log, list] of Object.entries(feed.logs))
@@ -40,7 +40,7 @@ function segmentsFrom(): { segs: Seg[]; latest?: number } {
 
 export function Strata({ view, fetchedAt }: { view: ClusterView; fetchedAt?: number }) {
   // keeps the feed polling while the canvas is up; the draw loop reads it with get()
-  segmentsPoll.use()
+  segmentsQ.use()
   const ref = useRef<HTMLCanvasElement>(null)
   const viewRef = useRef(view)
   viewRef.current = view

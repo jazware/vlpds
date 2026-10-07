@@ -2,11 +2,11 @@ import { useState, type Dispatch, type SetStateAction } from 'react'
 import { Banners, Chip, Copy, ErrorState, KV, Loading, Mini, Minis, PageHead, Panel, PanelBody, Spark, Src } from '../../components/console/kit'
 import { registerPalette } from '../../components/console/Palette'
 import { openPanel } from '../../components/console/nav'
-import { clusterPoll, clusterView, useClusterView, type ClusterView } from '../../lib/console/cluster'
+import { clusterQ, clusterView, useClusterView, type ClusterView } from '../../lib/console/cluster'
 import { ago, dur, fmtBytes, fmtMs, fmtNum, fmtPct, fmtSec, fmtSi, plural } from '../../lib/console/fmt'
 import { useStartedAt } from '../../lib/console/nodeMetrics'
 import { col, last, nodeGauges, nodePoints, useMetrics, type MetricsState } from '../../lib/console/metrics'
-import { lockoutsPoll, subscribersPoll } from '../../lib/console/polls'
+import { lockoutsQ, subscribersQ } from '../../lib/console/queries'
 import { Link } from '../../lib/router'
 import { clusterBanners, finalizeLevel, LeaseCell, NodesTable, ShardMap } from './clusterUi'
 import { OneNode } from './nodeSolo'
@@ -17,7 +17,7 @@ import { OneNode } from './nodeSolo'
 // "Finalize level N" in ⌘K while a level is ready
 registerPalette({
   items: () => {
-    const c = clusterPoll.get().data
+    const c = clusterQ.get().data
     const f = c?.version?.finalizable
     if (!c || f == null || c.version?.target != null) return []
     return [{ group: 'Actions', title: `Finalize feature level ${f}…`, desc: `active is ${c.version?.active}`, always: true, run: () => finalizeLevel(f, clusterView(c)) }]
@@ -27,10 +27,10 @@ registerPalette({
 export function Nodes() {
   const { view, error, at } = useClusterView()
   const m = useMetrics()
-  const subs = subscribersPoll.use()
-  const locks = lockoutsPoll.use()
+  const subs = subscribersQ.use()
+  const locks = lockoutsQ.use()
   const [focus, setFocus] = useState<string>()
-  if (!view) return error ? <ErrorState error={error} retry={clusterPoll.refresh} /> : <Loading label="Asking the cluster…" />
+  if (!view) return error ? <ErrorState error={error} retry={clusterQ.refresh} /> : <Loading label="Asking the cluster…" />
   const v = view.raw.version
   const one = view.nodes.length === 1
   return (
@@ -62,6 +62,7 @@ export function Nodes() {
             {view.raw.layout && <span>layout v{view.raw.layout.version}</span>}
           </>
         }
+        updated={at}
         actions={
           <>
             {v?.finalizable != null && v.target == null && (

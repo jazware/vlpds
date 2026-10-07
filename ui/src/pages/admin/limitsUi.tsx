@@ -23,7 +23,7 @@ import {
   overrideTarget,
   rejectionHistory,
   rememberActor,
-  rlPoll,
+  rateLimitsQ,
   saveDraft,
   shortName,
   type Consumer,
@@ -39,7 +39,7 @@ import {
 } from '../../lib/console/ratelimits'
 import { listAccounts } from '../../lib/adminApi'
 import { withAdmin } from '../../lib/console/adminAdapter'
-import { lockoutsPoll } from '../../lib/console/polls'
+import { lockoutsQ } from '../../lib/console/queries'
 import { navigate } from '../../lib/router'
 import { errText } from '../../lib/xrpc'
 import { AccountLink } from './peopleUi'
@@ -195,7 +195,6 @@ export function clearLock(did: string, handle?: string | null, factor?: string) 
     call: 'vlpds.admin.clearLockout {did, reason}',
     run: async (v) => {
       await clearFactorLock(did, String(v.reason))
-      lockoutsPoll.refresh()
     },
     done: 'Lockout cleared',
   })
@@ -209,7 +208,7 @@ export function addOverrideDialog(prefill?: OverrideCfg) {
 }
 
 function AddOverride({ close, prefill }: { close: () => void; prefill?: OverrideCfg }) {
-  const d = rlPoll.get().data
+  const d = rateLimitsQ.get().data
   const names = d ? bucketRows(d).map((b) => b.name) : []
   const [kind, setKind] = useState<'ip' | 'did'>(prefill?.did ? 'did' : 'ip')
   const [who, setWho] = useState(prefill?.ip ?? prefill?.did ?? '')
@@ -272,7 +271,7 @@ export function addRouteDialog() {
 }
 
 function AddRoute({ close }: { close: () => void }) {
-  const d = rlPoll.get().data
+  const d = rateLimitsQ.get().data
   const taken = (d?.config?.routes ?? []).map((r) => r.nsid)
   const [nsid, setNsid] = useState('')
   const [points, setPoints] = useState('300')
@@ -439,7 +438,7 @@ registerDetail('bucket', {
   kind: 'Rate-limit bucket',
   section: 'limits',
   use: (id, mode) => {
-    const s = rlPoll.use()
+    const s = rateLimitsQ.use()
     const d = s.data
     const b = findBucket(d, id)
     if (!d) return { title: <span className="mono">{id}</span>, body: null, loading: !s.error, missing: s.error ? errText(s.error) : undefined }
@@ -452,6 +451,7 @@ registerDetail('bucket', {
     return {
       title: <span className="mono">{shortName(b.name)}</span>,
       chip: !b.enabled ? <Chip k="idle">off</Chip> : b.m1 ? <Chip k="warn">{b.m1} 429s/min</Chip> : <Chip k="ok">quiet</Chip>,
+      updated: s.at,
       foot: <Src>getRateLimits · updateRateLimits</Src>,
       body: (
         <>
@@ -576,13 +576,14 @@ registerDetail('override', {
   kind: 'Rate-limit override',
   section: 'limits',
   use: (id) => {
-    const s = rlPoll.use()
+    const s = rateLimitsQ.use()
     const o = s.data?.config?.overrides?.[Number(id)]
     if (!s.data) return { title: id, body: null, loading: !s.error, missing: s.error ? errText(s.error) : undefined }
     if (!o) return { title: id, body: null, missing: 'This override is gone: it was removed or the list changed. Reopen it from the Overrides table.' }
     return {
       title: <span className="mono">{o.ip ?? o.did}</span>,
       chip: <Chip k="info">{o.ip ? 'IP' : 'DID'}</Chip>,
+      updated: s.at,
       foot: <Src>getRateLimits · updateRateLimits</Src>,
       body: (
         <>
@@ -611,8 +612,8 @@ registerDetail('override', {
 
 registerPalette({
   items: () => {
-    const d = rlPoll.get().data
-    const locks = lockoutsPoll.get().data
+    const d = rateLimitsQ.get().data
+    const locks = lockoutsQ.get().data
     const out: { group: string; title: string; desc?: string; glyph?: ReactNode; hay?: string; run: () => void }[] = [
       {
         group: 'Actions',

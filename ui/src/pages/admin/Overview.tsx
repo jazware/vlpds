@@ -3,14 +3,15 @@ import { LiveTail } from '../../components/console/LiveTail'
 import { openPanel } from '../../components/console/nav'
 import { SECTION } from '../../components/console/sections'
 import { Strata } from '../../components/console/Strata'
-import { clusterPoll, useClusterView, type ClusterView } from '../../lib/console/cluster'
+import { clusterQ, useClusterView, type ClusterView } from '../../lib/console/cluster'
 import { ago, auditSubjectText, dur, factorName, fmtMs, fmtNum, fmtSec, fmtSi, plural } from '../../lib/console/fmt'
 import { col, last, useMetrics, type MetricsState } from '../../lib/console/metrics'
 import { useStartedAt } from '../../lib/console/nodeMetrics'
-import { segmentsPoll } from '../../lib/console/segments'
-import { auditPoll, isSlow, isThisBrowser, lockoutsPoll, openCasesPoll, subscribersPoll, type SubscriberList } from '../../lib/console/polls'
-import { heldSignInKeys, rlPoll, shortName } from '../../lib/console/ratelimits'
-import { crawlersPoll } from '../../lib/console/sys'
+import { segmentsQ } from '../../lib/console/segments'
+import { recentAuditQ, isSlow, isThisBrowser, lockoutsQ, openCasesQ, subscribersQ, type SubscriberList } from '../../lib/console/queries'
+import { CASE_TONE, relayTone, subscriberState } from '../../lib/console/status'
+import { heldSignInKeys, rateLimitsQ, shortName } from '../../lib/console/ratelimits'
+import { crawlersQ } from '../../lib/console/sys'
 import { AuditAction } from './auditUi'
 import { clusterBanners, NodesTable } from './clusterUi'
 
@@ -108,7 +109,7 @@ function health(view: ClusterView, m: MetricsState, started: Map<string, number>
     {
       label: 'Rate limits',
       to: P.limits.path,
-      tone: limited === undefined ? 'idle' : tone(limited * 60 > 10 || heldSignInKeys(rlPoll.get().data).length > 0),
+      tone: limited === undefined ? 'idle' : tone(limited * 60 > 10 || heldSignInKeys(rateLimitsQ.get().data).length > 0),
       value: limited === undefined ? '—' : fmtNum(Math.round(limited * 60)),
       unit: '429s/min',
       sub: lockSub(),
@@ -130,7 +131,7 @@ function health(view: ClusterView, m: MetricsState, started: Map<string, number>
 }
 
 function moderationCell(): HealthCell[] {
-  const cases = openCasesPoll.get()
+  const cases = openCasesQ.get()
   const list = cases.data
   const oldest = list?.length ? Math.min(...list.map((c) => Date.parse(c.createdAt))) : undefined
   return [
@@ -146,11 +147,11 @@ function moderationCell(): HealthCell[] {
 }
 
 function lockSub(): string {
-  const l = lockoutsPoll.get().data
+  const l = lockoutsQ.get().data
   if (!l) return '…'
   if (!l.supported) return 'lockouts need a newer vlpds'
   const a = new Set(l.data.map((x) => x.did)).size
-  const held = heldSignInKeys(rlPoll.get().data).length
+  const held = heldSignInKeys(rateLimitsQ.get().data).length
   const parts = [a ? `${plural(a, 'account')} locked out` : '', held ? `${plural(held, 'sign-in')} held` : '']
   return parts.filter(Boolean).join(' · ') || 'nobody locked out'
 }
@@ -182,19 +183,19 @@ function WritePath({ m }: { m: MetricsState }) {
 
 /** Lists only: what names a subscriber, a case, a held account, a relay or an operator. The figures are in the health line. */
 function Rail({ subs }: { subs?: SubscriberList }) {
-  const cases = openCasesPoll.use()
-  const audit = auditPoll.use()
-  const locks = lockoutsPoll.use()
-  const rl = rlPoll.use()
-  const cr = crawlersPoll.use()
+  const cases = openCasesQ.use()
+  const audit = recentAuditQ.use()
+  const locks = lockoutsQ.use()
+  const rl = rateLimitsQ.use()
+  const cr = crawlersQ.use()
   const factorLocks = locks.data?.supported ? locks.data.data : []
   const heldKeys = heldSignInKeys(rl.data)
   return (
     <aside className="cx-rail cx-stack">
       <Panel title="Subscribers" to={P.firehose.path} src={<Src>listFirehoseSubscribers</Src>} right={subs ? <span className="muted sm">{fmtNum(subs.live)} live</span> : undefined}>
         {subs?.subscribers.slice(0, 5).map((s) => (
-          <RRow key={`${s.node}/${s.conn}`} onClick={() => openPanel('sub', `${s.node}/${s.conn}`)} x={s.state === 'backfilling' ? 'backfilling' : isSlow(s) ? `${dur(s.lagMs ?? 0)} behind` : 'caught up'}>
-            <Glyph k={s.state === 'backfilling' ? 'info' : isSlow(s) ? 'warn' : 'ok'} />
+          <RRow key={`${s.node}/${s.conn}`} onClick={() => openPanel('sub', `${s.node}/${s.conn}`)} x={isSlow(s) ? `slow · ${dur(s.lagMs ?? 0)} behind` : subscriberState(s, false)[1]}>
+            <Glyph k={subscriberState(s, isSlow(s))[0] as Tone} />
             <span className="mono sm">#{s.conn}</span>
             <span className="nm">{s.relay ? <span className="cx-chip acc">{s.relay}</span> : isThisBrowser(s) ? <span className="muted">this browser’s live tail</span> : s.userAgent.split(' ')[0] || s.ip}</span>
           </RRow>
@@ -211,7 +212,7 @@ function Rail({ subs }: { subs?: SubscriberList }) {
         ) : cases.data.length ? (
           cases.data.slice(0, 6).map((k) => (
             <RRow key={k.id} onClick={() => openPanel('case', k.id)} x={ago(Date.parse(k.createdAt))}>
-              <Glyph k="warn" />
+              <Glyph k={CASE_TONE[k.status]} />
               <span className="nm">
                 {k.subjects.map((s) => s.kind).join(' + ') || 'no subject yet'} · {k.source}
               </span>
@@ -264,7 +265,7 @@ function Rail({ subs }: { subs?: SubscriberList }) {
               onClick={() => openPanel('relay', r.relay)}
               x={!r.status ? 'not asked yet' : r.status.ok ? `accepted ${ago(r.status.lastAttemptMs)}` : `refused · ${r.status.httpStatus ?? 'no answer'}`}
             >
-              <Glyph k={!r.status ? 'idle' : r.status.ok ? 'ok' : 'err'} />
+              <Glyph k={relayTone(r.status)} />
               <span className="nm mono sm">{r.relay}</span>
             </RRow>
           ))
@@ -302,11 +303,11 @@ export function Overview() {
   const { view, error, at } = useClusterView()
   const m = useMetrics()
   const started = useStartedAt()
-  const subs = subscribersPoll.use()
-  const locks = lockoutsPoll.use()
-  const feed = segmentsPoll.use().data?.supported
-  openCasesPoll.use()
-  if (!view) return error ? <ErrorState error={error} retry={clusterPoll.refresh} /> : <Loading label="Asking the cluster…" />
+  const subs = subscribersQ.use()
+  const locks = lockoutsQ.use()
+  const feed = segmentsQ.use().data?.supported
+  openCasesQ.use()
+  if (!view) return error ? <ErrorState error={error} retry={clusterQ.refresh} /> : <Loading label="Asking the cluster…" />
   return (
     <>
       <Banners items={clusterBanners(view, subs.data, locks.data)} />

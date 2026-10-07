@@ -5,7 +5,7 @@ import { openPanel } from '../../components/console/nav'
 import { registerPalette } from '../../components/console/Palette'
 import { useClusterView } from '../../lib/console/cluster'
 import { ago, plural } from '../../lib/console/fmt'
-import { configPoll, missing, type NodeConfigResult } from '../../lib/console/sys'
+import { configQ, missing, type NodeConfigResult } from '../../lib/console/sys'
 import type { Setting } from '../../lib/adminApi'
 
 // Config: every flag each node runs with, where its value came from, secrets as set or unset
@@ -68,10 +68,10 @@ export function flagRows(results: NodeConfigResult[]): FlagRow[] {
 registerPalette({
   items: (q) => {
     if (q.length < 2) return []
-    const d = configPoll.get().data
+    const d = configQ.get().data
     if (!d) {
       // loaded on first use, so the next keystroke can list flags
-      if (!configPoll.get().error) configPoll.refresh()
+      if (!configQ.get().error) void configQ.prefetch()
       return []
     }
     return flagRows(d)
@@ -104,14 +104,14 @@ export function secretSetAt(c: NodeConfigResult['config'] | undefined, flag: str
 }
 
 export function Config() {
-  const cfg = configPoll.use()
+  const cfg = configQ.use()
   const { view } = useClusterView()
   const [node, setNode] = useState<string>()
   const [filter, setFilter] = useState<Filter>('set')
   const [q, setQ] = useState('')
   const results = cfg.data
   const rows = useMemo(() => (results ? flagRows(results) : []), [results])
-  if (!results) return cfg.error ? <ErrorState error={cfg.error} retry={configPoll.refresh} /> : <Loading label="Asking every node…" />
+  if (!results) return cfg.error ? <ErrorState error={cfg.error} retry={configQ.refresh} /> : <Loading label="Asking every node…" />
   const okNodes = results.filter((r) => r.config)
   if (!okNodes.length && results.some((r) => missing(r.error)))
     return (
@@ -228,6 +228,7 @@ export function Config() {
             <span>flags, env, defaults and settings stored in the bucket</span>
           </>
         }
+        updated={cfg.at}
         actions={
           multi && (
             <Seg
@@ -259,7 +260,7 @@ export function Config() {
             ...(multi ? [{ v: 'differs' as Filter, label: 'Differs', n: differ.length }] : []),
           ]}
         />
-        <Src>vlpds.admin.getConfig · every node · 30 s</Src>
+        <Src>vlpds.admin.getConfig · every node</Src>
       </div>
       <div className="cx-grid2">
         <div className="cx-stack">

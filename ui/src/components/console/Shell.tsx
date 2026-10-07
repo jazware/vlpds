@@ -1,11 +1,12 @@
 import { useEffect, useRef, type ReactNode } from 'react'
-import { useClusterView, clusterPoll, clusterView } from '../../lib/console/cluster'
+import { useClusterView, clusterQ, clusterView } from '../../lib/console/cluster'
 import { releaseHeld } from '../../lib/console/firehose'
 import { getLive, togglePaused, toggleSources, useLiveState } from '../../lib/console/live'
+import { startPush } from '../../lib/console/push'
 import { ago, clock, dur, factorName, plural } from '../../lib/console/fmt'
-import { isSlow, lockoutsPoll, openCasesPoll, subscribersPoll } from '../../lib/console/polls'
-import { heldSignInKeys, KEY_SHORT, rlPoll, shortName } from '../../lib/console/ratelimits'
-import { crawlersPoll } from '../../lib/console/sys'
+import { isSlow, lockoutsQ, openCasesQ, subscribersQ } from '../../lib/console/queries'
+import { heldSignInKeys, KEY_SHORT, rateLimitsQ, shortName } from '../../lib/console/ratelimits'
+import { crawlersQ } from '../../lib/console/sys'
 import { setTheme, useAdminOperator, useResolvedTheme } from '../../lib/hooks'
 import { Link, navigate, usePath } from '../../lib/router'
 import { getAdminOperator, setAdminToken } from '../../lib/xrpc'
@@ -77,9 +78,9 @@ export function shortcutsDialog() {
 
 function useBadges(): Partial<Record<SectionId, { k: 'warn' | 'err' | 'plain'; t: string; title?: string }>> {
   const { view } = useClusterView()
-  const cases = openCasesPoll.use()
-  const subs = subscribersPoll.use()
-  const locks = lockoutsPoll.use()
+  const cases = openCasesQ.use()
+  const subs = subscribersQ.use()
+  const locks = lockoutsQ.use()
   const down = view?.nodes.filter((n) => n.health === 'err').length ?? 0
   const slow = subs.data?.subscribers.filter(isSlow).length ?? 0
   const nCases = cases.data?.length ?? 0
@@ -157,17 +158,32 @@ function Side({ current }: { current: Section }) {
   )
 }
 
+/** The console's freshness in one place: live (changes pushed), polling (the feed is down), paused or not updating. */
 function StreamChip() {
   const live = useLiveState()
-  const cls = live.stale ? ' stale' : live.paused ? ' paused' : ''
-  const text = live.stale ? 'not updating' : live.paused ? 'paused' : 'live'
-  const det = live.stale ? `· last data ${live.lastOkAt ? dur(Date.now() - live.lastOkAt) : '—'} ago` : live.paused ? '· space to resume' : '· every 2 s'
+  const polling = live.push !== 'live'
+  const cls = live.stale ? ' stale' : live.paused ? ' paused' : polling ? ' polling' : ''
+  const text = live.stale ? 'not updating' : live.paused ? 'paused' : polling ? 'polling' : 'live'
+  const det = live.stale
+    ? `· last data ${live.lastOkAt ? dur(Date.now() - live.lastOkAt) : '—'} ago`
+    : live.paused
+      ? '· space to resume'
+      : live.push === 'live'
+        ? '· changes pushed'
+        : live.push === 'off'
+          ? '· no change feed here'
+          : '· feed reconnecting'
+  const why = live.stale
+    ? 'Retry now'
+    : live.push === 'live'
+      ? 'Live: every change on any node shows within a second (vlpds.admin.subscribeChanges). Click or press space to pause.'
+      : 'The change feed is down: pages poll until it reconnects. Click or press space to pause.'
   return (
     <button
       type="button"
       className={`cx-stream${cls}`}
-      title={live.stale ? 'Retry now' : 'Live updates: click or press space to pause'}
-      onClick={() => (live.stale ? clusterPoll.refresh() : togglePaused())}
+      title={why}
+      onClick={() => (live.stale ? clusterQ.refresh() : togglePaused())}
     >
       <span className="dot" />
       <span>{text}</span>
@@ -188,37 +204,37 @@ const att = (tone: Tone, title: string, desc: string, run: () => void): PalItem 
 /** ⌘K's "Needs attention": one item per live banner, each opening its row. */
 function attentionItems(): PalItem[] {
   const out: PalItem[] = []
-  const c = clusterPoll.get().data
+  const c = clusterQ.get().data
   const view = c ? clusterView(c) : undefined
   if (view?.unowned) out.push(att('err', `${plural(view.unowned, 'shard')} with no owner`, 'writes to them get 503 · Nodes & shards', () => navigate(SECTION.nodes.path)))
   for (const n of view?.nodes.filter((x) => x.health === 'err') ?? [])
     out.push(att('err', n.reachable ? `${n.node}'s lease is not valid` : `${n.node} doesn't answer`, 'node', () => openPanel('node', n.node)))
   if (c?.version?.mixedBuilds) out.push(att('warn', 'Mixed builds', c.version.revs.map((r) => r.slice(0, 8)).join(', '), () => navigate(SECTION.nodes.path)))
-  for (const s of subscribersPoll.get().data?.subscribers.filter(isSlow) ?? [])
+  for (const s of subscribersQ.get().data?.subscribers.filter(isSlow) ?? [])
     out.push(att('warn', `Subscriber #${s.conn} is ${dur(s.lagMs ?? 0)} behind`, `${s.relay ?? s.userAgent.split(' ')[0] ?? s.ip ?? ''} · ${s.node}`, () => openPanel('sub', `${s.node}/${s.conn}`)))
-  const cases = openCasesPoll.get().data ?? []
+  const cases = openCasesQ.get().data ?? []
   if (cases.length) {
     const oldest = Math.min(...cases.map((k) => Date.parse(k.createdAt)))
     out.push(att('warn', plural(cases.length, 'open case'), `oldest ${ago(oldest).replace(' ago', '')} · Moderation`, () => navigate(SECTION.moderation.path)))
   }
-  const locks = lockoutsPoll.get().data
+  const locks = lockoutsQ.get().data
   for (const l of locks?.supported ? locks.data : [])
     out.push(att('warn', `Sign-in codes locked for @${l.handle ?? l.did}`, `${factorName(l.factor)} · clears in ${dur(l.lockedUntil - Date.now())}`, () => openPanel('account', l.did)))
-  for (const k of heldSignInKeys(rlPoll.get().data))
+  for (const k of heldSignInKeys(rateLimitsQ.get().data))
     out.push(
       att('err', `Sign-in held for ${k.ident ? (k.ident.includes('@') || k.ident.startsWith('did:') ? k.ident : `@${k.ident}`) : k.did}`, `${shortName(k.bucket.name)} · ${KEY_SHORT[k.bucket.key]} · clears in ${dur(k.c.resetMs - Date.now())}`, () =>
         k.did ? openPanel('account', k.did) : openPanel('bucket', k.bucket.name),
       ),
     )
-  for (const r of crawlersPoll.get().data?.relays.filter((x) => x.status && !x.status.ok) ?? [])
+  for (const r of crawlersQ.get().data?.relays.filter((x) => x.status && !x.status.ok) ?? [])
     out.push(att('warn', `${r.relay} refused the last crawl`, `${r.status!.httpStatus ? `HTTP ${r.status!.httpStatus}` : 'unreachable'} · ${ago(r.status!.lastAttemptMs)}`, () => openPanel('relay', r.relay)))
   return out
 }
 
 /** Keeps the polls the attention items read running while the palette is open. */
 function WarmAttention() {
-  rlPoll.use()
-  crawlersPoll.use()
+  rateLimitsQ.use()
+  crawlersQ.use()
   return null
 }
 
@@ -362,6 +378,7 @@ export function Shell({ section, crumbs, children }: { section: Section; crumbs?
   const operator = useAdminOperator()
   useKeyboard(path)
   useCorePalette()
+  useEffect(() => startPush(), [])
   const palOpen = usePaletteOpen()
   const wasPaused = useRef(live.paused)
   useEffect(() => {

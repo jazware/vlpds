@@ -7,17 +7,11 @@ import { registerPalette } from '../../components/console/Palette'
 import { toast } from '../../components/console/toast'
 import { ago, auditAction, auditSubjectText, authName, authShort, fmtBytes, plural } from '../../lib/console/fmt'
 import {
-  auditSeen,
   isOperatorSubject,
   CASE_STATUSES,
   CASE_TONE,
   createCase,
   fmtGB,
-  getAuditLog,
-  getCase,
-  getSubject,
-  listCases,
-  listCasesAbout,
   moderate,
   resolveSubject,
   SEMANTICS,
@@ -26,8 +20,12 @@ import {
   spaceRecordParts,
   subjectQuery,
   updateCase,
-  useModVersion,
-  type AuditEntry,
+  useAudit,
+  useAuditEntry,
+  useCase,
+  useCases,
+  useResolved,
+  useSubject,
   type BlobView,
   type Case,
   type Kind,
@@ -35,8 +33,9 @@ import {
   type SubjectDetail,
   type SubjectRef,
 } from '../../lib/console/moderation'
-import { openCasesPoll } from '../../lib/console/polls'
-import { useAction, useLoad } from '../../lib/hooks'
+import { openCasesQ } from '../../lib/console/queries'
+import { accountTone, subjectTone } from '../../lib/console/status'
+import { useAction } from '../../lib/hooks'
 import { Link, navigate, useSearch } from '../../lib/router'
 import { admin, errText } from '../../lib/xrpc'
 import { Ops } from './accountDetail'
@@ -47,6 +46,12 @@ import { spaceUrl } from './Spaces'
 // Moderation's slide-overs (case, subject, audit entry), its dialogs and ⌘K entries.
 
 const ISO = (s: string) => Date.parse(s)
+
+/** A subject's state in the console's words (status.ts): served or taken down. */
+function StateChip({ takenDown }: { takenDown: boolean }) {
+  const [k, t] = subjectTone(takenDown)!
+  return <Chip k={k}>{t}</Chip>
+}
 
 // ---------------------------------------------------------------- subjects
 
@@ -301,7 +306,7 @@ function BlobBlock({ did, b, handle, caseId }: { did: string; b: BlobView; handl
             [
               'State',
               <span className="cx-form-row" style={{ gap: 6 }}>
-                {b.takendown ? <Chip k="err">taken down</Chip> : <Chip k="ok">served</Chip>}
+                <StateChip takenDown={b.takendown} />
                 {b.quarantined && <Chip k="warn">quarantined</Chip>}
                 {purged && <Chip k="err">bytes purged</Chip>}
                 {!b.stored && !b.quarantined && !purged && <Chip k="idle">not stored</Chip>}
@@ -409,14 +414,13 @@ registerDetail('subject', {
   kind: 'Moderation subject',
   section: 'moderation',
   use: (id, mode) => {
-    const v = useModVersion()
     const caseId = useSearch().get('case') ?? undefined
-    const res = useLoad(() => resolveSubject(id), [id])
+    const res = useResolved(id)
     const r = res.data
-    const det = useLoad(() => (r ? getSubject(r) : Promise.resolve(undefined)), [r?.did, r?.uri, r?.cid, v])
-    const audit = useLoad(() => (r ? getAuditLog({ did: r.did, limit: 25 }) : Promise.resolve([])), [r?.did, v])
-    const cases = useLoad(() => listCases(), [v])
-    const about = useLoad(() => (r ? listCasesAbout(r.did, r.uri ?? r.cid) : Promise.resolve([])), [r?.did, r?.uri, r?.cid, v])
+    const det = useSubject(r)
+    const audit = useAudit({ did: r?.did, limit: 25 }, { enabled: !!r })
+    const cases = useCases()
+    const about = useCases({ did: r?.did, subject: r?.uri ?? r?.cid }, { enabled: !!r })
     if (res.error) return { title: <span className="mono">{id}</span>, body: null, missing: errText(res.error) }
     const d = det.data
     if (!r || !d) return { title: <span className="mono">{id}</span>, body: null, loading: !det.error, missing: det.error ? errText(det.error) : undefined }
@@ -440,7 +444,7 @@ registerDetail('subject', {
           </p>
         ) : (
           <>
-            <KV rows={[['URI', <Copy text={d.record.uri}>{shortUri(d.record.uri)}</Copy>], ['CID', d.record.cid ? <Copy text={d.record.cid}>{`${d.record.cid.slice(0, 24)}…`}</Copy> : '—'], ['State', d.record.takendown ? <Chip k="err">hidden</Chip> : <Chip k="ok">served</Chip>]]} />
+            <KV rows={[['URI', <Copy text={d.record.uri}>{shortUri(d.record.uri)}</Copy>], ['CID', d.record.cid ? <Copy text={d.record.cid}>{`${d.record.cid.slice(0, 24)}…`}</Copy> : '—'], ['State', <StateChip takenDown={d.record.takendown} />]]} />
             <div className="cx-form-row" style={{ marginTop: 8 }}>
               <RecordJson value={d.record.value} />
               <ModButton s={s} applied={d.record.takendown} handle={a.handle} caseId={caseId} label="record" />
@@ -475,7 +479,7 @@ registerDetail('subject', {
               rows={[
                 ['URI', <Copy text={d.spaceRecord.uri}>{shortUri(d.spaceRecord.uri)}</Copy>],
                 ['Space', <Link to={spaceUrl(d.spaceRecord.space)}>{d.spaceRecord.space.replace(/^at:\/\/[^/]+\/space\//, '')}</Link>],
-                ['State', d.spaceRecord.takendown ? <Chip k="err">hidden from space reads</Chip> : <Chip k="ok">served</Chip>],
+                ['State', <StateChip takenDown={d.spaceRecord.takendown} />],
               ]}
             />
             <div className="cx-form-row" style={{ marginTop: 8 }}>
@@ -491,7 +495,7 @@ registerDetail('subject', {
         <KV
           rows={[
             ['URI', <Copy text={d.space.uri}>{shortUri(d.space.uri)}</Copy>],
-            ['State', <span className="cx-form-row" style={{ gap: 6 }}>{d.space.takendown ? <Chip k="err">taken down</Chip> : <Chip k="ok">live</Chip>}{!d.space.exists && <Chip k="idle">never created here</Chip>}{d.space.deleted && <Chip k="idle">deleted by its owner</Chip>}</span>],
+            ['State', <span className="cx-form-row" style={{ gap: 6 }}><StateChip takenDown={d.space.takendown} />{!d.space.exists && <Chip k="idle">never created here</Chip>}{d.space.deleted && <Chip k="idle">deleted by its owner</Chip>}</span>],
           ]}
         />
         <div className="cx-form-row" style={{ marginTop: 8 }}>
@@ -509,7 +513,7 @@ registerDetail('subject', {
         <KV
           rows={[
             ['DID', <Copy text={a.did} />],
-            ['Status', <span className="cx-form-row" style={{ gap: 6 }}>{a.takedown.applied ? <Chip k="err">taken down</Chip> : <Chip k="ok">active</Chip>}{a.status && a.status !== 'takendown' && a.status !== 'active' && <span className="muted sm">{a.status}</span>}</span>],
+            ['Status', <Chip k={accountTone({ status: a.status ?? (a.takedown.applied ? 'takendown' : 'active') })[0]}>{accountTone({ status: a.status ?? (a.takedown.applied ? 'takendown' : 'active') })[1]}</Chip>],
             ...(a.takedown.ref ? [['Takedown ref', <span className="mono sm">{a.takedown.ref}</span>] as [string, ReactNode]] : []),
             ['Created', ago(ISO(a.createdAt))],
             ['Email', a.email ?? '—'],
@@ -580,6 +584,7 @@ registerDetail('subject', {
     return {
       title,
       chip: applied ? <Chip k="err">taken down</Chip> : <Chip k="ok">{s.kind === 'account' ? 'active' : 'served'}</Chip>,
+      updated: det.at,
       foot: <Src>resolveSubject · getSubject · moderate</Src>,
       body: (
         <>
@@ -587,7 +592,7 @@ registerDetail('subject', {
             items={[
               ['kind', s.kind],
               ['account', `@${a.handle}`],
-              ['state', applied ? 'taken down' : 'visible'],
+              ['state', subjectTone(applied)?.[1] ?? '—'],
               ['blob storage', fmtGB(d.quota.bytes)],
             ]}
           />
@@ -624,9 +629,8 @@ registerDetail('subject', {
 // ---------------------------------------------------------------- case slide-over
 
 function CaseSubject({ c, s }: { c: Case; s: SubjectRef }) {
-  const v = useModVersion()
   const can = s.kind !== 'spaceRepo'
-  const d = useLoad(() => (can ? getSubject(s) : Promise.resolve(undefined)), [subjectQuery(s), s.kind, v])
+  const d = useSubject(s, can)
   const applied = appliedOf(d.data, s)
   const remove = useAction(() => updateCase(c.id, { removeSubject: s }))
   return (
@@ -636,7 +640,7 @@ function CaseSubject({ c, s }: { c: Case; s: SubjectRef }) {
           {s.kind}
         </Chip>
         <SubjectLabel s={s} handle={d.data?.account.handle} />
-        {applied !== undefined && (applied ? <Chip k="err">taken down</Chip> : <Chip k="ok">visible</Chip>)}
+        {applied !== undefined && <StateChip takenDown={applied} />}
       </div>
       <div className="cx-form-row">
         {can && (
@@ -745,8 +749,7 @@ registerDetail('case', {
   kind: 'Case',
   section: 'moderation',
   use: (id, mode) => {
-    const v = useModVersion()
-    const l = useLoad(() => getCase(id), [id, v])
+    const l = useCase(id)
     const c = l.data?.id === id ? l.data : undefined
     if (!c) return { title: <span className="mono">{id}</span>, body: null, loading: !l.error, missing: l.error ? errText(l.error) : undefined }
     const page = mode === 'page'
@@ -796,6 +799,7 @@ registerDetail('case', {
     return {
       title: c.source,
       chip: <Chip k={CASE_TONE[c.status]}>{c.status}</Chip>,
+      updated: l.at,
       foot: <Src>getCase · updateCase · moderate</Src>,
       body: (
         <>
@@ -839,15 +843,14 @@ registerDetail('audit', {
   kind: 'Audit entry',
   section: 'moderation',
   use: (id) => {
-    const seen = auditSeen.get(id)
-    const l = useLoad<AuditEntry[]>(() => (seen ? Promise.resolve([seen]) : getAuditLog({ limit: 200 })), [id, !!seen])
-    const e = seen ?? l.data?.find((x) => x.id === id)
+    const l = useAuditEntry(id)
+    const e = l.data
     if (!e)
       return {
         title: <span className="mono">{id}</span>,
         body: null,
         loading: l.loading,
-        missing: l.error ? errText(l.error) : 'Not among the newest 200 entries.',
+        missing: l.error ? errText(l.error) : undefined,
       }
     const { label, tone } = auditAction(e.action)
     const s = e.subject
@@ -908,7 +911,7 @@ registerPalette({
         ? [{ group: 'Actions', title: `Look up “${q.length > 40 ? `${q.slice(0, 40)}…` : q}” in Moderation`, desc: 'resolveSubject', run: () => navigate(`/admin/moderation?open=${encodeURIComponent(panelParam('subject', q.replace(/^@/, '')))}`) }]
         : []),
     ]
-    const cases = (openCasesPoll.get().data ?? []).map((c) => ({
+    const cases = (openCasesQ.get().data ?? []).map((c) => ({
       group: 'Cases',
       glyph: '▲',
       title: c.source,

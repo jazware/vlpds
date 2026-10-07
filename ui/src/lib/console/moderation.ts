@@ -1,9 +1,10 @@
-import { useSyncExternalStore } from 'react'
-import { admin } from '../xrpc'
-import { auditPoll, openCasesPoll } from './polls'
+import { admin, XrpcError } from '../xrpc'
+import { K } from './keys'
+import { mutate, patchAccountRow } from './mutate'
+import { hydrate, queryClient, useAdminQuery } from './query'
 
 // Moderation data: the vlpds.admin.* moderation endpoints (src/xrpc/moderation.rs), their
-// shapes, and a change counter every moderation view reloads on.
+// shapes, their queries and the actions on them.
 
 export type Kind = 'account' | 'record' | 'blob' | 'space'
 /** `spaceRepo`: an audited operator read of an account's repo in a space (audit entries only). */
@@ -69,7 +70,7 @@ export type TakedownEntry = {
 }
 
 export const CASE_STATUSES: CaseStatus[] = ['open', 'actioned', 'dismissed', 'restored']
-export const CASE_TONE: Record<CaseStatus, 'warn' | 'err' | 'idle' | 'ok'> = { open: 'warn', actioned: 'err', dismissed: 'idle', restored: 'ok' }
+export { CASE_TONE } from './status'
 
 /** What a takedown of each kind does, for the confirm dialog. */
 export const SEMANTICS: Record<Kind, string[]> = {
@@ -109,73 +110,138 @@ export function spaceRecordParts(uri: string) {
 /** Decimal units, as --blob-quota-gb. */
 export const fmtGB = (n: number) => (n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${(n / 1e3).toFixed(1)} kB`)
 
-// ---------------------------------------------------------------- change counter
+// ---------------------------------------------------------------- reads
 
-let version = 0
-const subs = new Set<() => void>()
-/** Call after any moderation write: views reload, and the shell's badges refresh. */
-export function modChanged() {
-  version++
-  subs.forEach((l) => l())
-  openCasesPoll.refresh()
-  auditPoll.refresh()
+const caseVersion = (c: Case) => c.updatedAt
+
+/** Cases, newest first; each also becomes its own `['case', id]` entry. */
+async function fetchCases(p: { status?: string; did?: string; subject?: string }, signal?: AbortSignal) {
+  const at = Date.now()
+  const r = await admin<{ cases: Case[] }>('vlpds.admin.listCases', { params: p, signal })
+  for (const c of r.cases) hydrate(K.case(c.id), c, at, caseVersion)
+  return r.cases
 }
-export const useModVersion = () =>
-  useSyncExternalStore(
-    (l) => {
-      subs.add(l)
-      return () => {
-        subs.delete(l)
-      }
-    },
-    () => version,
-  )
 
-// ---------------------------------------------------------------- calls
+export const useCases = (p: { status?: string; did?: string; subject?: string } = {}, o: { poll?: number; enabled?: boolean } = {}) =>
+  useAdminQuery({ key: K.cases(p), fn: (signal) => fetchCases(p, signal), poll: o.poll ?? 30_000, enabled: o.enabled })
 
-/** Audit entries seen by any view, so an entry's slide-over opens without a reload. */
-export const auditSeen = new Map<string, AuditEntry>()
+export const useCase = (id: string) =>
+  useAdminQuery({ key: K.case(id), fn: (signal) => admin<Case>('vlpds.admin.getCase', { params: { id }, signal }), version: caseVersion })
 
-export async function getAuditLog(p: { limit?: number; did?: string; space?: string } = {}) {
-  const r = await admin<{ entries: AuditEntry[] }>('vlpds.admin.getAuditLog', { params: p })
-  for (const e of r.entries) auditSeen.set(e.id, e)
+/** Audit entries, newest first; each also becomes its own `['auditEntry', id]` entry. */
+export async function getAuditLog(p: { limit?: number; did?: string; space?: string } = {}, signal?: AbortSignal) {
+  const at = Date.now()
+  const r = await admin<{ entries: AuditEntry[] }>('vlpds.admin.getAuditLog', { params: p, signal })
+  for (const e of r.entries) hydrate(K.auditEntry(e.id), e, at)
   return r.entries
 }
 
-export const listCases = (status?: string) => admin<{ cases: Case[] }>('vlpds.admin.listCases', { params: { status } }).then((r) => r.cases)
+export const useAudit = (p: { limit?: number; did?: string; space?: string }, o: { enabled?: boolean } = {}) =>
+  useAdminQuery({ key: K.audit(p), fn: (signal) => getAuditLog(p, signal), poll: 60_000, enabled: o.enabled, keep: true })
 
-/** Cases with a subject of this account, or (with `subject`, a record URI or blob CID) of that one record or blob. */
-export const listCasesAbout = (did: string, subject?: string) =>
-  admin<{ cases: Case[] }>('vlpds.admin.listCases', { params: { did, subject } }).then((r) => r.cases)
-
-export const getCase = (id: string) => admin<Case>('vlpds.admin.getCase', { params: { id } })
-export const listTakedowns = (kind?: string) => admin<{ takedowns: TakedownEntry[] }>('vlpds.admin.listTakedowns', { params: { kind } }).then((r) => r.takedowns)
-export const listOverQuota = () => admin<{ accounts: { did: string; bytes: number; limit: number; at: string }[] }>('vlpds.admin.listOverQuota').then((r) => r.accounts)
-export const resolveSubject = (q: string) => admin<Resolved>('vlpds.admin.resolveSubject', { params: { q } })
-export const getSubject = (s: { did: string; uri?: string; cid?: string }) => admin<SubjectDetail>('vlpds.admin.getSubject', { params: { did: s.did, uri: s.uri, cid: s.cid } })
-
-export async function updateCase(id: string, body: { status?: CaseStatus; note?: string; source?: string; addSubject?: SubjectRef; removeSubject?: SubjectRef }) {
-  const r = await admin<Case>('vlpds.admin.updateCase', { body: { id, ...body } })
-  modChanged()
-  return r
-}
-
-export async function createCase(source: string, note?: string, subjects?: SubjectRef[]) {
-  const r = await admin<Case>('vlpds.admin.createCase', { body: { source, note: note || undefined, subjects: subjects?.length ? subjects : undefined } })
-  modChanged()
-  return r
-}
-
-export async function moderate(s: SubjectRef, restore: boolean, reason: string, caseId?: string) {
-  const r = await admin('vlpds.admin.moderate', {
-    body: { did: s.did, kind: s.kind, uri: s.uri, cid: s.cid, action: restore ? 'restore' : 'takedown', reason: reason.trim(), caseId: caseId || undefined },
+/** One entry: from any list that held it, else the newest 200. */
+export const useAuditEntry = (id: string) =>
+  useAdminQuery({
+    key: K.auditEntry(id),
+    fn: async (signal) => {
+      const e = (await getAuditLog({ limit: 200 }, signal)).find((x) => x.id === id)
+      if (!e) throw new XrpcError(404, 'NotFound', 'Not among the newest 200 entries.')
+      return e
+    },
+    staleTime: Infinity,
   })
-  modChanged()
-  return r
+
+export const useTakedowns = () =>
+  useAdminQuery({ key: K.takedowns, fn: (signal) => admin<{ takedowns: TakedownEntry[] }>('vlpds.admin.listTakedowns', { signal }).then((r) => r.takedowns), poll: 30_000 })
+
+export const useOverQuota = () =>
+  useAdminQuery({
+    key: K.overQuota,
+    fn: (signal) => admin<{ accounts: { did: string; bytes: number; limit: number; at: string }[] }>('vlpds.admin.listOverQuota', { signal }).then((r) => r.accounts),
+    poll: 120_000,
+  })
+
+export const resolveSubject = (q: string) => admin<Resolved>('vlpds.admin.resolveSubject', { params: { q } })
+export const useResolved = (q: string) => useAdminQuery({ key: K.resolve(q), fn: () => resolveSubject(q), staleTime: 60_000 })
+
+export const getSubject = (s: { did: string; uri?: string; cid?: string }, signal?: AbortSignal) =>
+  admin<SubjectDetail>('vlpds.admin.getSubject', { params: { did: s.did, uri: s.uri, cid: s.cid }, signal })
+
+/** A subject's detail; it sits under its account's key, so any change to the account reaches it. */
+export const useSubject = (s: { did: string; uri?: string; cid?: string } | undefined, enabled = true) =>
+  useAdminQuery({
+    key: K.subject(s?.did ?? '', s?.uri, s?.cid),
+    fn: (signal) => getSubject(s!, signal),
+    enabled: !!s && enabled,
+  })
+
+// ---------------------------------------------------------------- actions
+
+/** Writes a case an action answered with into every cached copy: its own and the lists it belongs in. */
+function putCase(c: Case) {
+  queryClient.setQueryData(K.case(c.id), c)
+  for (const [key, list] of queryClient.getQueriesData<Case[]>({ queryKey: K.cases() })) {
+    if (!list) continue
+    const p = (key[1] ?? {}) as { status?: string; did?: string; subject?: string }
+    const about = !p.did || c.subjects.some((s) => s.did === p.did && (!p.subject || s.uri === p.subject || s.cid === p.subject))
+    const fits = (!p.status || p.status === c.status) && about
+    const rest = list.filter((x) => x.id !== c.id)
+    const had = rest.length !== list.length
+    if (fits) queryClient.setQueryData(key, had ? list.map((x) => (x.id === c.id ? c : x)) : [c, ...list])
+    else if (had) queryClient.setQueryData(key, rest)
+  }
 }
 
-export async function setBlobQuota(did: string, v: { bytes?: number; uploadsPerDay?: number; reason?: string }) {
-  const r = await admin('vlpds.admin.setBlobQuota', { body: { did, ...v } })
-  modChanged()
-  return r
+export function updateCase(id: string, body: { status?: CaseStatus; note?: string; source?: string; addSubject?: SubjectRef; removeSubject?: SubjectRef }) {
+  return mutate({
+    run: () => admin<Case>('vlpds.admin.updateCase', { body: { id, ...body } }),
+    // a status change is obvious: shown at once, undone if the call fails
+    optimistic: body.status
+      ? () => {
+          const before = queryClient.getQueriesData<Case | Case[]>({ queryKey: K.case(id) }).concat(queryClient.getQueriesData({ queryKey: K.cases() }))
+          const c = queryClient.getQueryData<Case>(K.case(id))
+          if (c) putCase({ ...c, status: body.status! })
+          return () => before.forEach(([k, d]) => queryClient.setQueryData(k, d))
+        }
+      : undefined,
+    write: async (c) => {
+      await queryClient.cancelQueries({ queryKey: K.case(id), exact: true })
+      putCase(c)
+    },
+    changes: (c) => [{ kind: 'case', id: c.id }, ...c.subjects.map((s) => ({ kind: 'account', id: s.did }))],
+  })
+}
+
+export function createCase(source: string, note?: string, subjects?: SubjectRef[]) {
+  return mutate({
+    run: () => admin<Case>('vlpds.admin.createCase', { body: { source, note: note || undefined, subjects: subjects?.length ? subjects : undefined } }),
+    write: (c) => putCase(c),
+    changes: (c) => [{ kind: 'case', id: c.id }, ...c.subjects.map((s) => ({ kind: 'account', id: s.did }))],
+  })
+}
+
+export function moderate(s: SubjectRef, restore: boolean, reason: string, caseId?: string) {
+  return mutate({
+    run: () =>
+      admin('vlpds.admin.moderate', {
+        body: { did: s.did, kind: s.kind, uri: s.uri, cid: s.cid, action: restore ? 'restore' : 'takedown', reason: reason.trim(), caseId: caseId || undefined },
+      }),
+    write: () => {
+      if (s.kind === 'account') patchAccountRow(s.did, (r) => ({ ...r, status: restore ? 'active' : 'takendown' }))
+    },
+    changes: [
+      { kind: 'account', id: s.did },
+      { kind: 'takedown', id: subjectQuery(s) },
+      ...(caseId ? [{ kind: 'case', id: caseId }] : []),
+      // a space, or a record in one: the space's page lists its taken-down records
+      ...(s.uri?.includes('/space/') ? [{ kind: 'space', id: s.kind === 'space' ? s.uri : spaceRecordParts(s.uri).space }] : []),
+    ],
+  })
+}
+
+export function setBlobQuota(did: string, v: { bytes?: number; uploadsPerDay?: number; reason?: string }) {
+  return mutate({
+    run: () => admin('vlpds.admin.setBlobQuota', { body: { did, ...v } }),
+    changes: [{ kind: 'account', id: did }],
+  })
 }

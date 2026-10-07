@@ -4,7 +4,8 @@ import { Banners, Chip, ErrorState, Glyph, Loading, Meter, NeedsVersion, PageHea
 import { registerPalette } from '../../components/console/Palette'
 import { useClusterView } from '../../lib/console/cluster'
 import { ago, dur, fmtNum, plural } from '../../lib/console/fmt'
-import { configPoll, mailBudgetPoll, mailPoll, missing, sumSeries, useNodeMetrics, type MailBudget } from '../../lib/console/sys'
+import { mailStatusTone } from '../../lib/console/status'
+import { configQ, mailBudgetQ, mailQ, missing, sumSeries, useNodeMetrics, type MailBudget } from '../../lib/console/sys'
 import type { MailEntry, MailStatus } from '../../lib/adminApi'
 import { navigate, useSearch } from '../../lib/router'
 import { AccountLink, Who } from './peopleUi'
@@ -61,7 +62,7 @@ export function mailOutcome(m: Pick<MailEntry, 'status' | 'attempts' | 'reason'>
   }
   return m.status
 }
-export const mailTone = (m: Pick<MailEntry, 'status'>) => (m.status === 'sent' || m.status === 'logged' ? 'ok' : m.status === 'failed' || m.status === 'dropped' ? 'err' : m.status === 'suppressed' ? 'idle' : 'info')
+export const mailTone = (m: Pick<MailEntry, 'status'>) => mailStatusTone(m.status)
 
 export const BUDGET_TEXT: Record<string, string> = {
   'mail-cluster-day': 'the whole cluster, per UTC day',
@@ -94,9 +95,9 @@ type Filter = 'all' | 'problems' | 'sent' | 'suppressed'
 const PROBLEM: MailStatus[] = ['failed', 'dropped', 'retrying']
 
 export function Mail() {
-  const mail = mailPoll.use()
-  const bud = mailBudgetPoll.use()
-  const cfg = configPoll.use()
+  const mail = mailQ.use()
+  const bud = mailBudgetQ.use()
+  const cfg = configQ.use()
   const m = useNodeMetrics()
   const { view } = useClusterView()
   const [filter, setFilter] = useState<Filter>(() => (new URLSearchParams(location.search).get('status') === 'problems' ? 'problems' : 'all'))
@@ -122,7 +123,7 @@ export function Mail() {
           </Panel>
         </>
       )
-    return mail.error ? <ErrorState error={mail.error} retry={mailPoll.refresh} /> : <Loading />
+    return mail.error ? <ErrorState error={mail.error} retry={mailQ.refresh} /> : <Loading />
   }
   const d = mail.data
   const self = cfg.data?.find((r) => r.self && r.config)?.config
@@ -177,6 +178,7 @@ export function Mail() {
             <span>4 sends at a time per node · 3 tries</span>
           </>
         }
+        updated={mail.at}
       />
       <Banners items={banners} />
       <Tiles
@@ -255,7 +257,7 @@ export function Mail() {
           </Panel>
           <Panel title="Budgets" src={<Src>getRateLimits · mail-*</Src>} foot="Budgets are rate-limit buckets: change them on Limits & lockouts. A suppressed mail is never retried.">
             {bud.error ? (
-              <ErrorState error={bud.error} retry={mailBudgetPoll.refresh} />
+              <ErrorState error={bud.error} retry={mailBudgetQ.refresh} />
             ) : !bud.data ? (
               <Loading />
             ) : (
@@ -323,7 +325,7 @@ export function Mail() {
         </div>
         <Panel
           title="Recent messages"
-          src={<Src>vlpds.admin.listMail · 5 s</Src>}
+          src={<Src>vlpds.admin.listMail · on change</Src>}
           right={
             <>
               <select className="cx-inp sm" aria-label="Recipient domain" value={domain} onChange={(e) => setParam('domain', e.target.value)} style={{ height: 26, width: 'auto' }}>

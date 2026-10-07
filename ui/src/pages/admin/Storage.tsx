@@ -4,7 +4,7 @@ import { Banners, Chip, ErrorState, Glyph, KV, Loading, Meter, NeedsVersion, Pag
 import { registerPalette } from '../../components/console/Palette'
 import { useClusterView } from '../../lib/console/cluster'
 import { ago, fmtBytes, fmtMs, fmtNum, fmtSi, plural } from '../../lib/console/fmt'
-import { configPoll, storageStatsPoll, maxLatest, sumLatest, sumSeries, useNodeMetrics, worstSeries, type NodeSeries, type StorageStats } from '../../lib/console/sys'
+import { configQ, storageStatsQ, maxLatest, sumLatest, sumSeries, useNodeMetrics, worstSeries, type NodeSeries, type StorageStats } from '../../lib/console/sys'
 import { navigate } from '../../lib/router'
 
 // Object store: request rates by billing class (A: writes, lists, CAS; B: reads), by key component
@@ -182,8 +182,8 @@ registerPalette({
 export function Storage() {
   const { view } = useClusterView()
   const m = useNodeMetrics()
-  const cfg = configPoll.use()
-  const stats = storageStatsPoll.use()
+  const cfg = configQ.use()
+  const stats = storageStatsQ.use()
   const counts = stats.data?.supported ? stats.data.data : undefined
   const self = cfg.data?.find((x) => x.config && x.self)?.config ?? cfg.data?.find((x) => x.config)?.config
   const setting = (f: string) => self?.settings.find((s) => s.flag === f)?.value
@@ -243,6 +243,7 @@ export function Storage() {
             {endpoint && <span className="mono muted">{endpoint.replace(/^https?:\/\//, '')}</span>}
           </>
         }
+        updated={m.at}
       />
       <Banners items={banners} />
       <Tiles
@@ -357,7 +358,7 @@ export function Storage() {
             {stats.data && !stats.data.supported ? (
               <NeedsVersion what="Objects and bytes by component" nsid="vlpds.admin.getStorageStats" />
             ) : stats.error ? (
-              <ErrorState error={stats.error} retry={storageStatsPoll.refresh} />
+              <ErrorState error={stats.error} retry={storageStatsQ.refresh} />
             ) : !counts ? (
               <Loading />
             ) : (

@@ -1,9 +1,14 @@
+import { useMemo } from 'react'
 import { getConfig, getStorageStats, listMail, type MetricsPoint, type NodeConfig, type StorageStats } from '../adminApi'
 import { admin, adminHeaders, setAdminToken, XrpcError } from '../xrpc'
-import { clusterPoll, type ClusterStatus } from './cluster'
+import { clusterQ, type ClusterStatus } from './cluster'
 import { withAdmin } from './adminAdapter'
-import { createPoller, isUnsupported } from './live'
-import { subscribersPoll, type Subscriber, type SubscriberList } from './polls'
+import { K } from './keys'
+import { isUnsupported } from './live'
+import { mutate } from './mutate'
+import { subscribersQ, type Subscriber, type SubscriberList } from './queries'
+import { shared, type Load } from './query'
+import { rateLimitsQ } from './ratelimits'
 
 // Data for the system sections (Firehose & relays, Object store, Mail, Config, Spaces): the
 // typed console API (lib/adminApi.ts) plus the older admin calls these pages share.
@@ -112,9 +117,9 @@ export function noteSubscribers(d: SubscriberList | undefined) {
   }
 }
 
-/** listFirehoseSubscribers every 5 s plus the rates worked out from consecutive answers. */
+/** listFirehoseSubscribers plus the rates worked out from consecutive answers. */
 export function useSubRates() {
-  const subs = subscribersPoll.use()
+  const subs = subscribersQ.use()
   noteSubscribers(subs.data)
   return { subs, rates: sr }
 }
@@ -136,13 +141,15 @@ export type Crawlers = {
   sender: boolean
 }
 export type CrawlResult = { relay: string; ok: boolean; status?: number; error?: string }
-export const crawlersPoll = createPoller(() => admin<Crawlers>('vlpds.admin.getCrawlers'), 10_000)
-export const setCrawlers = (body: { relays?: string[] | null; intervalSecs?: number | null }) => admin('vlpds.admin.setCrawlers', { body })
-export const requestCrawl = (relays: string[]) => admin<{ results: CrawlResult[] }>('vlpds.admin.requestCrawl', { body: { relays } })
+export const crawlersQ = shared({ key: K.crawlers, fn: (signal) => admin<Crawlers>('vlpds.admin.getCrawlers', { signal }), poll: 30_000 })
+export const setCrawlers = (body: { relays?: string[] | null; intervalSecs?: number | null }) =>
+  mutate({ run: () => admin('vlpds.admin.setCrawlers', { body }), changes: [{ kind: 'config', id: 'crawlers' }] })
+export const requestCrawl = (relays: string[]) =>
+  mutate({ run: () => admin<{ results: CrawlResult[] }>('vlpds.admin.requestCrawl', { body: { relays } }), changes: [{ kind: 'config', id: 'crawlers' }] })
 
 // ---------------------------------------------------------------- mail
 
-export const mailPoll = createPoller(() => withAdmin((c) => listMail(c, 200)), 5000)
+export const mailQ = shared({ key: K.mail({ limit: 200 }), fn: (signal) => withAdmin((c) => listMail(c, 200, signal)), poll: 30_000 })
 
 /** The rate-limit buckets the mailer spends (getRateLimits): the cluster's daily budget and each node's hourly one. */
 export type MailBudget = {
@@ -158,19 +165,28 @@ type RL = {
   limiters: { name: string; windowSecs: number; points: number; enabled: boolean; scope: string }[]
   top: Record<string, { key: string; used: number; maxNodeUsed: number; limit: number | null; resetMs: number; nodes: string[] }[]>
 }
-export const mailBudgetPoll = createPoller(async (): Promise<{ enabled: boolean; budgets: MailBudget[] }> => {
-  const r = await admin<RL>('vlpds.admin.getRateLimits')
+function budgetsOf(r: RL): { enabled: boolean; budgets: MailBudget[] } {
   const budgets = r.limiters
     .filter((l) => l.name.startsWith('mail-'))
     .map((l) => ({ limiter: l.name, points: l.points, windowSecs: l.windowSecs, enabled: l.enabled, top: r.top[l.name] ?? [] }))
   return { enabled: r.enabled, budgets }
-}, 15_000)
+}
+
+/** The mail budgets, from the console's one getRateLimits copy. */
+export const mailBudgetQ = {
+  use: (): Load<{ enabled: boolean; budgets: MailBudget[] }> => {
+    const rl = rateLimitsQ.use()
+    const data = useMemo(() => (rl.data ? budgetsOf(rl.data) : undefined), [rl.data])
+    return { ...rl, data }
+  },
+  refresh: () => rateLimitsQ.refresh(),
+}
 
 // ---------------------------------------------------------------- per node
 
 /** Every node holding a lease (or this one alone), for calls each node answers for itself. */
 async function leasedNodes() {
-  const c = clusterPoll.get().data ?? (await admin<ClusterStatus>('vlpds.admin.getClusterStatus'))
+  const c: ClusterStatus = clusterQ.get().data ?? (await clusterQ.fresh())
   return c.nodes.length ? c.nodes.map((n) => ({ node: n.node, self: n.self })) : [{ node: c.node, self: true }]
 }
 
@@ -197,9 +213,10 @@ export type SpacesStatus = {
   revocations: { entries: number; hardCap: number; blockedSpaces: number; blockedAuthorities: number; saturated: boolean; loaded: boolean; fresh: boolean; refreshEverySecs: number; staleAfterSecs: number }
   credentialCache: { entries: number; max: number }
 }
-/** getSpacesStatus from every node. */
-export const spacesStatusPoll = createPoller(
-  async () =>
+/** getSpacesStatus from every node: queue depths and caches, a series of its own. */
+export const spacesStatusQ = shared({
+  key: K.spacesStatus,
+  fn: async () =>
     Promise.all(
       (await leasedNodes()).map(async ({ node, self }): Promise<{ node: string; status?: SpacesStatus; error?: unknown }> => {
         try {
@@ -209,8 +226,9 @@ export const spacesStatusPoll = createPoller(
         }
       }),
     ),
-  10_000,
-)
+  poll: 10_000,
+  stream: true,
+})
 
 // ---------------------------------------------------------------- config
 
@@ -229,18 +247,22 @@ export async function configs(): Promise<NodeConfigResult[]> {
     }),
   )
 }
-export const configPoll = createPoller(configs, 30_000)
+export const configQ = shared({ key: K.config, fn: configs, poll: 60_000 })
 
 // ---------------------------------------------------------------- storage stats
 
 export type { StorageStats } from '../adminApi'
 
 /** Objects and bytes per key component; `supported: false` on a vlpds without getStorageStats. */
-export const storageStatsPoll = createPoller(async (): Promise<{ supported: false } | { supported: true; data: StorageStats }> => {
-  try {
-    return { supported: true, data: await withAdmin((c) => getStorageStats(c)) }
-  } catch (e) {
-    if (isUnsupported(e)) return { supported: false }
-    throw e
-  }
-}, 60_000)
+export const storageStatsQ = shared({
+  key: K.storageStats,
+  fn: async (signal): Promise<{ supported: false } | { supported: true; data: StorageStats }> => {
+    try {
+      return { supported: true, data: await withAdmin((c) => getStorageStats(c, signal)) }
+    } catch (e) {
+      if (isUnsupported(e)) return { supported: false }
+      throw e
+    }
+  },
+  poll: 60_000,
+})

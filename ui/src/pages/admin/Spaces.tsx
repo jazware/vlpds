@@ -6,12 +6,16 @@ import { Banners, Chip, Copy, Empty, ErrorState, Json, KV, Loading, Meter, PageH
 import { registerPalette } from '../../components/console/Palette'
 import { useClusterView } from '../../lib/console/cluster'
 import { ago, authName, fmtNum, plural, shortDid } from '../../lib/console/fmt'
-import { spacesStatusPoll, type SpacesStatus } from '../../lib/console/sys'
-
-type HealthRow = { node: string; status?: SpacesStatus; error?: unknown }
-import { useLoad } from '../../lib/hooks'
+import { K } from '../../lib/console/keys'
+import { moderate as moderateSubject, useAudit } from '../../lib/console/moderation'
+import { mutate } from '../../lib/console/mutate'
+import { useAdminQuery } from '../../lib/console/query'
+import { subjectTone } from '../../lib/console/status'
+import { spacesStatusQ, type SpacesStatus } from '../../lib/console/sys'
 import { Link, navigate, useSearch } from '../../lib/router'
 import { admin, call } from '../../lib/xrpc'
+
+type HealthRow = { node: string; status?: SpacesStatus; error?: unknown }
 
 // Spaces (alpha): spaces whose authority lives here, every node's Spaces health, and one
 // space's members, writers, registrations and takedowns. Metadata only: a record's value is
@@ -72,10 +76,8 @@ const spaceLabel = (uri: string) => {
 
 /** Whether this server runs Spaces (describeServer's `vlpds.spaces`). */
 export function useSpacesOn() {
-  return useLoad<boolean>(async () => {
-    const d = await call('com.atproto.server.describeServer')
-    return !!d?.vlpds?.spaces
-  }, [])
+  const d = useAdminQuery<{ vlpds?: { spaces?: boolean } }>({ key: K.describe, fn: (signal) => call('com.atproto.server.describeServer', { signal }), staleTime: Infinity })
+  return { ...d, data: d.data ? !!d.data.vlpds?.spaces : undefined }
 }
 
 const when = (at?: string | number | null) => (at ? ago(typeof at === 'number' ? at : Date.parse(at)) : <span className="muted">—</span>)
@@ -91,9 +93,9 @@ function Who({ did, handle }: { did: string; handle?: string | null }) {
 }
 
 function StateChip({ s }: { s: { takendown: boolean; deletedAt?: string | null } }) {
-  if (s.takendown) return <Chip k="err">taken down</Chip>
-  if (s.deletedAt) return <Chip k="idle">deleted</Chip>
-  return <Chip k="ok">live</Chip>
+  if (!s.takendown && s.deletedAt) return <Chip k="idle">deleted</Chip>
+  const [k, t] = subjectTone(s.takendown)!
+  return <Chip k={k}>{t}</Chip>
 }
 
 /** Take down or restore a space, a record or a space repo (vlpds.admin.moderate), with a reason. */
@@ -114,10 +116,7 @@ export function moderate(subject: { kind: 'space' | 'record'; did: string; uri: 
     ],
     action: restore ? 'Restore' : 'Take down',
     call: `vlpds.admin.moderate {"kind": "${subject.kind}", "action": "${restore ? 'restore' : 'takedown'}"}`,
-    run: (v) =>
-      admin('vlpds.admin.moderate', {
-        body: { did: subject.did, kind: subject.kind, uri: subject.uri, action: restore ? 'restore' : 'takedown', reason: String(v.reason).trim(), caseId: String(v.caseId ?? '').trim() || undefined },
-      }).then(done),
+    run: (v) => moderateSubject(subject, restore, String(v.reason), String(v.caseId ?? '').trim() || undefined).then(done),
     done: restore ? 'Restored' : 'Taken down',
   })
 }
@@ -226,8 +225,13 @@ export function Spaces() {
 function SpacesOn() {
   const [sort, setSort] = useState<Sort>('activity')
   const [cursor, setCursor] = useState<string>()
-  const l = useLoad<ListOut>(() => admin('vlpds.admin.listSpaces', { params: { sort, limit: PAGE, cursor } }), [sort, cursor], 30_000)
-  const health = spacesStatusPoll.use()
+  const l = useAdminQuery<ListOut>({
+    key: K.spacesList({ sort, cursor }),
+    fn: (signal) => admin('vlpds.admin.listSpaces', { params: { sort, limit: PAGE, cursor }, signal }),
+    poll: 60_000,
+    keep: true,
+  })
+  const health = spacesStatusQ.use()
   const { view } = useClusterView()
   const d = l.data
   if (d) lastList = d.spaces
@@ -272,6 +276,7 @@ function SpacesOn() {
             <span>metadata only: reading a record needs a reason and is audited</span>
           </>
         }
+        updated={l.at}
         actions={<OpenSpace />}
       />
       <Banners items={banners} />
@@ -339,7 +344,7 @@ function SpacesOn() {
             ]}
           />
         ) : health.error ? (
-          <ErrorState error={health.error} retry={spacesStatusPoll.refresh} />
+          <ErrorState error={health.error} retry={spacesStatusQ.refresh} />
         ) : (
           <Loading />
         )}
@@ -347,7 +352,7 @@ function SpacesOn() {
       <Panel
         className="cx-mt"
         title="Spaces hosted here"
-        src={<Src>listSpaces · 30 s</Src>}
+        src={<Src>listSpaces · on change</Src>}
         right={
           <>
             <Seg
@@ -472,7 +477,9 @@ function RecordRow({ r, path, open, toggle, moderated, did }: { r: SpaceRecord; 
             {path}
           </Link>
         </td>
-        <td>{r.takendown ? <Chip k="err">taken down</Chip> : <Chip k="ok">visible</Chip>}</td>
+        <td>
+          <Chip k={subjectTone(r.takendown)![0]}>{subjectTone(r.takendown)![1]}</Chip>
+        </td>
         <td className="r">
           <span className="cx-cellid end">
             <button type="button" className="cx-btn sm quiet" aria-expanded={open} onClick={toggle}>
@@ -520,7 +527,11 @@ function removeRegistration(authority: string, space: string, service: string, d
     fields: [{ id: 'reason', label: 'Reason (kept in the audit log)', required: true, type: 'textarea' }],
     action: 'Remove',
     call: 'vlpds.admin.removeSpaceRegistration',
-    run: (v) => admin('vlpds.admin.removeSpaceRegistration', { body: { did: authority, space, service, reason: String(v.reason).trim() } }).then(done),
+    run: (v) =>
+      mutate({
+        run: () => admin('vlpds.admin.removeSpaceRegistration', { body: { did: authority, space, service, reason: String(v.reason).trim() } }),
+        changes: [{ kind: 'space', id: space }],
+      }).then(done),
     done: 'Registration removed',
   })
 }
@@ -568,8 +579,14 @@ registerDetail('space', {
   section: 'spaces',
   use: (uri, mode) => {
     const p = parseSpaceUri(uri)
-    const l = useLoad<SpaceInfo | null>(() => (p && !p.record ? admin('vlpds.admin.getSpaceInfo', { params: { did: p.authority, uri: p.space } }) : Promise.resolve(null)), [uri])
-    const audit = useLoad<{ entries: Audit[] }>(() => admin('vlpds.admin.getAuditLog', { params: { space: uri, limit: 50 } }), [uri])
+    const l = useAdminQuery<SpaceInfo>({
+      key: K.space(uri),
+      fn: (signal) => admin('vlpds.admin.getSpaceInfo', { params: { did: p!.authority, uri: p!.space }, signal }),
+      enabled: !!p && !p.record,
+      poll: 60_000,
+    })
+    const auditL = useAudit({ space: uri, limit: 50 })
+    const audit = { ...auditL, data: auditL.data && { entries: auditL.data as unknown as Audit[] } }
     const [browse, setBrowse] = useState<{ repo: string; reason: string; n: number }>()
     const reload = () => {
       l.reload()
@@ -768,6 +785,7 @@ registerDetail('space', {
         </>
       ),
       chip: <StateChip s={s} />,
+      updated: l.at,
       foot: <Src>getSpaceInfo · getAuditLog</Src>,
       body: (
         <>

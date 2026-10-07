@@ -264,6 +264,7 @@ another one over peer mTLS.
 | `getStorageStats` (GET) | | Objects and bytes in the bucket by key component (`components`, each `exact` or not, with its count of guessed changes), `totalObjects`, `totalBytes`, `exact`, `inexactBecause`, `seeded` and `lastBackfillAt` · `backfill`: the latest run's phase, requests, keys and place · per node: what it hasn't folded yet and when it last did. See [Storage stats](#storage-stats) |
 | `backfillStorageStats` | `{dryRun?, maxRequests?, pagesPerSecond?, restart?}` | Lists the bucket once in the background to seed the counts. `dryRun` answers the estimate (`estimatedObjects`, `estimatedRequests`, `estimatedSeconds`) and starts nothing. Otherwise `maxRequests` is required. Audited as `storage.backfill` |
 | `kickSubscriber` | `{conn}` | Closes that firehose connection on this node with reason `kicked`. The client can reconnect with its cursor |
+| `subscribeChanges` (GET) | | A `text/event-stream` of what changed, on every node: see [Change feed](#change-feed) |
 
 What these never return:
 
@@ -280,6 +281,50 @@ and shard moves; an entry whose lock has run out is dropped the next time the li
 `listRepoOps` reads only the ring, so a quiet account's older events aren't there.
 `getStorageStats` reads one control-plane object and asks each node for what it holds, and never
 lists the bucket.
+
+### Change feed
+
+`vlpds.admin.subscribeChanges` is how an open console hears about a change the moment it lands, on any node, instead of at its next poll. It's a server-sent event stream that names what changed and never what it changed to. The console reads the thing back through the calls above. It takes the admin token like the rest (or a proxy's sign-in, as a plain read), and the console reads it with `fetch` so the token goes with it.
+
+```bash
+curl -sNu admin:$TOKEN http://127.0.0.1:2583/xrpc/vlpds.admin.subscribeChanges
+```
+
+The stream opens with a `hello` event (`node`, `time`, `peers`, `kinds`), then sends one `data:` message per change, and a `: ping` comment after 15 s of quiet:
+
+```
+event: hello
+data: {"node":"vlpds-a","time":1791234567890,"peers":["vlpds-b"],"kinds":["audit","account",…]}
+
+data: {"kind":"account","id":"did:plc:abc…","version":1791234568012,"node":"vlpds-b"}
+data: {"kind":"audit","id":"00063f…-9a1b2c3d","version":1791234568012,"node":"vlpds-b"}
+```
+
+`version` orders changes to one thing: its own version where it has one (the rate-limit config's), else the change's time in unix ms. `node` is where it happened.
+
+| Kind | `id` | Sent when |
+|---|---|---|
+| `audit` | the entry's id | any audited write ([Audit log](#audit-log)) |
+| `account` | DID | an audited write names the account, the account changes (handle, email, status, keys, a delete, a rebuild or recount), it signs in or a sign-in is refused, its sessions are revoked, it's created |
+| `case` | case id | a case is opened or updated, or an action is filed under it |
+| `takedown` | the subject (`did`, a record or space URI, or `did cid`) | a takedown or restore |
+| `lockout` | DID | a second-factor or email-code lock is set or cleared |
+| `mail` | `node:id` | a mail log entry is added or its outcome changes |
+| `subscriber` | `node/conn` | a firehose connection opens or closes |
+| `cluster` | `*` | the node sees leases, their addresses, shard owners or the layout change |
+| `shard`, `node` | its id | an operator splits, merges or aborts a shard, or acts on a node |
+| `domain` | the domain | a handle domain is added or removed |
+| `invite` | `*` | invite codes are created, disabled or used by a sign-up |
+| `config` | `ratelimits`, `crawlers` or `featureLevel` | an operator changes the setting |
+| `ratelimits` | node id | a node applied a new rate-limit config |
+| `space` | the space's URI | an operator acts on the space or a record in it |
+| `resync` | empty, or the peer whose stream broke | changes may have been missed: refetch everything |
+
+Each node puts its own changes on a bus of 1,024. Repeats of one thing within 100 ms go out once. A watcher that falls a whole bus behind gets a `resync` instead of what it missed. The stream ends when the node drains, and the console reconnects to whichever node it reaches, refetching what it shows.
+
+It covers the cluster. While at least one console watches, the node it's connected to follows every peer's own changes over the peer listener (`/internal/v1/admin/changes`, the internal token, newline-delimited JSON) and re-sends them, so a takedown routed to its owner on another node still reaches you within a second. A peer stream that breaks and comes back sends `resync`, since its changes in between were missed. The node stops following 30 s after the last console leaves. `cluster` comes from a watched node's own view of the control plane, checked every second.
+
+What it doesn't send: record writes (a busy PDS commits hundreds a second, so the console polls repo counts and recent ops), rate-limit counters and held keys (they move every second, so Limits reads them as a series), and metrics. Those stay polled, every 2 to 5 s while shown.
 
 ### Audit log
 

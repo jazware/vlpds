@@ -313,6 +313,13 @@ body:has(.cx) {
   background: var(--accent);
   animation: cx-pulse 2s infinite;
 }
+.cx-stream.polling .dot {
+  animation: none;
+  background: transparent;
+  border: 1.5px solid var(--accent);
+  width: 8px;
+  height: 8px;
+}
 .cx-stream.paused {
   color: var(--info);
   border-color: color-mix(in oklab, var(--info) 45%, var(--rule));
@@ -1406,6 +1413,15 @@ table.cx-t.compact td {
 }
 .cx.is-stale .cx-spark .a {
   fill: transparent !important;
+}
+.cx-upd {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink3);
+  white-space: nowrap;
+}
+.cx-upd.old {
+  color: var(--amber);
 }
 .cx-src {
   font-family: var(--mono);
