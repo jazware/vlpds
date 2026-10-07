@@ -1,4 +1,4 @@
-//! SlateDB's own metrics in Prometheus, one `db` label per database, plus
+//! SlateDB's own metrics in Prometheus, a `db` label per database, plus
 //! each open database's LSM shape (L0, sorted runs, bytes, memtable, cache,
 //! compaction) for admin views.
 //!
@@ -14,7 +14,7 @@
 //!     .build()
 //!     .await?;
 //! slate_metrics::register("seeds", &db);
-//! // GET /metrics: prometheus::gather() now has slatedb_*{db="seeds"}
+//! // GET /metrics: prometheus::gather() now has slatedb_db_*{db="seeds"}
 //! let shapes: Vec<slate_metrics::DbShape> = slate_metrics::shapes();
 //! ```
 //!
@@ -23,7 +23,9 @@
 //!
 //! Series names are SlateDB's dotted names with dots turned to underscores
 //! (`slatedb.db.l0_sst_count` -> `slatedb_db_l0_sst_count`), counters with
-//! `_total`. Labels ending in `_id` (the compactor's per-start worker ULID)
+//! `_total`. Only the families that describe one database get `db`
+//! (`bridge::per_db`); object store calls, GC, filter counts and histograms
+//! stay node-wide, summed. Labels ending in `_id` (the compactor's per-start worker ULID)
 //! are dropped so a restart doesn't mint new series. A database's series are
 //! removed when its last handle is dropped. Nothing polls: SlateDB pushes its
 //! values, and the `slatedb_lsm_*` series and [`shapes`] read each

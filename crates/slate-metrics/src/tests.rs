@@ -41,6 +41,32 @@ fn labels_put_db_first_and_drop_instance_ids() {
         vec![vec![("db".to_string(), "seeds".to_string()), ("kind".to_string(), "x".to_string())]]
     );
     assert_eq!(value(&fams, "slatedb_compactor_ssts_written_total", &[("db", "seeds")]), Some(3.0));
+
+    let h1 = r.register_histogram("slatedb.object_store.request_duration_seconds", "", &[("api", "get")], &[0.1, 1.0]);
+    let h2 = ex.recorder("other").register_histogram(
+        "slatedb.object_store.request_duration_seconds",
+        "",
+        &[("api", "get")],
+        &[0.1, 1.0],
+    );
+    h1.record(0.05);
+    h2.record(0.5);
+    let fams = reg.gather();
+    let f = fams.iter().find(|f| f.name() == "slatedb_object_store_request_duration_seconds").unwrap();
+    assert_eq!(f.get_metric().len(), 1, "the object store's series are node-wide");
+    assert_eq!(f.get_metric()[0].get_histogram().get_sample_count(), 2);
+    drop(h1);
+    assert_eq!(label_sets(&reg.gather(), "slatedb_object_store_request_duration_seconds").len(), 1);
+    drop(h2);
+    assert!(label_sets(&reg.gather(), "slatedb_object_store_request_duration_seconds").is_empty());
+
+    let g1 = r.register_gauge("slatedb.object_store_cache.cache_bytes", "", &[]);
+    let g2 = ex.recorder("other").register_gauge("slatedb.object_store_cache.cache_bytes", "", &[]);
+    g1.set(5);
+    g2.set(6);
+    let fams = reg.gather();
+    assert_eq!(label_sets(&fams, "slatedb_object_store_cache_cache_bytes"), vec![Vec::<(String, String)>::new()]);
+    assert_eq!(value(&fams, "slatedb_object_store_cache_cache_bytes", &[]), Some(11.0));
 }
 
 #[test]

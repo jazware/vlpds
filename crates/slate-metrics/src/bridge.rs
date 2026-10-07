@@ -239,7 +239,19 @@ impl HistogramFn for Hist {
     }
 }
 
-/// A database's view of the bridge: `db` first, then SlateDB's labels
+/// Whether a SlateDB name gets the `db` label: what describes one
+/// database's shape and health (memtable, L0 and runs, flushes, stalls,
+/// cache, WAL, compaction). The rest stays node-wide, summed over every
+/// database as before: per database, the object store's request counters
+/// and latency histogram alone are ~500 series, and a vlpds node can hold
+/// 64 shards.
+pub(crate) fn per_db(name: &str) -> bool {
+    const DB: [&str; 5] =
+        ["slatedb.db.", "slatedb.db_cache.", "slatedb.compactor.", "slatedb.wal.", "slatedb.memtable_flush."];
+    DB.iter().any(|p| name.starts_with(p)) && !name.starts_with("slatedb.db.sst_filter_")
+}
+
+/// A database's view of the bridge: `db` first (on [`per_db`] names), then SlateDB's labels
 /// minus per-instance ids (the compactor worker's `worker_id` ULID, new
 /// every start) so instances aggregate instead of minting series.
 pub(crate) struct DbRecorder {
@@ -248,16 +260,17 @@ pub(crate) struct DbRecorder {
 }
 
 impl DbRecorder {
-    fn labels<'a>(&'a self, labels: &[(&'a str, &'a str)]) -> (Vec<&'a str>, Vec<&'a str>) {
+    fn labels<'a>(&'a self, name: &str, labels: &[(&'a str, &'a str)]) -> (Vec<&'a str>, Vec<&'a str>) {
         let kept = labels.iter().filter(|(k, _)| !k.ends_with("_id") && *k != DB_LABEL);
-        let keys = std::iter::once(DB_LABEL).chain(kept.clone().map(|(k, _)| *k)).collect();
-        let values = std::iter::once(self.db.as_str()).chain(kept.map(|(_, v)| *v)).collect();
+        let db = per_db(name).then_some((DB_LABEL, self.db.as_str()));
+        let keys = db.iter().map(|(k, _)| *k).chain(kept.clone().map(|(k, _)| *k)).collect();
+        let values = db.iter().map(|(_, v)| *v).chain(kept.map(|(_, v)| *v)).collect();
         (keys, values)
     }
 
     fn share(&self, name: &str, description: &str, labels: &[(&str, &str)]) -> Option<Share> {
         let b = &self.inner.bridge;
-        let (keys, values) = self.labels(labels);
+        let (keys, values) = self.labels(name, labels);
         let v = b.gauge_vec(name, description, &keys)?;
         let (g, key) = b.acquire(Kind::Gauge, name, &values, |vals| v.get_metric_with_label_values(vals).ok())?;
         Some(Share { g, last: AtomicI64::new(0), _live: Live { inner: self.inner.clone(), key } })
@@ -267,7 +280,7 @@ impl DbRecorder {
 impl MetricsRecorder for DbRecorder {
     fn register_counter(&self, name: &str, description: &str, labels: &[(&str, &str)]) -> Arc<dyn CounterFn> {
         let b = &self.inner.bridge;
-        let (keys, values) = self.labels(labels);
+        let (keys, values) = self.labels(name, labels);
         let c = b
             .counter_vec(name, description, &keys)
             .and_then(|v| b.acquire(Kind::Counter, name, &values, |vals| v.get_metric_with_label_values(vals).ok()));
@@ -304,7 +317,7 @@ impl MetricsRecorder for DbRecorder {
         boundaries: &[f64],
     ) -> Arc<dyn HistogramFn> {
         let b = &self.inner.bridge;
-        let (keys, values) = self.labels(labels);
+        let (keys, values) = self.labels(name, labels);
         let h = b
             .hist_vec(name, description, &keys, boundaries)
             .and_then(|v| b.acquire(Kind::Hist, name, &values, |vals| v.get_metric_with_label_values(vals).ok()));

@@ -40,13 +40,17 @@ same methods on it.
 
 ## What it exports
 
-SlateDB's names with dots as underscores, counters with `_total`, `db` first in the labels
-(`slatedb_db_l0_sst_count{db}`, `slatedb_db_total_mem_size_bytes{db}`,
-`slatedb_db_cache_access_count_total{db,entry_kind,result}`,
-`slatedb_compactor_bytes_compacted_total{db}`, `slatedb_db_l0_stall_count_total{db,type}`…).
-Labels ending in `_id` are dropped (the compactor worker's ULID is new every start). Two handles
-on one series (a reopened database before the old handle drops) add up; a series goes when its
-last handle drops.
+SlateDB's names with dots as underscores, counters with `_total`. The families that describe
+one database's shape and health get `db` first in their labels: `slatedb_db_*` (memtable, L0,
+runs, flushes, stalls, requests; not the `sst_filter_*` counts), `slatedb_db_cache_*`,
+`slatedb_compactor_*`, `slatedb_wal_*` and `slatedb_memtable_flush_*`, e.g.
+`slatedb_db_l0_sst_count{db}`, `slatedb_db_cache_access_count_total{db,entry_kind,result}`.
+The rest (`slatedb_object_store_*`, `slatedb_object_store_cache_*`, `slatedb_gc_*`,
+`slatedb_merge_operator_*`, the filter counts, every histogram) stay node-wide, summed over the
+databases as before: per database the object store's request counters and latency histogram
+alone are ~500 series, and a vlpds node can hold 64 shards. Labels ending in `_id` are dropped
+(the compactor worker's ULID is new every start). Two handles on one series (a reopened
+database before the old handle drops) add up; a series goes when its last handle drops.
 
 At scrape time, from each registered handle's manifest in memory (so readers too):
 `slatedb_lsm_ssts{db,tier}`, `slatedb_lsm_sst_bytes{db,tier}` (`l0`, `compacted`; estimates),
@@ -55,5 +59,5 @@ At scrape time, from each registered handle's manifest in memory (so readers too
 `slatedb_cache_entries{cache}`.
 
 Cost: nothing polls. SlateDB pushes its values into atomics, and a scrape or `shapes()` walks
-each manifest's SST list (microseconds for thousands of SSTs). Each database adds its own copy
-of SlateDB's series, about 150 with the object store latency histogram's buckets.
+each manifest's SST list (microseconds for thousands of SSTs). Each database adds about 50 series
+of its own.
