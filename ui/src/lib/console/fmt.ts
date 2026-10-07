@@ -35,4 +35,9 @@ export const shortDid = (d: string) => (d.length > 22 ? `${d.slice(0, 14)}…${d
 export const plural = (n: number, w: string, p?: string) => `${n.toLocaleString()} ${n === 1 ? w : (p ?? `${w}s`)}`
 
 /** A factor lock from listLockouts or getAccountSecurity. */
+/** How an audited actor got in: a login the proxy verified, a name typed with the admin token, or the moderation service. */
+export type AuditAuth = 'proxy' | 'token' | 'service'
+export const authName = (a?: string) => (a === 'proxy' ? 'proxy sign-in' : a === 'token' ? 'admin token, name as typed' : a === 'service' ? 'moderation service' : a ? a : 'vlpds')
+export const authShort = (a?: string) => (a === 'proxy' ? 'proxy' : a === 'token' ? 'token' : a === 'service' ? 'service' : '')
+
 export const factorName = (f: string) => (f === 'second_factor' ? '2FA and recovery codes' : f === 'email_code' ? 'email codes' : f)

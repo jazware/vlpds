@@ -46,10 +46,10 @@ export type Case = {
   status: CaseStatus
   source: string
   subjects: SubjectRef[]
-  notes: { at: string; actor: string; ip?: string; text: string }[]
+  notes: { at: string; actor: string; auth?: string; ip?: string; text: string }[]
   actions: CaseAction[]
 }
-export type AuditEntry = { id: string; at: string; actor: string; ip?: string; node: string; action: string; subject?: SubjectRef; reason?: string; caseId?: string; detail?: any }
+export type AuditEntry = { id: string; at: string; actor: string; auth?: string; ip?: string; node: string; action: string; subject?: SubjectRef; reason?: string; caseId?: string; detail?: any }
 export type TakedownEntry = {
   subject: SubjectRef
   reason?: string

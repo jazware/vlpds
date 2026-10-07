@@ -244,7 +244,7 @@ async fn update_rate_limits(
     require_admin(&creds)?;
     let doc: Doc = serde_json::from_value(inp.config)
         .map_err(|e| XrpcError::bad("InvalidConfig", format!("invalid config: {e}")))?;
-    let super::moderation::Who { actor, ip } = super::moderation::Who::of(&creds, inp.actor.as_deref(), peer);
+    let super::moderation::Who { actor, ip, .. } = super::moderation::Who::of(&creds, inp.actor.as_deref(), peer);
     let me = node_id(&app);
     let req = SaveReq { doc, if_version: inp.if_version, actor, ip, node: me.clone(), note: inp.note };
     let saved = runtime::save(&app.ratelimit, &app.store, req).await.map_err(save_error)?;

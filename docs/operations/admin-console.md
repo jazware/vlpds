@@ -79,8 +79,12 @@ Three flags turn it on, and they come together.
 |---|---|---|
 | `--admin-listen` | `0.0.0.0:2585` | A second client listener, for operators. It serves what `--listen` serves, and it's the only listener that reads the header. Never route public traffic to it. |
 | `--admin-proxy-header` | `Tailscale-User-Login` | The header that names the operator. |
-| `--admin-proxy-from` | `172.18.0.0/24` | The proxy's addresses as `--admin-listen` sees them. The header from any other address is ignored. |
+| `--admin-proxy-from` | `100.64.0.10/32` | The proxy's own address, as `--admin-listen` sees the connection (the TCP peer, never `X-Forwarded-For`). The header from any other address is ignored. |
 | `--admin-operators` | `alice@example.com,bob@example.com` | The logins that may sign in. Anyone else gets a 403 and the token form. |
+
+Every address in `--admin-proxy-from` can claim any login, so name the proxy's own address (a
+`/32`) and nothing around it. A subnet takes in its neighbors, and on a Docker network it takes in
+the gateway, which is every process on the host.
 
 What the node does with the header:
 
@@ -88,14 +92,23 @@ What the node does with the header:
   `--listen`, or from anywhere else, it's dropped before anything sees it. So the proxy must
   remove any copy the client sent and set its own (every example below does).
 - A request with an `Authorization` header is token auth, whatever else it carries.
-- The login is ambient, like a cookie, and vlpds answers every origin (CORS `*`). So a write signed
-  in this way needs `Sec-Fetch-Site: same-origin` or an `Origin` that matches the host, which
-  every browser sends from the console. A read is refused only when the browser marks it
-  cross-site. That means another site you visit can't drive the console through your browser, and
-  `curl` through the proxy can still read. Scripts that write use the token.
+- The login is ambient, like a cookie, and vlpds answers every origin (CORS `*`). So an XRPC call
+  signed in this way must come from the console's own page. A write needs `Sec-Fetch-Site:
+  same-origin` or an `Origin` with this scheme and host, which every browser sends from the
+  console. So does a read that's audited with a reason from its query (`getSpaceRecord`,
+  `getSpaceRepo`, `listSpaceRecords`, `checkSpace`, `checkRepo`, or any call with `reason` or
+  `actor` in its query). Any other read is refused when the browser marks it cross-site, or
+  `Sec-Fetch-Site: none` (a link opened from mail or chat). That means another site, or a link,
+  can't act through your browser, and `curl` through the proxy can still make plain reads.
+  Scripts that write use the token.
+- The scheme comes from the proxy's `X-Forwarded-Proto` (only a `--admin-proxy-from` peer gets
+  that far), and it's plain `http` without one.
 - A signed-in request skips rate limits as the token does, and a call routed to an account's owner
   carries the login with it (in `x-vlpds-operator`, which only a peer with the internal token can
   set).
+- Every audit entry records how its actor got in (`auth`): `proxy` for a login the proxy named,
+  `token` for the name the console sends with the admin token (anyone with the token can type
+  any name), and `service` for the moderation service. The console shows it with the entry.
 
 On load the console calls `vlpds.admin.getSession` without a token. If the answer is
 `{"auth": "proxy", "operator": "alice@example.com"}` it opens straight away and shows who you are
@@ -104,13 +117,15 @@ above the token form.
 
 #### Tailscale
 
-Tailscale is the worked example because it knows every device's user already. Put the console at
-`https://admin.example.com`, with an A record pointing at the node's tailnet address (DNS-only,
-not proxied by a CDN). Caddy with the [caddy-tailscale](https://github.com/tailscale/caddy-tailscale)
-module asks the local tailscaled who each connection is (`tailscale_auth`), and passes the login on.
+Tailscale is the worked example because it knows every device's user already. One Caddy on the
+tailnet can front several admin UIs. Put the console at `https://pds-admin.example.com`, with an A
+record pointing at that Caddy host's tailnet address (DNS-only, not proxied by a CDN). Caddy with
+the [caddy-tailscale](https://github.com/tailscale/caddy-tailscale) module asks the local
+tailscaled who each connection is (`tailscale_auth`), and passes the login on to the node's admin
+listener over the tailnet.
 
 ```caddyfile
-admin.example.com {
+pds-admin.example.com {
 	tls {
 		dns cloudflare {env.CF_API_TOKEN}
 	}
@@ -119,7 +134,7 @@ admin.example.com {
 		route {
 			# tagged devices and failed lookups get a 401 here
 			tailscale_auth
-			reverse_proxy vlpds:2585 {
+			reverse_proxy pds-node.tailnet-name.ts.net:2585 {
 				# replaces any copy the client sent
 				header_up Tailscale-User-Login {http.auth.user.id}
 				header_up -Tailscale-User-Name
@@ -139,19 +154,19 @@ tailscaled's socket (`/var/run/tailscale/tailscaled.sock`) mounted. The node the
 ```bash
 VLPDS_ADMIN_LISTEN=0.0.0.0:2585
 VLPDS_ADMIN_PROXY_HEADER=Tailscale-User-Login
-VLPDS_ADMIN_PROXY_FROM=172.18.0.0/24   # Caddy's network, as vlpds sees it
+VLPDS_ADMIN_PROXY_FROM=100.64.0.10/32   # the Caddy host's tailnet address
 VLPDS_ADMIN_OPERATORS=alice@example.com
 ```
 
-Two things trip this up on a Docker host. If tailscaled masquerades what it forwards into
-containers (`tailscale set --snat-subnet-routes=false` turns that off), every client reaches Caddy
-from the bridge gateway, so `remote_ip` refuses everyone and whois can't name anyone. And
-`--admin-listen` must not be published where anything but the proxy can reach it, since every
-address in `--admin-proxy-from` can claim any login.
+Two things trip this up on a Docker host. vlpds must see the proxy's real address, so check what a
+connection to the published admin port looks like from inside the container. If tailscaled
+masquerades what it forwards into containers (`tailscale set --snat-subnet-routes=false` turns
+that off), every tailnet client arrives from the bridge gateway, and the header is ignored. And
+don't publish `--admin-listen` anywhere the tailnet ACL doesn't limit to the proxy.
 
 `tailscale serve` works too, with no Caddy at all. It sets `Tailscale-User-Login` for devices that
-belong to a user and drops the copy a client sent. Point it at the admin listener on loopback and
-trust only loopback:
+belong to a user, drops the copy a client sent, and sets `X-Forwarded-Proto: https`. Point it at
+the admin listener on loopback and trust only loopback:
 
 ```bash
 tailscale serve --bg --https=8443 http://127.0.0.1:2585

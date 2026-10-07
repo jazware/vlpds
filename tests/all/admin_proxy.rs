@@ -36,6 +36,7 @@ fn post(s: &TestServer, base: &str, nsid: &str, body: &J) -> reqwest::RequestBui
     s.xrpc.http.post(format!("{base}/xrpc/{nsid}")).json(body)
 }
 
+/// Each entry's `actor/auth`: how the actor got in is recorded with it.
 async fn audit_actors(s: &TestServer, did: &str, action: &str) -> Vec<String> {
     let log = s.xrpc.get("vlpds.admin.getAuditLog", &[("did", did)], &Auth::Admin).await.ok();
     log["entries"]
@@ -43,7 +44,7 @@ async fn audit_actors(s: &TestServer, did: &str, action: &str) -> Vec<String> {
         .unwrap()
         .iter()
         .filter(|e| e["action"] == action)
-        .map(|e| e["actor"].as_str().unwrap().to_string())
+        .map(|e| format!("{}/{}", e["actor"].as_str().unwrap(), e["auth"].as_str().unwrap_or("-")))
         .collect()
 }
 
@@ -126,21 +127,44 @@ async fn cross_site_writes_are_refused_and_the_audit_log_names_the_operator() {
         }
         s.xrpc.send(rb).await.err(403, "OperatorRefused");
     }
-    // a read the browser marks cross-site, too
-    let rb = get(&s, &admin, "vlpds.admin.getSession").header(HEADER, ALICE).header("sec-fetch-site", "cross-site");
-    s.xrpc.send(rb).await.err(403, "OperatorRefused");
+    // a read the browser marks cross-site, or that no page made (a link
+    // opened from mail or chat), too
+    for site in ["cross-site", "none"] {
+        let rb = get(&s, &admin, "vlpds.admin.getSession").header(HEADER, ALICE).header("sec-fetch-site", site);
+        s.xrpc.send(rb).await.err(403, "OperatorRefused");
+    }
     assert!(audit_actors(&s, &a.did, "sessions.revoke").await.is_empty());
+    // an audited read is a write: a link (no Fetch Metadata) can't make one
+    // under the operator's name with a reason of its choosing
+    let check = format!("{admin}/xrpc/vlpds.admin.checkRepo?did={}&reason=forged", a.did);
+    let rb = s.xrpc.http.get(&check).header(HEADER, ALICE);
+    s.xrpc.send(rb).await.err(403, "OperatorRefused");
+    let rb = s.xrpc.http.get(&check).header(HEADER, ALICE).header("sec-fetch-site", "same-origin");
+    s.xrpc.send(rb).await.ok();
+    // an Origin must match the scheme as well as the host
+    let https_origin = admin.replacen("http://", "https://", 1);
+    let rb = post(&s, &admin, revoke, &body).header(HEADER, ALICE).header("origin", https_origin.as_str());
+    s.xrpc.send(rb).await.err(403, "OperatorRefused");
 
     let rb = post(&s, &admin, revoke, &body).header(HEADER, ALICE).header("sec-fetch-site", "same-origin");
     s.xrpc.send(rb).await.ok();
     let rb = post(&s, &admin, revoke, &body).header(HEADER, ALICE).header("origin", admin.as_str());
     s.xrpc.send(rb).await.ok();
-    assert_eq!(audit_actors(&s, &a.did, "sessions.revoke").await, [ALICE, ALICE]);
+    let proxied = format!("{ALICE}/proxy");
+    assert_eq!(audit_actors(&s, &a.did, "sessions.revoke").await, [proxied.as_str(), &proxied]);
 
-    // the token keeps the console's name, with no origin checks
+    // the token keeps the console's name, with no origin checks, and the
+    // entry says it was only typed: a token caller naming an operator isn't one
     let rb = post(&s, &admin, revoke, &body).basic_auth("admin", Some(ADMIN_TOKEN));
     s.xrpc.send(rb).await.ok();
-    assert_eq!(audit_actors(&s, &a.did, "sessions.revoke").await, ["someone-else", ALICE, ALICE]);
+    let claims = json!({"did": a.did, "reason": "test", "actor": ALICE});
+    let rb = post(&s, &s.url, revoke, &claims).basic_auth("admin", Some(ADMIN_TOKEN));
+    s.xrpc.send(rb).await.ok();
+    let typed = format!("{ALICE}/token");
+    assert_eq!(
+        audit_actors(&s, &a.did, "sessions.revoke").await,
+        [typed.as_str(), "someone-else/token", &proxied, &proxied]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -164,5 +188,5 @@ async fn a_forward_to_the_owner_keeps_the_operator() {
     })
     .await
     .expect("audited");
-    assert_eq!(actors, [ALICE]);
+    assert_eq!(actors, [format!("{ALICE}/proxy")]);
 }

@@ -5,7 +5,7 @@ import { Chip, Copy, GLYPH, Json, KV, Meter, RRow, Sec, Spinner, Src, Strip } fr
 import { openPanel, panelParam } from '../../components/console/nav'
 import { registerPalette } from '../../components/console/Palette'
 import { toast } from '../../components/console/toast'
-import { ago, fmtBytes, plural } from '../../lib/console/fmt'
+import { ago, authName, authShort, fmtBytes, plural } from '../../lib/console/fmt'
 import {
   auditSeen,
   CASE_STATUSES,
@@ -691,6 +691,7 @@ function CaseNotes({ c }: { c: Case }) {
             <li key={i}>
               <div className="muted sm">
                 {ago(ISO(n.at))} · {n.actor}
+                {n.auth && <span className="mono"> · {authShort(n.auth)}</span>}
                 {n.ip && <span className="mono"> ({n.ip})</span>}
               </div>
               <div className="cxp-note">{n.text}</div>
@@ -860,6 +861,7 @@ registerDetail('audit', {
               rows={[
                 ['When', `${new Date(e.at).toLocaleString()} (${ago(ISO(e.at))})`],
                 ['Who', <>{e.actor}{e.ip && <span className="muted mono"> from {e.ip}</span>}</>],
+                ['Signed in by', <span title="proxy: the login was verified by the proxy in front of the admin listener · token: the admin token, with the name the console sent">{authName(e.auth)}</span>],
                 ['Node', <span className="mono">{e.node}</span>],
                 ['Action', <span className="mono">{e.action}</span>],
                 [

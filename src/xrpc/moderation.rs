@@ -71,6 +71,11 @@ impl axum::extract::FromRequestParts<Arc<App>> for ClientIp {
 pub struct Who {
     pub actor: String,
     pub ip: Option<String>,
+    /// How the actor got in: `proxy` (the login was verified by the admin
+    /// listener's proxy), `token` (the admin token: `actor` is only what the
+    /// caller typed) or `service` (the moderation service's JWT). None: vlpds
+    /// itself.
+    pub auth: Option<&'static str>,
 }
 
 impl Who {
@@ -78,14 +83,14 @@ impl Who {
     /// said, whatever `actor` the body claims; the token can't tell people
     /// apart, so the name the console sends stands for it.
     pub fn of(creds: &Credentials, actor: Option<&str>, ip: Option<std::net::IpAddr>) -> Who {
-        let actor = match creds {
-            Credentials::ModService { iss } => iss.clone(),
+        let (actor, auth) = match creds {
+            Credentials::ModService { iss } => (iss.clone(), "service"),
             _ => match creds.operator() {
-                Some(login) => login.to_string(),
-                None => actor_of(actor),
+                Some(login) => (login.to_string(), "proxy"),
+                None => (actor_of(actor), "token"),
             },
         };
-        Who { actor, ip: ip.map(|i| i.to_string()) }
+        Who { actor, ip: ip.map(|i| i.to_string()), auth: Some(auth) }
     }
 }
 
@@ -152,6 +157,9 @@ pub struct AuditEntry {
     pub id: String,
     pub at: String,
     pub actor: String,
+    /// [`Who::auth`]: `proxy`, `token` or `service`; absent for vlpds's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ip: Option<String>,
     pub node: String,
@@ -241,6 +249,7 @@ pub(super) async fn audit(
         id: id.clone(),
         at: crate::events::now_rfc3339(),
         actor: who.actor.clone(),
+        auth: who.auth.map(str::to_string),
         ip: who.ip.clone(),
         node: node_id(app),
         action: action.into(),
@@ -255,6 +264,7 @@ pub(super) async fn audit(
         action,
         id = %id,
         by = %who.actor,
+        auth = who.auth.unwrap_or("-"),
         ip = who.ip.as_deref().unwrap_or("-"),
         subject = subject.map(|s| format!("{} {}", s.kind, s.key())).unwrap_or_default(),
         reason = reason.unwrap_or(""),
@@ -426,7 +436,7 @@ pub async fn sweep_quarantine(app: &App, keep: Duration) -> anyhow::Result<usize
                     entry["quarantined"] = json!(false);
                     let _ = put_obj(app, &index_path(app, &s), &entry, PutMode::Overwrite).await;
                 }
-                let who = Who { actor: "system".into(), ip: None };
+                let who = Who { actor: "system".into(), ip: None, auth: None };
                 let _ = audit(
                     app,
                     &who,
@@ -469,6 +479,9 @@ pub async fn sweep_quarantine(app: &App, keep: Duration) -> anyhow::Result<usize
 pub struct Note {
     pub at: String,
     pub actor: String,
+    /// As [`AuditEntry::auth`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ip: Option<String>,
     pub text: String,
@@ -484,6 +497,8 @@ pub struct CaseAction {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     pub actor: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, Deserialize)]
@@ -546,6 +561,7 @@ async fn link_case(app: &App, id: &str, s: &SubjectRef, e: &AuditEntry) -> XResu
                 subject: s.clone(),
                 reason: e.reason.clone(),
                 actor: e.actor.clone(),
+                auth: e.auth.clone(),
             });
         }
         match (e.action.as_str(), c.status.as_str()) {
@@ -1101,7 +1117,13 @@ async fn create_case(
     if let Some(n) =
         inp.note.as_deref().map(|n| bounded_text("note", n, MAX_NOTE)).transpose()?.filter(|n| !n.is_empty())
     {
-        notes.push(Note { at: now.clone(), actor: who.actor.clone(), ip: who.ip.clone(), text: n });
+        notes.push(Note {
+            at: now.clone(),
+            actor: who.actor.clone(),
+            auth: who.auth.map(str::to_string),
+            ip: who.ip.clone(),
+            text: n,
+        });
     }
     let mut subjects: Vec<SubjectRef> = Vec::new();
     for s in inp.subjects {
@@ -1182,7 +1204,13 @@ async fn update_case(
         }
         if let Some(n) = &note {
             if !c.notes.iter().any(|x| x.at == at && x.text == *n) {
-                c.notes.push(Note { at: at.clone(), actor: who.actor.clone(), ip: who.ip.clone(), text: n.clone() });
+                c.notes.push(Note {
+                    at: at.clone(),
+                    actor: who.actor.clone(),
+                    auth: who.auth.map(str::to_string),
+                    ip: who.ip.clone(),
+                    text: n.clone(),
+                });
             }
         }
         if let Some(s) = &inp.add_subject {

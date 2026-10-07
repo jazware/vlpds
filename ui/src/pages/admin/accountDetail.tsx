@@ -8,7 +8,7 @@ import * as api from '../../lib/adminApi'
 import type { AccountRow, AccountSecurity, MailEntry, RepoOpsResult, Session, SignInFailure } from '../../lib/adminApi'
 import { withAdmin } from '../../lib/console/adminAdapter'
 import { useClusterView } from '../../lib/console/cluster'
-import { ago, dur, factorName, fmtBytes, fmtNum, plural, shortDid } from '../../lib/console/fmt'
+import { ago, authName, dur, factorName, fmtBytes, fmtNum, plural, shortDid } from '../../lib/console/fmt'
 import { isUnsupported } from '../../lib/console/live'
 import { heldSignInKeys, rlPoll, shortName, type HeldKey } from '../../lib/console/ratelimits'
 import { useLoad } from '../../lib/hooks'
@@ -728,7 +728,7 @@ function Spaces({ did }: { did: string }) {
 }
 
 type Case = { id: string; createdAt: string; status: string; source: string; subjects: { kind: string; did: string }[] }
-type Audit = { id: string; at: string; actor: string; action: string; reason?: string; caseId?: string }
+type Audit = { id: string; at: string; actor: string; auth?: string; action: string; reason?: string; caseId?: string }
 
 function Moderation({ did, status, mode }: { did: string; status?: SubjectStatus; mode: DetailMode }) {
   const v = useAccountsVersion()
@@ -775,7 +775,7 @@ function Moderation({ did, status, mode }: { did: string; status?: SubjectStatus
           {audit.data.map((e) => (
             <RRow key={e.id} x={iso(e.at)} title={e.reason}>
               <span className="mono sm">{e.action}</span>
-              <span className="nm t2">{e.actor}</span>
+              <span className="nm t2" title={authName(e.auth)}>{e.actor}</span>
             </RRow>
           ))}
         </>

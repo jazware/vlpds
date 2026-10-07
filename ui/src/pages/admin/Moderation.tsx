@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { DataTable, type Col } from '../../components/console/DataTable'
 import { Chip, Empty, ErrorState, Loading, PageHead, Panel, Seg, Src, Tiles } from '../../components/console/kit'
 import { panelParam } from '../../components/console/nav'
-import { ago, fmtBytes } from '../../lib/console/fmt'
+import { ago, authShort, fmtBytes } from '../../lib/console/fmt'
 import {
   CASE_STATUSES,
   CASE_TONE,
@@ -276,7 +276,7 @@ function AuditPanel({ v }: { v: number }) {
               label: 'Who',
               render: (e) => (
                 <>
-                  {e.actor} <span className="muted mono sm">{e.node}</span>
+                  {e.actor} <span className="muted mono sm">{[authShort(e.auth), e.node].filter(Boolean).join(' · ')}</span>
                 </>
               ),
             },

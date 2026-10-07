@@ -5,7 +5,7 @@ import { DetailPage, registerDetail } from '../../components/console/Drawer'
 import { Banners, Chip, Copy, Empty, ErrorState, Json, KV, Loading, Meter, PageHead, Panel, Sec, Seg, Src, Strip, Swatch, Tiles, type BannerSpec } from '../../components/console/kit'
 import { registerPalette } from '../../components/console/Palette'
 import { useClusterView } from '../../lib/console/cluster'
-import { ago, fmtNum, plural, shortDid } from '../../lib/console/fmt'
+import { ago, authName, fmtNum, plural, shortDid } from '../../lib/console/fmt'
 import { spacesStatusPoll, type SpacesStatus } from '../../lib/console/sys'
 
 type HealthRow = { node: string; status?: SpacesStatus; error?: unknown }
@@ -51,7 +51,7 @@ type SpaceInfo = {
   registrations: Registration[]
   takendownRecords: { uri: string; did: string }[]
 }
-type Audit = { id: string; at: string; actor: string; ip?: string; action: string; subject?: { kind: string; did: string; uri?: string }; reason?: string; detail?: { method?: string; service?: string } }
+type Audit = { id: string; at: string; actor: string; auth?: string; ip?: string; action: string; subject?: { kind: string; did: string; uri?: string }; reason?: string; detail?: { method?: string; service?: string } }
 type SpaceRecord = { uri: string; cid: string; value: unknown; takendown: boolean }
 
 /** The slide-over for a space (old /admin/spaces/space?uri= links still land on its full page). */
@@ -549,7 +549,7 @@ function SpaceAudit({ space, entries }: { space: string; entries: Audit[] }) {
               <td className="mono sm trunc" style={{ maxWidth: 220 }} title={what(e)}>
                 {what(e)}
               </td>
-              <td className="sm" title={e.ip}>
+              <td className="sm" title={[e.ip, authName(e.auth)].filter(Boolean).join(' · ')}>
                 {e.actor}
               </td>
               <td className="sm t2 trunc" style={{ maxWidth: 240 }} title={e.reason}>
