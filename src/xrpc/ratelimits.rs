@@ -309,6 +309,7 @@ async fn internal_reload(State(app): AppState, headers: HeaderMap) -> XResult<Js
         return Err(upstream_failure(format!("{e:#}")));
     }
     let st = l.runtime.status();
+    app.changes.emit("ratelimits", node_id(&app), l.policy().version);
     Ok(Json(json!({"node": node_id(&app), "configVersion": l.policy().version, "configError": st.error})))
 }
 

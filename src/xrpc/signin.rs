@@ -371,6 +371,7 @@ pub(crate) async fn record(app: &App, acct: &Account, method: Method, factor: Op
     if let Err(e) = record_inner(app, acct, &method, factor, ctx).await {
         tracing::warn!(did = %acct.did, error = %e.message, "sign-in not recorded");
     }
+    app.changes.account(&acct.did);
 }
 
 async fn record_inner(app: &App, acct: &Account, method: &Method, factor: Option<&str>, ctx: &Ctx<'_>) -> XResult<()> {
@@ -616,8 +617,9 @@ pub(crate) async fn failed(app: &App, who: FailedFor<'_>, method: &str, reason: 
         ip: ctx.ip.map(|i| i.to_string()),
         user_agent: ctx.user_agent.map(String::from),
     };
-    if let Err(e) = write_failure(app, &did, f, now).await {
-        tracing::debug!(%did, error = %e.message, "failed sign-in not recorded");
+    match write_failure(app, &did, f, now).await {
+        Ok(()) => app.changes.account(&did),
+        Err(e) => tracing::debug!(%did, error = %e.message, "failed sign-in not recorded"),
     }
 }
 

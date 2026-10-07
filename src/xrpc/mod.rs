@@ -9,6 +9,7 @@ pub mod authn;
 mod blob_quota;
 pub mod blobs;
 pub mod cas;
+pub mod changes;
 mod console;
 mod console_accounts;
 mod console_storage;
@@ -145,6 +146,8 @@ pub struct App {
     pub space_blob_accounts: blobs::SpaceBlobAccounts,
     /// Ends the node's listeners at shutdown.
     pub http_drain: crate::server::Drain,
+    /// What the console shows that changed (`vlpds.admin.subscribeChanges`).
+    pub changes: Arc<changes::Changes>,
 }
 
 type AppState = State<Arc<App>>;
@@ -363,6 +366,7 @@ pub fn router(app: Arc<App>) -> Router {
         .merge(crate::profiling::routes())
         .merge(ratelimits::routes())
         .merge(firehose_subs::routes())
+        .merge(changes::routes())
         .merge(console::routes())
         .merge(console_accounts::routes())
         .merge(console_storage::routes())
@@ -657,7 +661,9 @@ impl App {
             .route(did)
             .send(WorkerMsg::Account(crate::worker::AccountReq { did: did.into(), op, reply: tx }))
             .map_err(XrpcError::from_err)?;
-        Ok(rx.await.map_err(|_| XrpcError::internal("worker dropped request"))??)
+        let head = rx.await.map_err(|_| XrpcError::internal("worker dropped request"))??;
+        self.changes.account(did);
+        Ok(head)
     }
 
     /// Read-modify-write of an account on the worker's current state (a

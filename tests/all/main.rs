@@ -18,6 +18,7 @@ mod account_status;
 mod account_totals;
 mod account_totals_lazy;
 mod admin_audit;
+mod admin_changes;
 mod admin_cli;
 mod admin_cluster;
 mod admin_proxy;

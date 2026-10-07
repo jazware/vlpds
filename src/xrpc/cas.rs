@@ -141,11 +141,14 @@ pub(super) async fn private_cas_local(
             Op::DeletePrefix { .. } => None,
         })
         .collect();
+    let mut lockout = false;
     for op in &ops {
         match op {
             Op::Put { name, val } => {
                 muts.push(Mutation { key: state::private_key(routing, name).into(), val: val.clone() });
-                muts.extend(super::mfa::lockout_index(routing, name, val.as_ref()));
+                let idx = super::mfa::lockout_index(routing, name, val.as_ref());
+                lockout |= idx.is_some();
+                muts.extend(idx);
             }
 
             Op::DeletePrefix { prefix } => {
@@ -166,6 +169,10 @@ pub(super) async fn private_cas_local(
             super::server::ctl_changed(app, routing);
         }
         r?;
+        if lockout {
+            app.changes.emit("lockout", routing, super::changes::now_ms());
+            app.changes.account(routing);
+        }
     }
     Ok(Outcome { applied: true, deleted })
 }

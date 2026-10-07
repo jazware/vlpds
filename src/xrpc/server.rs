@@ -1125,6 +1125,7 @@ pub(super) async fn revoke_all_sessions(app: &App, did: &str) -> XResult<()> {
         Op::DeletePrefix { prefix: super::signin::TRUST.into() },
     ];
     app.private_cas(did, Vec::new(), ops).await?;
+    app.changes.account(did);
     Ok(())
 }
 
@@ -1150,6 +1151,7 @@ pub async fn drop_revocation(app: &App, did: &str, name: &str) -> XResult<()> {
 /// and the delete.
 pub(super) async fn revoke_refresh_tokens(app: &App, did: &str) -> XResult<()> {
     app.private_cas(did, Vec::new(), vec![super::cas::Op::DeletePrefix { prefix: "sess/".into() }]).await?;
+    app.changes.account(did);
     Ok(())
 }
 
@@ -1172,7 +1174,11 @@ async fn delete_sessions_where(
                 out.push(st);
             }
         }
-        if ops.is_empty() || app.private_cas(did, conds, ops).await?.applied {
+        if ops.is_empty() {
+            return Ok(out);
+        }
+        if app.private_cas(did, conds, ops).await?.applied {
+            app.changes.account(did);
             return Ok(out);
         }
     }
@@ -1641,7 +1647,9 @@ async fn create_account_checked(
         if let Err(e) = super::admin::record_invite_use(app, c, &did).await {
             tracing::warn!(%did, "recording invite use failed: {}", e.message);
         }
+        app.changes.emit("invite", "*", super::changes::now_ms());
     }
+    app.changes.account(&did);
     Ok(acct)
 }
 

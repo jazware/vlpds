@@ -514,6 +514,8 @@ pub struct Firehose {
     /// atomics.
     subs: parking_lot::Mutex<HashMap<u64, Arc<SubscriberEntry>>>,
     gone: parking_lot::Mutex<VecDeque<GoneSubscriber>>,
+    /// Told each connect and disconnect, by conn id (the admin change feed).
+    on_subscribers: OnceLock<Box<dyn Fn(u64) + Send + Sync>>,
     /// Connections with their own per-connection series, at most
     /// `max_labelled`.
     labelled: AtomicUsize,
@@ -556,6 +558,7 @@ impl Firehose {
             settled_tx: watch::channel(i64::MIN).0,
             subs: Default::default(),
             gone: Default::default(),
+            on_subscribers: OnceLock::new(),
             labelled: AtomicUsize::new(0),
             max_labelled: opts.max_labelled,
             counted: opts.start_floor.is_some(),
@@ -1622,6 +1625,7 @@ impl Listed {
     fn new(fh: &Arc<Firehose>, e: SubscriberEntry) -> Listed {
         let entry = Arc::new(e);
         fh.subs.lock().insert(entry.id, entry.clone());
+        fh.subscribers_changed(entry.id);
         Listed { fh: fh.clone(), entry, reason: None }
     }
 }
@@ -1636,6 +1640,7 @@ impl Drop for Listed {
             }
             g.push_front(GoneSubscriber { entry: self.entry.clone(), at_ms: now_ms(), reason });
         }
+        self.fh.subscribers_changed(self.entry.id);
     }
 }
 
@@ -1685,6 +1690,17 @@ pub struct SubscriberView {
 }
 
 impl Firehose {
+    /// Set once: called with a connection's id as it connects and leaves.
+    pub fn on_subscribers(&self, f: Box<dyn Fn(u64) + Send + Sync>) {
+        let _ = self.on_subscribers.set(f);
+    }
+
+    fn subscribers_changed(&self, conn: u64) {
+        if let Some(f) = self.on_subscribers.get() {
+            f(conn);
+        }
+    }
+
     /// The connected subscribers (oldest first) and the recently gone ones
     /// (newest first).
     pub fn subscribers(&self) -> (Vec<SubscriberView>, Vec<SubscriberView>) {

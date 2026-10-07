@@ -287,6 +287,7 @@ pub(super) async fn audit(
         case = case_id.unwrap_or(""),
         "moderation"
     );
+    app.changes.audited(&e);
     Ok(e)
 }
 

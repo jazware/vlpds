@@ -585,10 +585,12 @@ pub async fn build(cfg: Config) -> anyhow::Result<Arc<xrpc::App>> {
         owned = cluster.owned().len(), elapsed_ms = started.elapsed().as_millis() as u64, "node ready"
     );
 
+    let changes = xrpc::changes::Changes::new(cluster.cfg.node_id.clone());
     let app = Arc::new(xrpc::App {
         spaces,
         space_blob_accounts: Default::default(),
         http_drain: Default::default(),
+        changes,
         jwt: auth::Jwt::new(&cfg.jwt_secret, &cfg.service_did),
         store: state_store,
         workers,
@@ -618,6 +620,7 @@ pub async fn build(cfg: Config) -> anyhow::Result<Arc<xrpc::App>> {
         store_stats,
     });
     app.store_stats.start();
+    xrpc::changes::attach(&app);
     if let Some(s) = &app.spaces {
         crate::metrics::init_space_counters();
         s.outbox.start(Arc::downgrade(&app));
@@ -830,6 +833,14 @@ impl Default for Drain {
 impl Drain {
     fn subscribe(&self) -> tokio::sync::watch::Receiver<u8> {
         self.0.subscribe()
+    }
+
+    /// Resolves once the node starts draining: a response that would
+    /// otherwise stream on (the admin change feed) ends, so the drain
+    /// doesn't wait out its grace on it.
+    pub fn draining(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let mut rx = self.subscribe();
+        async move { reached(&mut rx, DRAINING).await }
     }
 
     /// Stops accepting connections, closes idle ones and lets every request

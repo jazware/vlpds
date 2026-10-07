@@ -54,6 +54,9 @@ pub static MAIL_LOG: LazyLock<MailLog> = LazyLock::new(MailLog::default);
 #[derive(Default)]
 pub struct MailLog {
     inner: parking_lot::Mutex<(u64, std::collections::VecDeque<MailLogEntry>)>,
+    /// Told the id of each entry added or updated (the admin change feed); a
+    /// watcher answering false is dropped.
+    watchers: parking_lot::Mutex<Vec<Box<dyn Fn(u64) -> bool + Send + Sync>>>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -128,7 +131,18 @@ impl MailLog {
             g.1.pop_front();
         }
         g.1.push_back(e);
-        g.0
+        let id = g.0;
+        drop(g);
+        self.changed(id);
+        id
+    }
+
+    pub fn watch(&self, f: Box<dyn Fn(u64) -> bool + Send + Sync>) {
+        self.watchers.lock().push(f);
+    }
+
+    fn changed(&self, id: u64) {
+        self.watchers.lock().retain(|f| f(id));
     }
 
     pub fn queued(&self, purpose: &str, did: Option<&str>, to: &str) -> u64 {
@@ -150,6 +164,8 @@ impl MailLog {
         let mut g = self.inner.lock();
         if let Some(e) = g.1.iter_mut().rev().find(|e| e.id == id) {
             f(e);
+            drop(g);
+            self.changed(id);
         }
     }
 
