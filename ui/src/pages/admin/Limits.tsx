@@ -22,7 +22,7 @@ import {
 } from '../../lib/console/ratelimits'
 import type { Lockout } from '../../lib/adminApi'
 import { lockoutsPoll } from '../../lib/console/polls'
-import { addOverrideDialog, addRouteDialog, bucketRows, clearLock, KeyId, KeyUse, overrideFor, toggleEnforcement, type BucketRow } from './limitsUi'
+import { addOverrideDialog, addRouteDialog, bucketRows, clearLock, KeyId, KeyUse, KeyWho, overrideFor, toggleEnforcement, type BucketRow } from './limitsUi'
 import { AccountLink, openAccount } from './peopleUi'
 
 // Limits & lockouts: who is locked out now, the cluster's 429s, every bucket with its busiest
@@ -163,7 +163,7 @@ function LockedOut({ d, factorLocks, supported, heldKeys }: { d: Loaded; factorL
       label: 'Who',
       className: 'trunc',
       style: { maxWidth: 150 },
-      render: (r) => (r.factor ? <AccountLink did={r.factor.did} handle={r.factor.handle} /> : <KeyId k={r.key!.c.key} w={150} />),
+      render: (r) => (r.factor ? <AccountLink did={r.factor.did} handle={r.factor.handle} /> : <KeyWho kind={r.key!.b.key} k={r.key!.c.key} w={150} />),
     },
     { id: 'by', label: 'Held by', className: 'trunc', style: { maxWidth: 130 }, render: (r) => (r.factor ? <span className="t2">{FACTOR_LABEL[r.factor.factor] ?? r.factor.factor}</span> : <span className="mono sm">{shortName(r.key!.b.name)}</span>) },
     { id: 'used', label: 'Used', r: true, render: (r) => (r.factor ? <span className="mono sm">{plural(r.factor.failures, 'wrong code')}</span> : <KeyUse c={r.key!.c} />) },

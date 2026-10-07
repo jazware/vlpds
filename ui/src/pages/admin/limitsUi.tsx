@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { confirmAction, FormDialog, openDialog } from '../../components/console/dialogs'
 import { registerDetail } from '../../components/console/Drawer'
 import { Chip, Copy, KV, Meter, Sec, Seg, Spark, Src, Strip } from '../../components/console/kit'
@@ -34,10 +34,15 @@ import {
   type RateLimits,
   type RouteCfg,
   type SaveResult,
+  isSignInBucket,
+  splitIdentKey,
 } from '../../lib/console/ratelimits'
+import { listAccounts } from '../../lib/adminApi'
+import { withAdmin } from '../../lib/console/adminAdapter'
 import { lockoutsPoll } from '../../lib/console/polls'
 import { navigate } from '../../lib/router'
 import { errText } from '../../lib/xrpc'
+import { AccountLink } from './peopleUi'
 
 // Limits & lockouts: the bucket and override slide-overs, the edit dialogs (every change is
 // shown as a diff before updateRateLimits saves it), and ⌘K entries.
@@ -391,6 +396,36 @@ export function KeyUse({ c, of }: { c: Consumer; of?: number }) {
   )
 }
 
+const identDid = new Map<string, Promise<string | null>>()
+
+/** The account an identifier (handle or email) names on this PDS, looked up once per tab. */
+function didOfIdent(ident: string): Promise<string | null> {
+  let p = identDid.get(ident)
+  if (!p) {
+    p = withAdmin((c) => listAccounts(c, { q: ident, limit: 5 }))
+      .then((r) => r.accounts.find((a) => a.handle.toLowerCase() === ident || a.email?.toLowerCase() === ident || a.did === ident)?.did ?? null)
+      .catch(() => null)
+    identDid.set(ident, p)
+  }
+  return p
+}
+
+/** A sign-in key as the account it holds back when the key names one: a DID key, or an identifier + IP key whose identifier is a handle or email here. */
+export function KeyWho({ kind, k, w }: { kind: KeyKind; k: string; w?: number }) {
+  const ident = kind === 'identifier-ip' ? splitIdentKey(k) : undefined
+  const [did, setDid] = useState<string | null | undefined>(kind === 'did' && k.startsWith('did:') ? k : undefined)
+  useEffect(() => {
+    if (ident) didOfIdent(ident.ident).then(setDid)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [k])
+  if (!did) return <KeyId k={k} w={w} />
+  return (
+    <span title={`${k}\nOpens the account`}>
+      <AccountLink did={did} handle={ident && !ident.ident.includes('@') && !ident.ident.startsWith('did:') ? ident.ident : undefined} />
+    </span>
+  )
+}
+
 /** A key truncated to a fixed width; the whole key on hover, copied on click. */
 export const KeyId = ({ k, w }: { k: string; w?: number }) => (
   <Copy text={k} full className="cxp-key">
@@ -454,7 +489,7 @@ registerDetail('bucket', {
                       return (
                         <tr key={c.key}>
                           <td style={{ width: '100%' }}>
-                            <KeyId k={c.key} w={200} />
+                            {held(c) && isSignInBucket(b) ? <KeyWho kind={b.key} k={c.key} w={200} /> : <KeyId k={c.key} w={200} />}
                             {c.nodes.length > 1 && <span className="muted sm"> ×{c.nodes.length}</span>}
                           </td>
                           <td className="r">

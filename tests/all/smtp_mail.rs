@@ -159,6 +159,7 @@ fn mail(purpose: &str, to: &str) -> Mail {
         body: "code ABCDE-12345".into(),
         html: None,
         purpose: purpose.into(),
+        did: None,
         token: Some("ABCDE-12345".into()),
         sent_at: String::new(),
     }

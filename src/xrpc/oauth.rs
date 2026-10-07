@@ -1350,6 +1350,17 @@ fn posted_assertion(f: &HashMap<String, String>) -> Option<super::passkeys::Asse
     })
 }
 
+/// For the console's list of failed sign-ins.
+async fn sign_in_failed(
+    app: &App,
+    req: &SignInReq<'_>,
+    who: super::signin::FailedFor<'_>,
+    reason: super::signin::FailReason,
+) {
+    let ctx = super::signin::Ctx { ip: req.ip, user_agent: req.user_agent, device_id: None };
+    super::signin::failed(app, who, "oauth", reason, &ctx).await;
+}
+
 async fn sign_in_inner(
     app: &App,
     device: &mut Device,
@@ -1361,6 +1372,7 @@ async fn sign_in_inner(
     let code = f.get("code").map(|c| c.trim()).filter(|c| !c.is_empty());
     let ident = f.get("identifier").map(|s| s.trim().trim_start_matches('@').to_lowercase()).unwrap_or_default();
     let limited = |ident: String| Ok(SignIn::Failed(ident, LoginError::RateLimited));
+    use super::signin::{FailReason as R, FailedFor as For};
     if rl::check_ip(&[&rl::GLOBAL_IP, &rl::OAUTH_SIGN_IN_IP], 1).is_err() {
         return limited(ident);
     }
@@ -1376,6 +1388,7 @@ async fn sign_in_inner(
         if rl::check_with_ip(&[&rl::CREATE_SESSION_DAY, &rl::CREATE_SESSION_5MIN], &did, 1).is_err()
             || rl::check(&[&rl::SIGN_IN_ACCOUNT], &did, 1).is_err()
         {
+            sign_in_failed(app, req, For::Did(&did), R::RateLimited).await;
             return limited(String::new());
         }
         (account_any(app, &did).await?, String::new(), device.pending_2fa_epoch.clone())
@@ -1387,12 +1400,14 @@ async fn sign_in_inner(
         }
         // createSession's buckets (shared with it), before any Argon2 work
         if rl::check_with_ip(&[&rl::CREATE_SESSION_DAY, &rl::CREATE_SESSION_5MIN], &ident, 1).is_err() {
+            sign_in_failed(app, req, For::Identifier(&ident), R::RateLimited).await;
             return limited(ident);
         }
         let Some(did) = resolve_identifier(app, &ident).await else {
             return invalid();
         };
         if rl::check(&[&rl::SIGN_IN_ACCOUNT], &did, 1).is_err() {
+            sign_in_failed(app, req, For::Did(&did), R::RateLimited).await;
             return limited(ident);
         }
         let Ok(acct) = account_any(app, &did).await else {
@@ -1404,7 +1419,10 @@ async fn sign_in_inner(
         // 503 rather than queue behind a login flood
         match state::try_verify_password_hash(&acct.password_hash, &password).await {
             Ok(true) => {}
-            Ok(false) => return invalid(),
+            Ok(false) => {
+                sign_in_failed(app, req, For::Did(&acct.did), R::WrongPassword).await;
+                return invalid();
+            }
             Err(busy) => {
                 crate::metrics::ARGON2_SHED.inc();
                 return Err(unavailable(&busy.to_string()));
@@ -1438,6 +1456,7 @@ async fn sign_in_inner(
                 }
                 Err(super::passkeys::UseErr::Server(e)) => return Err(e.into()),
                 Err(super::passkeys::UseErr::Refused(_)) => {
+                    sign_in_failed(app, req, For::Did(&acct.did), R::WrongCode).await;
                     device.pending_2fa_failures += 1;
                     if device.pending_2fa_failures >= PENDING_2FA_MAX_FAILURES {
                         device.pending_2fa = None;
@@ -1467,10 +1486,13 @@ async fn sign_in_inner(
         Err(fe) if fe.err.status.is_server_error() => return Err(fe.err.into()),
         // no code could be mailed: not a wrong code
         Err(fe) if super::server::is_mail_limited(&fe.err) => {
-            return Ok(SignIn::Failed(ident, LoginError::RateLimited))
+            sign_in_failed(app, req, For::Did(&acct.did), R::RateLimited).await;
+            return Ok(SignIn::Failed(ident, LoginError::RateLimited));
         }
         Err(fe) => {
             let e = fe.err;
+            let locked = crate::totp::is_lockout(&e);
+            sign_in_failed(app, req, For::Did(&acct.did), if locked { R::FactorLocked } else { R::WrongCode }).await;
             // a password step starts a new pending sign-in
             if password_step {
                 device.pending_2fa = Some((acct.did.clone(), now));
@@ -1478,7 +1500,7 @@ async fn sign_in_inner(
                 device.pending_2fa_failures = 0;
             }
             device.pending_2fa_failures += 1;
-            if crate::totp::is_lockout(&e) || device.pending_2fa_failures >= PENDING_2FA_MAX_FAILURES {
+            if locked || device.pending_2fa_failures >= PENDING_2FA_MAX_FAILURES {
                 device.pending_2fa = None;
                 device.pending_2fa_failures = 0;
                 store::put_device(app, device).await?;

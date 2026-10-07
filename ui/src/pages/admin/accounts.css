@@ -22,7 +22,28 @@
 .cx-acc-chips {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 4px;
+}
+
+/* "Can they sign in?": one box of chips under the banners */
+.cx-cansign {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--rule2);
+  border-radius: 8px;
+  background: var(--sheet);
+  padding: 9px 10px 10px;
+  margin-bottom: 8px;
+}
+.cx-cansign .cx-btn.sm {
+  height: 22px;
+}
+
+/* a refused sign-in in Recent sign-ins */
+.cx-t tr.cx-refused td:first-child {
+  box-shadow: inset 2px 0 0 var(--warn);
 }
 
 .cx-acc-more {

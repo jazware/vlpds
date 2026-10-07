@@ -610,6 +610,8 @@ pub struct Mail {
     pub html: Option<String>,
     /// confirm_email | update_email | reset_password | delete_account | plc_operation | auth_factor | admin
     pub purpose: String,
+    /// The account it's for, kept in the console's mail log.
+    pub did: Option<String>,
     pub token: Option<String>,
     pub sent_at: String,
 }
@@ -625,14 +627,14 @@ impl Mailer for LogMailer {
         // Never the token or body, at any level: they are credentials (a
         // debug log is still shipped to log storage).
         tracing::info!(to = %m.to, subject = %m.subject, purpose = %m.purpose, has_token = m.token.is_some(), body_bytes = m.body.len(), "mail (log mailer: email disabled, not sent)");
-        crate::mail::MAIL_LOG.logged(&m.purpose, &m.to);
+        crate::mail::MAIL_LOG.logged(&m.purpose, m.did.as_deref(), &m.to);
     }
 }
 
 /// What [`deliver`] needs: the recipient's, the node's and the cluster's
 /// mail budgets spent ([`mail_permit`]).
 #[must_use]
-pub(super) struct MailPermit(&'static str);
+pub(super) struct MailPermit(&'static str, Option<String>);
 
 const MAIL_LIMITED: &str = "Too many emails sent to this account; try again later";
 
@@ -658,7 +660,7 @@ pub(super) async fn mail_permit(
     let route = format!("mail:{purpose}");
     let limited = |reason: &str| {
         crate::mail::MAIL_SUPPRESSED.with_label_values(&[purpose, reason]).inc();
-        crate::mail::MAIL_LOG.suppressed(purpose, to, reason);
+        crate::mail::MAIL_LOG.suppressed(purpose, did, to, reason);
         XrpcError {
             status: StatusCode::TOO_MANY_REQUESTS,
             error: "RateLimitExceeded".into(),
@@ -676,7 +678,7 @@ pub(super) async fn mail_permit(
         tracing::warn!(purpose, "mail not sent: the cluster's mail budget (mail-cluster-day) is spent");
         limited("cluster_limit")
     })?;
-    Ok(MailPermit(purpose))
+    Ok(MailPermit(purpose, did.map(String::from)))
 }
 
 pub(super) fn deliver(app: &App, permit: MailPermit, to: &str, email: crate::mail::Email<'_>) {
@@ -688,6 +690,7 @@ pub(super) fn deliver(app: &App, permit: MailPermit, to: &str, email: crate::mai
         body: r.text,
         html: Some(r.html),
         purpose: email.purpose().to_string(),
+        did: permit.1,
         token: Some(email.token()).filter(|t| !t.is_empty()).map(String::from),
         sent_at: crate::events::now_rfc3339(),
     };
@@ -695,13 +698,14 @@ pub(super) fn deliver(app: &App, permit: MailPermit, to: &str, email: crate::mai
 }
 
 /// `content` is HTML, as in the reference's ModerationMailer.
-pub(super) fn deliver_moderation(app: &App, to: &str, subject: &str, content: &str) {
+pub(super) fn deliver_moderation(app: &App, did: &str, to: &str, subject: &str, content: &str) {
     let mail = Mail {
         to: to.to_string(),
         subject: subject.to_string(),
         body: crate::mail::html_to_text(content),
         html: Some(content.to_string()),
         purpose: "admin".into(),
+        did: Some(did.to_string()),
         token: None,
         sent_at: crate::events::now_rfc3339(),
     };
@@ -1774,6 +1778,10 @@ async fn verify_app_password(app: &App, did: &str, password: &str) -> XResult<Op
 struct LoginStep {
     method: &'static str,
     second_factor: bool,
+    /// The normalized identifier, then the account once it's known: whose
+    /// failure to record.
+    ident: String,
+    did: Option<String>,
 }
 
 /// A browser request from this server's own pages (the account page).
@@ -1790,8 +1798,11 @@ async fn create_session(
     headers: HeaderMap,
     Json(inp): Json<CreateSessionIn>,
 ) -> XResult<Response> {
-    let mut step = LoginStep { method: "password", second_factor: false };
+    let mut step = LoginStep { method: "password", second_factor: false, ident: String::new(), did: None };
     let r = create_session_inner(&app, inp, &mut step, ip, &headers).await;
+    if let Err(e) = &r {
+        record_login_failure(&app, &step, e, ip, &headers).await;
+    }
     let result = match &r {
         Ok(_) => "success",
         Err(e) if e.status == StatusCode::TOO_MANY_REQUESTS => "rate_limited",
@@ -1807,6 +1818,43 @@ async fn create_session(
     crate::metrics::login(step.method, result);
     r
 }
+
+/// The refusals the console's account page lists: a wrong password, a
+/// wrong or locked second factor, a rate limit.
+async fn record_login_failure(
+    app: &App,
+    step: &LoginStep,
+    e: &XrpcError,
+    ip: Option<std::net::IpAddr>,
+    headers: &HeaderMap,
+) {
+    use super::signin::{FailReason, FailedFor};
+    let reason = if e.status == StatusCode::TOO_MANY_REQUESTS {
+        if step.second_factor && !is_mail_limited(e) {
+            FailReason::FactorLocked
+        } else {
+            FailReason::RateLimited
+        }
+    } else if step.second_factor {
+        if e.error == "AuthFactorTokenRequired" || e.status.is_server_error() {
+            return;
+        }
+        FailReason::WrongCode
+    } else if e.status == StatusCode::UNAUTHORIZED && e.message == INVALID_LOGIN && step.did.is_some() {
+        FailReason::WrongPassword
+    } else {
+        return;
+    };
+    let who = match (&step.did, step.ident.as_str()) {
+        (Some(d), _) => FailedFor::Did(d),
+        (None, "") => return,
+        (None, i) => FailedFor::Identifier(i),
+    };
+    let ctx = super::signin::Ctx { ip, user_agent: super::signin::user_agent(headers), device_id: None };
+    super::signin::failed(app, who, step.method, reason, &ctx).await;
+}
+
+const INVALID_LOGIN: &str = "Invalid identifier or password";
 
 const OAUTH_REQUIRED: &str = "OAuthRequired";
 pub(super) const PASSKEY_REQUIRED: &str = "PasskeyRequired";
@@ -1859,10 +1907,12 @@ async fn create_session_inner(
     {
         use crate::ratelimit::*;
         let key = inp.identifier.trim().trim_start_matches('@').to_lowercase();
+        step.ident = key.clone();
         check_with_ip(&[&CREATE_SESSION_DAY, &CREATE_SESSION_5MIN], &key, 1)?;
     }
-    let invalid = || XrpcError::auth("Invalid identifier or password");
+    let invalid = || XrpcError::auth(INVALID_LOGIN);
     let acct = login_account(app, &inp.identifier).await?.ok_or_else(invalid)?;
+    step.did = Some(acct.did.clone());
     // vlpds: a per-account cap from any IP (shared with the OAuth sign-in),
     // before the password hash
     crate::ratelimit::check(&[&crate::ratelimit::SIGN_IN_ACCOUNT], &acct.did, 1)?;

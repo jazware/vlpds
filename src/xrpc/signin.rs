@@ -8,6 +8,8 @@
 //!   p/{did}\0signin/prefs          [`Prefs`]
 //!   p/{did}\0signin/log            [`Log`]: recent sign-ins, known devices
 //!                                  and today's alert count, one row
+//!   p/{did}\0signin/failed         [`Failures`]: recent failed sign-ins for
+//!                                  the console, written only on a failure
 //!   p/{did}\0trust/{device hash}   [`Trust`]: one trusted browser
 //!
 //! A trust is valid while the account's credential epoch and its second
@@ -20,10 +22,13 @@ use super::cas::{Cond, Op};
 use super::server::{get_json, now_secs, to_json_bytes};
 use super::*;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::net::IpAddr;
+use std::sync::LazyLock;
 
 pub(super) const PREFS: &str = "signin/prefs";
 pub(super) const LOG: &str = "signin/log";
+pub(super) const FAILED: &str = "signin/failed";
 pub const TRUST: &str = "trust/";
 pub const DEFAULT_TRUST_DAYS: u32 = 30;
 const LOG_MAX: usize = 50;
@@ -491,6 +496,180 @@ async fn send_alert(app: &App, acct: &Account, email: &str, method: &Method, e: 
     Some(MAILED)
 }
 
+// ------------------------------------------------------- failed sign-ins
+
+const FAILED_MAX: usize = 20;
+/// A failure like the newest one (method, reason, address) within this
+/// adds to its count instead of a new entry.
+const FAILED_MERGE_SECS: u64 = 600;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct Failure {
+    pub at: u64,
+    pub last_at: u64,
+    /// Attempts this entry stands for.
+    pub count: u32,
+    /// "password" | "app_password" | "oauth"
+    pub method: String,
+    /// A [`FailReason`] name.
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub(super) struct Failures {
+    /// Oldest first.
+    #[serde(default)]
+    pub entries: Vec<Failure>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FailReason {
+    WrongPassword,
+    /// A wrong second-factor code, recovery code or passkey.
+    WrongCode,
+    /// The factor's lockout was in force, or this attempt set it.
+    FactorLocked,
+    RateLimited,
+}
+
+impl FailReason {
+    fn name(self) -> &'static str {
+        match self {
+            FailReason::WrongPassword => "wrong_password",
+            FailReason::WrongCode => "wrong_code",
+            FailReason::FactorLocked => "factor_locked",
+            FailReason::RateLimited => "rate_limited",
+        }
+    }
+
+    /// A flood of refused requests costs a write a second per account and
+    /// reason at most (rate-limited ones, which need no work to send, one
+    /// per 10 s).
+    fn gate_secs(self) -> u64 {
+        match self {
+            FailReason::RateLimited => 10,
+            _ => 1,
+        }
+    }
+}
+
+/// Whose sign-in failed: an account, or the identifier typed (a refusal
+/// before the account was looked up).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum FailedFor<'a> {
+    Did(&'a str),
+    Identifier(&'a str),
+}
+
+/// Per node: the last write per account and reason, and the attempts since
+/// that weren't written (added to the next one).
+static GATE: LazyLock<parking_lot::Mutex<HashMap<String, (u64, u32)>>> = LazyLock::new(Default::default);
+const GATE_MAX: usize = 10_000;
+
+/// None: a write for this key went out under `secs` ago (the attempt is
+/// counted for the next). Some(n): write, standing for n + 1 attempts.
+fn gate(key: String, now: u64, secs: u64) -> Option<u32> {
+    let mut g = GATE.lock();
+    if g.len() >= GATE_MAX {
+        g.retain(|_, (t, _)| now.saturating_sub(*t) < 10);
+        if g.len() >= GATE_MAX {
+            g.clear();
+        }
+    }
+    let e = g.entry(key).or_insert((0, 0));
+    if e.0 != 0 && now.saturating_sub(e.0) < secs {
+        e.1 = e.1.saturating_add(1);
+        return None;
+    }
+    let skipped = e.1;
+    *e = (now, 0);
+    Some(skipped)
+}
+
+/// Records a refused sign-in for the console (`getAccountSecurity`). Never
+/// fails the request; a successful sign-in never reaches here.
+pub(crate) async fn failed(app: &App, who: FailedFor<'_>, method: &str, reason: FailReason, ctx: &Ctx<'_>) {
+    let now = now_secs();
+    let key = match who {
+        FailedFor::Did(d) => format!("{d}\0{}", reason.name()),
+        FailedFor::Identifier(i) => format!("@{i}\0{}", reason.name()),
+    };
+    let Some(skipped) = gate(key, now, reason.gate_secs()) else { return };
+    let did = match who {
+        FailedFor::Did(d) => d.to_string(),
+        FailedFor::Identifier(i) => match super::server::login_account(app, i).await {
+            Ok(Some(a)) => a.did,
+            _ => return,
+        },
+    };
+    let f = Failure {
+        at: now,
+        last_at: now,
+        count: skipped.saturating_add(1),
+        method: method.into(),
+        reason: reason.name().into(),
+        ip: ctx.ip.map(|i| i.to_string()),
+        user_agent: ctx.user_agent.map(String::from),
+    };
+    if let Err(e) = write_failure(app, &did, f, now).await {
+        tracing::debug!(%did, error = %e.message, "failed sign-in not recorded");
+    }
+}
+
+async fn write_failure(app: &App, did: &str, f: Failure, now: u64) -> XResult<()> {
+    for _ in 0..CAS_ROUNDS {
+        let raw = app.get_private(did, FAILED).await?;
+        let mut log: Failures =
+            raw.as_deref().map(serde_json::from_slice).transpose().unwrap_or_default().unwrap_or_default();
+        merge_failure(&mut log, f.clone(), now);
+        let ops = vec![Op::put(FAILED, Some(json_bytes(&log)))];
+        if app.private_cas(did, vec![Cond::eq(FAILED, raw)], ops).await?.applied {
+            return Ok(());
+        }
+    }
+    Err(super::server::cas_conflict())
+}
+
+fn merge_failure(log: &mut Failures, f: Failure, now: u64) {
+    log.entries.retain(|x| now.saturating_sub(x.last_at) <= LOG_MAX_AGE);
+    if let Some(last) = log.entries.last_mut().filter(|x| {
+        x.method == f.method
+            && x.reason == f.reason
+            && x.ip == f.ip
+            && f.at.saturating_sub(x.last_at) <= FAILED_MERGE_SECS
+    }) {
+        last.last_at = f.at;
+        last.count = last.count.saturating_add(f.count);
+        last.user_agent = f.user_agent;
+        return;
+    }
+    log.entries.push(f);
+    if log.entries.len() > FAILED_MAX {
+        log.entries.drain(..log.entries.len() - FAILED_MAX);
+    }
+}
+
+/// Golden fixtures (`private/sign_in_failures.json`).
+pub(super) fn failure_fixture_rows(did: &str) -> Vec<super::private_rows::PrivateRow> {
+    let log = Failures {
+        entries: vec![Failure {
+            at: 1_790_000_000,
+            last_at: 1_790_000_060,
+            count: 3,
+            method: "password".into(),
+            reason: "wrong_password".into(),
+            ip: Some("203.0.113.7".into()),
+            user_agent: Some("Mozilla/5.0".into()),
+        }],
+    };
+    vec![(did.into(), FAILED.into(), to_json_bytes(&log))]
+}
+
 /// Golden fixtures (`super::private_rows`).
 pub(super) fn fixture_rows(did: &str) -> Vec<super::private_rows::PrivateRow> {
     let prefs = Prefs {
@@ -541,6 +720,7 @@ pub(super) fn check_row(routing: &str, name: &str, val: &[u8]) -> Option<anyhow:
     Some(match name {
         PREFS => typed_row::<Prefs>("sign-in prefs", val),
         LOG => typed_row::<Log>("sign-in log", val),
+        FAILED => typed_row::<Failures>("failed sign-ins", val),
         n if n.starts_with(TRUST) => typed_row::<Trust>("trusted browser", val),
         _ => return None,
     })

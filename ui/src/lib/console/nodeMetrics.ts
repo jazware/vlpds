@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react'
+import { useMemo, useSyncExternalStore } from 'react'
 import { getNodeMetrics, type MetricsPoint, type NodeMetrics } from '../adminApi'
 import { withAdmin } from './adminAdapter'
 import { getLive, isUnsupported } from './live'
@@ -84,3 +84,9 @@ export const refreshNodeMetrics = () => tick(true)
 
 /** Every node's series and last answer, kept current while mounted. */
 export const useNodeMetrics = () => useSyncExternalStore(subscribeNodeMetrics, getNodeMetricsState)
+
+/** When each node's process started (unix ms), from the same poll. */
+export function useStartedAt(): Map<string, number> {
+  const s = useNodeMetrics()
+  return useMemo(() => new Map(s.nodes.filter((n) => n.raw.startedAt).map((n) => [n.node, n.raw.startedAt!])), [s])
+}

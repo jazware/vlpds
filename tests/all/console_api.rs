@@ -145,9 +145,17 @@ async fn security_sessions_and_revocation() {
     s.xrpc.post("com.atproto.server.createAppPassword", &json!({"name": "feeds"}), &a.auth()).await.ok();
     let ap = s.xrpc.post("com.atproto.server.createAppPassword", &json!({"name": "bot"}), &a.auth()).await.ok();
     let ap_session = s.login(&a.handle, ap["password"].as_str().unwrap(), None).await.ok();
+    s.login(&a.handle, "not the password", None).await.err(401, "AuthenticationRequired");
 
     let sec = admin_get(&s, "vlpds.admin.getAccountSecurity", &[("did", &a.did)]).await;
     assert_eq!(sec["passwordSet"], true);
+    let signins = sec["recentSignIns"].as_array().unwrap();
+    let bad = signins.iter().find(|e| e["failed"].is_string()).unwrap_or_else(|| panic!("a refusal listed: {sec}"));
+    assert_eq!(
+        (bad["failed"].as_str(), bad["method"].as_str(), bad["count"].as_u64()),
+        (Some("wrong_password"), Some("password"), Some(1))
+    );
+    assert!(signins.iter().any(|e| e["method"] == "app_password" && e["failed"].is_null()), "{sec}");
     assert_eq!(sec["totp"]["enabled"], false);
     assert_eq!(sec["recoveryCodes"]["remaining"], 0);
     let mut names: Vec<&str> =
@@ -219,6 +227,11 @@ async fn lockouts_are_listed_and_cleared() {
     let sec = admin_get(&s, "vlpds.admin.getAccountSecurity", &[("did", &a.did)]).await;
     assert_eq!(sec["lockouts"][0]["failures"], vlpds::totp::MAX_FAILURES, "{sec}");
     assert_eq!(sec["totp"]["enabled"], true);
+    // the refusals, newest first, next to the successes
+    let failed: Vec<&str> =
+        sec["recentSignIns"].as_array().unwrap().iter().filter_map(|e| e["failed"].as_str()).collect();
+    assert_eq!(failed.first(), Some(&"factor_locked"), "{sec}");
+    assert!(failed.contains(&"wrong_code"), "{sec}");
     let row = admin_get(&s, "vlpds.admin.listAccounts", &[("q", &a.did)]).await;
     assert_eq!(row["accounts"][0]["secondFactors"]["totp"], true);
 
@@ -304,8 +317,16 @@ async fn repo_ops_metrics_segments_and_mail() {
         .unwrap_or_else(|| panic!("mail listed: {r}"))
         .clone();
     assert_eq!(m["node"], "single");
+    assert_eq!(m["did"], a.did.as_str(), "the account it was for: {m}");
     assert!(["logged", "queued", "sent"].contains(&m["status"].as_str().unwrap()), "{m}");
     assert!(!r.to_string().contains(&a.email), "no address: {r}");
+
+    // filtered to one account
+    let b = s.create_account("cops").await;
+    s.xrpc.post_empty("com.atproto.server.requestEmailConfirmation", &b.auth()).await.ok();
+    let r = admin_get(&s, "vlpds.admin.listMail", &[("did", &b.did)]).await;
+    let mail = r["mail"].as_array().unwrap();
+    assert!(!mail.is_empty() && mail.iter().all(|m| m["did"] == b.did.as_str()), "{r}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

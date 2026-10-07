@@ -20,7 +20,7 @@ import {
   type TakedownEntry,
 } from '../../lib/console/moderation'
 import { useLoad } from '../../lib/hooks'
-import { navigate, useSearch } from '../../lib/router'
+import { navigate, useHash, useSearch } from '../../lib/router'
 import { auditTone, confirmModerate, newCaseDialog, reviewSubject, SubjectLabel } from './moderationUi'
 import { AccountLink, Who } from './peopleUi'
 
@@ -47,14 +47,29 @@ export function Moderation() {
   // older links: ?q= looked a subject up, ?tab= picked a tab
   useEffect(() => {
     const q = search.get('q')
-    if (!q && !search.get('tab')) return
+    const tab = search.get('tab')
+    if (!q && !tab) return
     const sp = new URLSearchParams(location.search)
     sp.delete('q')
     sp.delete('tab')
     if (q) sp.set('open', panelParam('subject', q))
-    navigate(`/admin/moderation${sp.size ? `?${sp}` : ''}`, { replace: true })
+    navigate(`/admin/moderation${sp.size ? `?${sp}` : ''}${tab === 'audit' ? '#audit' : location.hash}`, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+  // #audit: Overview's "Operator activity ›" and ⌘K's "Audit log" land on the panel
+  const hash = useHash()
+  useEffect(() => {
+    if (hash !== '#audit') return
+    let tries = 0
+    const t = setInterval(() => {
+      const el = document.getElementById('audit')
+      if (el?.querySelector('table, .cx-empty') || ++tries > 20) {
+        clearInterval(t)
+        el?.scrollIntoView({ block: 'start' })
+      }
+    }, 100)
+    return () => clearInterval(t)
+  }, [hash])
   const v = useModVersion()
   const cases = useLoad(() => listCases(), [v], POLL)
   const takedowns = useLoad(() => listTakedowns(), [v], POLL)
@@ -86,15 +101,6 @@ export function Moderation() {
           </button>
         }
       />
-      <Tiles
-        boxed
-        tiles={[
-          { label: 'Open cases', right: open.length ? `oldest ${ago(ISO(open[0].createdAt)).replace(' ago', '')}` : undefined, value: cases.data ? open.length : '—' },
-          { label: 'Actioned, 7 days', value: cases.data ? actioned7.length : '—', sec: cases.data ? `${all.length} cases in all` : undefined },
-          { label: 'Active takedowns', right: byKind.map(([k, n]) => `${n} ${k}`).join(' · ') || undefined, value: takedowns.data ? tds.length : '—' },
-          { label: 'Over blob quota', right: 'migrations only', value: quota.data ? over.length : '—' },
-        ]}
-      />
       <section className="cx-pn cx-mb">
         <form
           className="cx-toolbar"
@@ -119,7 +125,16 @@ export function Moderation() {
           <Src>resolveSubject · getSubject</Src>
         </form>
       </section>
-      <div className="cx-grid2">
+      <Tiles
+        boxed
+        tiles={[
+          { label: 'Open cases', right: open.length ? `oldest ${ago(ISO(open[0].createdAt)).replace(' ago', '')}` : undefined, value: cases.data ? open.length : '—' },
+          { label: 'Actioned, 7 days', value: cases.data ? actioned7.length : '—', sec: cases.data ? `${all.length} cases in all` : undefined },
+          { label: 'Active takedowns', right: byKind.map(([k, n]) => `${n} ${k}`).join(' · ') || undefined, value: takedowns.data ? tds.length : '—' },
+          { label: 'Over blob quota', right: 'migrations only', value: quota.data ? over.length : '—' },
+        ]}
+      />
+      <div className="cx-grid2 cx-mt">
         <Panel
           title="Cases"
           src={<Src>listCases · getCase · updateCase</Src>}
@@ -226,6 +241,8 @@ function AuditPanel({ v }: { v: number }) {
   const rows = l.data ?? []
   return (
     <Panel
+      id="audit"
+      className="cx-anchor"
       title="Audit log"
       src={<Src>getAuditLog</Src>}
       right={<Seg label="Entries" value={scope} onChange={setScope} options={[{ v: 'all', label: 'all' }, { v: 'spaces', label: 'spaces' }]} />}

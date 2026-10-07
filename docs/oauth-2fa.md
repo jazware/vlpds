@@ -356,6 +356,16 @@ once they expire.
 | Shows | when, method (app password name, OAuth client, `passkey` for one in place of the password), device, address, factor (`totp`, `email`, `passkey`, `recovery` or `trusted`) | device, method, address and time · links to change the password and to the Security tab |
 | Skipped when | never | the user turned that kind off · the account has no email · the sign-in used an emailed code · it's the first sign-in vlpds records for the account |
 
+Refused sign-ins go in a row of their own, `signin/failed`, for the operator console only. A wrong
+password, a wrong or locked second factor and a sign-in rate limit each add an entry with the time,
+method, address and user agent, once the account is known (a rate limit on the typed identifier
+looks the account up first). A successful sign-in never touches the row. Like attempts (same method,
+reason and address) within 10 minutes are one entry with a count, and the row keeps the last 20, at
+most 30 days old. A flood costs at most one write a second per account and reason on each node, and
+one every 10 s for rate-limited attempts. The attempts in between are added to the next entry
+written, so a burst's count can come up short by its last second. The user's own Security tab
+doesn't show them.
+
 Each sign-in writes one row in the account's private state, at the account's owner, with a
 conditional write. The row holds the log, the devices the account has used and today's alert count,
 so the "new device", the once-per-device rule and the daily cap all hold across nodes. A browser is

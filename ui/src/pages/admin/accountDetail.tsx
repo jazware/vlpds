@@ -1,15 +1,16 @@
 import { useState, type ReactNode } from 'react'
 import { registerDetail, type DetailMode } from '../../components/console/Drawer'
-import { Banners, Chip, Copy, ErrorState, Json, KV, Loading, Meter, NeedsVersion, RRow, Sec, Spinner, Src, Strip, type BannerSpec, type KVRow } from '../../components/console/kit'
+import { Banners, Chip, Copy, ErrorState, Json, KV, Loading, Meter, NeedsVersion, RRow, Sec, Spinner, Src, Strip, type BannerSpec, type ChipKind, type KVRow } from '../../components/console/kit'
 import { openPanel } from '../../components/console/nav'
 import { registerPalette, type PalItem } from '../../components/console/Palette'
 import { toast } from '../../components/console/toast'
 import * as api from '../../lib/adminApi'
-import type { AccountRow, AccountSecurity, RepoOpsResult, Session } from '../../lib/adminApi'
+import type { AccountRow, AccountSecurity, MailEntry, RepoOpsResult, Session, SignInFailure } from '../../lib/adminApi'
 import { withAdmin } from '../../lib/console/adminAdapter'
 import { useClusterView } from '../../lib/console/cluster'
-import { ago, factorName, fmtBytes, fmtNum, plural, shortDid } from '../../lib/console/fmt'
+import { ago, dur, factorName, fmtBytes, fmtNum, plural, shortDid } from '../../lib/console/fmt'
 import { isUnsupported } from '../../lib/console/live'
+import { heldSignInKeys, rlPoll, shortName, type HeldKey } from '../../lib/console/ratelimits'
 import { useLoad } from '../../lib/hooks'
 import { Link } from '../../lib/router'
 import { admin, call, errText } from '../../lib/xrpc'
@@ -17,6 +18,8 @@ import * as act from './accountActions'
 import { useAccountsVersion, type Quota, type Who } from './accountActions'
 import { accountState, TwoFactor } from './Accounts'
 import { NodeTag } from './clusterUi'
+import { addOverrideDialog, overrideFor } from './limitsUi'
+import { MailChip, mailId, mailOutcome, mailTone, purposeLabel } from './Mail'
 
 // The account detail, in the slide-over or as a full page: identity, placement, sign-in and
 // second factors, sessions, recent ops, blobs and quota, invites, spaces, moderation, and the
@@ -69,6 +72,87 @@ const btn = (label: string, run: () => unknown, danger?: boolean) => (
     {label}
   </button>
 )
+
+// ---------------------------------------------------------------- can they sign in?
+
+type Load<T> = ReturnType<typeof useLoad<T>>
+
+const FAILED: Record<SignInFailure, string> = { wrong_password: 'wrong password', wrong_code: 'wrong code', factor_locked: 'code locked', rate_limited: 'rate-limited' }
+const FAILED_TEXT: Record<SignInFailure, string> = {
+  wrong_password: 'Refused: the password (or app password) was wrong',
+  wrong_code: 'Refused: a wrong second-factor code, recovery code or passkey',
+  factor_locked: 'Refused: the second factor was locked after wrong codes',
+  rate_limited: 'Refused: a sign-in rate limit held it (Limits & lockouts)',
+}
+
+/** One line under the banners: everything that decides whether a sign-in works, in the order it's checked. */
+function CanSignIn({ a, k, t, i, sec, held, mail }: { a: Who; k: ChipKind; t: string; i?: AccountInfo; sec: Load<AccountSecurity>; held: HeldKey[]; mail?: MailEntry }) {
+  const s = sec.data
+  const now = Date.now()
+  const factors = s ? [s.totp.enabled && 'authenticator', s.passkeys.length && plural(s.passkeys.length, 'passkey'), s.emailCode.enabled && 'email code'].filter(Boolean) : []
+  const locks = (s?.lockouts ?? []).filter((l) => l.lockedUntil && l.lockedUntil > now)
+  const good = s?.recentSignIns.find((x) => !x.failed)
+  const day = (s?.recentSignIns ?? []).filter((x) => x.failed && now - x.at < 86_400_000)
+  const refused = day.reduce((n, x) => n + (x.count ?? 1), 0)
+  return (
+    <div className="cx-cansign" aria-label="Can they sign in?">
+      <div className="cx-eyebrow">Can they sign in?</div>
+      <div className="cx-acc-chips">
+        <Chip k={k}>{t}</Chip>
+        {!s ? (
+          sec.error ? <Chip k="idle">sign-in details unavailable</Chip> : <Chip k="idle">…</Chip>
+        ) : (
+          <>
+            {s.oauthOnly ? <Chip k="info">OAuth only</Chip> : s.passwordSet ? <Chip k="ok">password set</Chip> : <Chip k="warn">no password</Chip>}
+            {factors.length ? <Chip k="ok">{factors.join(' · ')}</Chip> : <Chip k="idle">no second factor</Chip>}
+            {locks.length ? (
+              <>
+                <Chip k="err">
+                  {locks.map((l) => factorName(l.factor)).join(' and ')} locked · clears in {dur(Math.max(...locks.map((l) => l.lockedUntil!)) - now)}
+                </Chip>
+                {btn('Unlock…', () => act.clearLockout(a))}
+              </>
+            ) : (
+              <Chip k="ok">no factor locks</Chip>
+            )}
+          </>
+        )}
+        {held.map((h) => {
+          const ov = overrideFor(h.bucket, h.c.key)
+          return (
+            <span key={`${h.bucket.name}/${h.c.key}`} className="cx-acc-chips">
+              <Chip k="err" title={`${h.c.key}: ${h.c.maxNodeUsed} of ${h.c.limit} on the busiest node`}>
+                sign-in held · {shortName(h.bucket.name)} · {fmtNum(h.c.maxNodeUsed)}/{fmtNum(h.c.limit ?? 0)} · clears in {dur(h.c.resetMs - now)}
+              </Chip>
+              {ov ? btn('Exempt…', () => addOverrideDialog({ ...ov, note: `@${a.handle}, lifted ${new Date().toISOString().slice(0, 10)}` })) : null}
+            </span>
+          )
+        })}
+      </div>
+      <div className="cx-acc-chips">
+        {s &&
+          (good ? (
+            <Chip k="plain" title={good.userAgent ?? undefined}>
+              last good sign-in {ago(good.at)} · {good.device}
+            </Chip>
+          ) : (
+            <Chip k="idle">no sign-in in 30 days</Chip>
+          ))}
+        {refused > 0 && (
+          <Chip k="warn" title="Refused sign-ins in the last 24 hours (Recent sign-ins)">
+            {plural(refused, 'refused attempt')} in 24 h · {[...new Set(day.map((x) => FAILED[x.failed!]))].join(', ')}
+          </Chip>
+        )}
+        {i && (i.email ? i.emailConfirmedAt ? <Chip k="ok">email confirmed</Chip> : <Chip k="warn">email unconfirmed</Chip> : <Chip k="idle">no email</Chip>)}
+        {mail && (
+          <Chip k={mailTone(mail)} title={`${mail.purpose} to …@${mail.toDomain}, ${new Date(mail.at).toLocaleString()}`}>
+            {purposeLabel(mail.purpose)} sent {ago(mail.at)} · {mailOutcome(mail)}
+          </Chip>
+        )}
+      </div>
+    </div>
+  )
+}
 
 // ---------------------------------------------------------------- sections
 
@@ -167,8 +251,11 @@ function SignIns({ sec, mode }: { sec: ReturnType<typeof useLoad<AccountSecurity
   const all = s.recentSignIns
   const n = more ? all.length : mode === 'page' ? 15 : 10
   const fresh = all.filter((x) => x.newDevice).length
+  const good = all.filter((x) => !x.failed)
+  const bad = all.length - good.length
+  const digest = [`${good.length} in 30 days`, good.length ? `last ${ago(good[0].at)}` : '', bad ? `${fmtNum(bad)} refused` : '', fresh ? `${fresh} from a new device` : ''].filter(Boolean).join(' · ')
   return (
-    <Sec title="Recent sign-ins" digest={`${all.length} in 30 days · last ${ago(all[0].at)}${fresh ? ` · ${fresh} from a new device` : ''}`} open flush right={<Src>getAccountSecurity</Src>}>
+    <Sec title="Recent sign-ins" digest={digest} open flush right={<Src>getAccountSecurity</Src>}>
       <div className="cx-tw">
         <table className="cx-t compact cx-acc-signins">
           <thead>
@@ -185,18 +272,27 @@ function SignIns({ sec, mode }: { sec: ReturnType<typeof useLoad<AccountSecurity
           </thead>
           <tbody>
             {all.slice(0, n).map((x, i) => (
-              <tr key={i}>
-                <td title={new Date(x.at).toLocaleString()}>{ago(x.at)}</td>
+              <tr key={i} className={x.failed ? 'cx-refused' : undefined}>
+                <td title={x.firstAt && x.firstAt !== x.at ? `${new Date(x.firstAt).toLocaleString()} to ${new Date(x.at).toLocaleString()}` : new Date(x.at).toLocaleString()}>{ago(x.at)}</td>
                 <td>
                   {METHOD[x.method] ?? x.method}
                   {x.factor && x.factor !== x.method && <span className="muted"> + {FACTOR[x.factor] ?? x.factor}</span>}
                 </td>
-                <td>{x.clientId ? <Client id={x.clientId} /> : x.method === 'app_password' ? <span className="trunc cx-acc-cell">“{x.appPassword ?? ''}”</span> : <span className="muted">—</span>}</td>
+                <td>{x.clientId ? <Client id={x.clientId} /> : x.method === 'app_password' && x.appPassword ? <span className="trunc cx-acc-cell">“{x.appPassword}”</span> : <span className="muted">—</span>}</td>
                 <td>
                   <Device name={x.device} ua={x.userAgent} />
                 </td>
                 <td className="mono sm">{x.ip ?? '—'}</td>
-                <td style={{ width: '100%' }}>{x.newDevice && <Chip k="info">new device</Chip>}</td>
+                <td style={{ width: '100%' }}>
+                  {x.failed ? (
+                    <Chip k={x.failed === 'wrong_password' || x.failed === 'wrong_code' ? 'warn' : 'err'} title={FAILED_TEXT[x.failed]}>
+                      {FAILED[x.failed]}
+                      {(x.count ?? 1) > 1 ? ` ×${x.count}` : ''}
+                    </Chip>
+                  ) : (
+                    x.newDevice && <Chip k="info">new device</Chip>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -204,7 +300,7 @@ function SignIns({ sec, mode }: { sec: ReturnType<typeof useLoad<AccountSecurity
       </div>
       {all.length > (mode === 'page' ? 15 : 10) && (
         <div className="cx-pn-f">
-          <span>{more ? `All ${all.length}, newest first (the server keeps 30 days, at most 50).` : `The ${n} newest of ${all.length}.`}</span>
+          <span>{more ? `All ${all.length}, newest first (the server keeps 30 days: at most 50 sign-ins and 20 refused).` : `The ${n} newest of ${all.length}.`}</span>
           <button type="button" className="cx-linklike" style={{ marginLeft: 'auto' }} onClick={() => setMore((v) => !v)}>
             {more ? 'Show fewer' : `Show all ${all.length}`}
           </button>
@@ -220,9 +316,7 @@ function sessionLabel(s: Session): string {
   return 'password session'
 }
 
-function Sessions({ a, mode }: { a: Who; mode: DetailMode }) {
-  const v = useAccountsVersion()
-  const l = useLoad(() => withAdmin((c) => api.listSessions(c, a.did)), [a.did, v])
+function Sessions({ a, l, mode }: { a: Who; l: Load<{ did: string; sessions: Session[] }>; mode: DetailMode }) {
   const [more, setMore] = useState(false)
   const ss = l.data?.sessions ?? []
   const oauth = ss.filter((s) => s.kind === 'oauth').length
@@ -472,14 +566,15 @@ function opRows(r: RepoOpsResult) {
   return out
 }
 
-function Ops({ did, mode }: { did: string; mode: DetailMode }) {
+/** The account's newest commits and events from the firehose ring (also in Moderation's subject drawer). */
+export function Ops({ did, mode, open }: { did: string; mode: DetailMode; open?: boolean }) {
   const v = useAccountsVersion()
   const n = mode === 'page' ? 40 : 12
   const l = useLoad(() => withAdmin((c) => api.listRepoOps(c, did, n)), [did, n, v])
   const rows = l.data ? opRows(l.data) : []
   const first = rows[0]
   return (
-    <Sec title="Recent operations" digest={!l.data ? '…' : first ? `${first.kind} ${first.path.split('/')[0]} ${iso(first.at)}` : 'none in memory'} flush open={mode === 'page'} right={<Src>listRepoOps · firehose ring</Src>}>
+    <Sec title="Recent operations" digest={!l.data ? '…' : first ? `${first.kind} ${first.path.split('/')[0]} ${iso(first.at)}` : 'none in memory'} flush open={open ?? mode === 'page'} right={<Src>listRepoOps · firehose ring</Src>}>
       {l.error ? (
         isUnsupported(l.error) ? <NeedsVersion what="Recent operations" nsid="vlpds.admin.listRepoOps" /> : <ErrorState error={l.error} retry={l.reload} />
       ) : !l.data ? (
@@ -689,6 +784,37 @@ function Moderation({ did, status, mode }: { did: string; status?: SubjectStatus
   )
 }
 
+/** The account's mail in the nodes' logs (kept in memory, the last 200 per node): purpose and outcome, no address or code. */
+function AccountMail({ did, l }: { did: string; l: Load<MailEntry[]> }) {
+  const ms = l.data ?? []
+  return (
+    <Sec title="Mail" digest={!l.data ? (l.error ? 'unavailable' : '…') : ms.length ? `${purposeLabel(ms[0].purpose)} ${ago(ms[0].at)} · ${mailOutcome(ms[0])}` : 'none in the log'} flush right={<Src>listMail · did</Src>}>
+      {l.error ? (
+        isUnsupported(l.error) ? <NeedsVersion what="The mail log" nsid="vlpds.admin.listMail" /> : <ErrorState error={l.error} retry={l.reload} />
+      ) : !l.data ? (
+        <Loading />
+      ) : !ms.length ? (
+        <div className="cx-empty">No mail for this account since the nodes started.</div>
+      ) : (
+        <>
+          {ms.slice(0, 6).map((m) => (
+            <RRow key={mailId(m)} onClick={() => openPanel('mail', mailId(m))} x={<MailChip m={m} />}>
+              <span className="t2 sm" style={{ minWidth: 56 }}>
+                {ago(m.at)}
+              </span>
+              <span className="nm">{purposeLabel(m.purpose)}</span>
+              <span className="muted sm">…@{m.toDomain}</span>
+            </RRow>
+          ))}
+          <div className="cx-pn-f">
+            <Link to={`/admin/mail?did=${encodeURIComponent(did)}`}>All of this account’s mail ›</Link>
+          </div>
+        </>
+      )}
+    </Sec>
+  )
+}
+
 function DevMail({ email }: { email: string }) {
   const m = useLoad<{ messages?: unknown[]; token?: string }>(() => admin('vlpds.admin.getDevMail', { params: { email } }), [email])
   if (m.error || !m.data) return null
@@ -800,7 +926,9 @@ function useAccount(did: string) {
   const info = useLoad<AccountInfo>(() => admin('com.atproto.admin.getAccountInfo', { params: { did } }), [did, v])
   const status = useLoad<SubjectStatus>(() => admin('com.atproto.admin.getSubjectStatus', { params: { did } }), [did, v])
   const sec = useLoad<AccountSecurity>(() => withAdmin((c) => api.getAccountSecurity(c, did)), [did, v])
-  return { row, info, status, sec }
+  const sessions = useLoad(() => withAdmin((c) => api.listSessions(c, did)), [did, v])
+  const mail = useLoad(async () => (await withAdmin((c) => api.listMail(c, 20, undefined, did))).mail, [did, v])
+  return { row, info, status, sec, sessions, mail }
 }
 
 function banners(a: Who, row: AccountRow | undefined, info: AccountInfo | undefined, status: SubjectStatus | undefined, sec: AccountSecurity | undefined): BannerSpec[] {
@@ -826,7 +954,8 @@ registerDetail('account', {
   kind: 'Account',
   section: 'accounts',
   use: (did, mode) => {
-    const { row, info, status, sec } = useAccount(did)
+    const { row, info, status, sec, sessions, mail } = useAccount(did)
+    const rl = rlPoll.use()
     const r = row.data
     const i = info.data
     const handle = i?.handle ?? r?.handle
@@ -838,15 +967,19 @@ registerDetail('account', {
     const a: Who = { did, handle, node: r?.node }
     const [k, t] = accountState(r ?? { status: status.data?.takedown?.applied ? 'takendown' : i?.deactivatedAt ? 'deactivated' : 'active', deleteAfter: i?.deletionScheduledAt })
     const s = sec.data
+    const lastGood = s?.recentSignIns.find((x) => !x.failed)
+    const held = heldSignInKeys(rl.data, { did, handle, email: i?.email ?? r?.email })
+    // the newest sign-in-related mail: what support asks about first
+    const signInMail = mail.data?.find((m) => m.purpose === 'reset_password' || m.purpose === 'auth_factor' || m.purpose === 'confirm_email')
 
     const strip = (
       <Strip
         items={[
+          ['sessions', sessions.data ? fmtNum(sessions.data.sessions.length) : '—'],
+          ['last sign-in', s ? (lastGood ? ago(lastGood.at) : 'none in 30 d') : '—'],
           ['records', r?.records === undefined ? '—' : fmtNum(r.records)],
           ['repo', r?.repoBytes === undefined ? '—' : fmtBytes(r.repoBytes)],
           [`blobs · ${r ? fmtBytes(r.blobBytes) : '—'}`, r?.blobs === undefined ? '—' : fmtNum(r.blobs)],
-          ['MST nodes', r?.mstNodes === undefined ? '—' : fmtNum(r.mstNodes)],
-          ['app passwords', s ? fmtNum(s.appPasswords.length) : '—'],
           ['last commit', when(r?.lastCommitAt)],
         ]}
       />
@@ -855,7 +988,8 @@ registerDetail('account', {
     const placement = <Placement did={did} row={r} mode={mode} />
     const security = <Security a={a} sec={sec} />
     const signIns = <SignIns sec={sec} mode={mode} />
-    const sessions = <Sessions a={a} mode={mode} />
+    const sessionsSec = <Sessions a={a} l={sessions} mode={mode} />
+    const mailSec = <AccountMail did={did} l={mail} />
     const apppw = <AppPasswords a={a} sec={s} mode={mode} />
     const ops = <Ops did={did} mode={mode} />
     const blobs = <Blobs a={a} row={r} mode={mode} />
@@ -867,6 +1001,7 @@ registerDetail('account', {
     const top = (
       <>
         <Banners items={banners(a, r, i, status.data, s)} />
+        <CanSignIn a={a} k={k} t={t} i={i} sec={sec} held={held} mail={signInMail} />
         {strip}
       </>
     )
@@ -888,7 +1023,7 @@ registerDetail('account', {
               <div>{security}</div>
             </div>
             {signIns}
-            {sessions}
+            {sessionsSec}
             <div className="cols">
               <div>
                 {placement}
@@ -899,6 +1034,7 @@ registerDetail('account', {
               <div>
                 {apppw}
                 {invites}
+                {mailSec}
                 {moder}
                 {dev}
                 {danger}
@@ -911,13 +1047,14 @@ registerDetail('account', {
             {identity}
             {security}
             {signIns}
-            {sessions}
+            {sessionsSec}
             {placement}
             {apppw}
             {ops}
             {blobs}
             {invites}
             {spaces}
+            {mailSec}
             {moder}
             {dev}
             {danger}

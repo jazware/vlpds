@@ -538,6 +538,7 @@ fn written() -> Vec<(&'static str, Vec<u8>)> {
         ("private/blob_quota.json", blob_quota_rows()),
         ("private/app_password_scopes.json", app_password_scope_rows()),
         ("private/sign_in.json", rows_json(vlpds::xrpc::private_rows::sign_in_row_fixtures(DID))),
+        ("private/sign_in_failures.json", rows_json(vlpds::xrpc::private_rows::sign_in_failure_row_fixtures(DID))),
         ("private/passkeys.json", rows_json(vlpds::xrpc::private_rows::passkey_row_fixtures(DID))),
     ];
     v.extend(frames());
@@ -1080,6 +1081,7 @@ async fn check(level: u32, name: &str, b: &[u8]) {
         "private/blob_quota.json"
         | "private/app_password_scopes.json"
         | "private/sign_in.json"
+        | "private/sign_in_failures.json"
         | "private/passkeys.json" => {
             let rows: Vec<serde_json::Value> = serde_json::from_slice(b).unwrap();
             assert!(pretty(&rows) == b, "{name}: re-encode differs");

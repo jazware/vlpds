@@ -1,17 +1,19 @@
 import { useEffect, useRef, type ReactNode } from 'react'
-import { useClusterView, clusterPoll } from '../../lib/console/cluster'
+import { useClusterView, clusterPoll, clusterView } from '../../lib/console/cluster'
 import { releaseHeld } from '../../lib/console/firehose'
 import { getLive, togglePaused, toggleSources, useLiveState } from '../../lib/console/live'
-import { clock, dur } from '../../lib/console/fmt'
+import { ago, clock, dur, factorName, plural } from '../../lib/console/fmt'
 import { isSlow, lockoutsPoll, openCasesPoll, subscribersPoll } from '../../lib/console/polls'
+import { heldSignInKeys, KEY_SHORT, rlPoll, shortName } from '../../lib/console/ratelimits'
+import { crawlersPoll } from '../../lib/console/sys'
 import { setTheme, useResolvedTheme } from '../../lib/hooks'
 import { Link, navigate, usePath } from '../../lib/router'
 import { setAdminToken } from '../../lib/xrpc'
 import { closeDialog, DialogHost, isDialogOpen, openDialog } from './dialogs'
 import { detailPath, Drawer } from './Drawer'
-import { Kbd, Swatch } from './kit'
+import { GLYPH, Kbd, Swatch, type Tone } from './kit'
 import { closePanel, openPanel, panelOf } from './nav'
-import { isPaletteOpen, lookupProvider, Palette, registerPalette, setPaletteOpen, type PalItem } from './Palette'
+import { ATTENTION, isPaletteOpen, lookupProvider, Palette, registerPalette, setPaletteOpen, usePaletteOpen, type PalItem } from './Palette'
 import { SECTION, SECTIONS, TABBAR, type Section, type SectionId } from './sections'
 import { Toasts } from './toast'
 
@@ -164,6 +166,52 @@ function StreamChip() {
   )
 }
 
+const att = (tone: Tone, title: string, desc: string, run: () => void): PalItem => ({
+  group: ATTENTION,
+  glyph: <span className={`cx-g s-${tone}`}>{GLYPH[tone]}</span>,
+  title,
+  desc,
+  always: true,
+  run,
+})
+
+/** ⌘K's "Needs attention": one item per live banner, each opening its row. */
+function attentionItems(): PalItem[] {
+  const out: PalItem[] = []
+  const c = clusterPoll.get().data
+  const view = c ? clusterView(c) : undefined
+  if (view?.unowned) out.push(att('err', `${plural(view.unowned, 'shard')} with no owner`, 'writes to them get 503 · Nodes & shards', () => navigate(SECTION.nodes.path)))
+  for (const n of view?.nodes.filter((x) => x.health === 'err') ?? [])
+    out.push(att('err', n.reachable ? `${n.node}'s lease is not valid` : `${n.node} doesn't answer`, 'node', () => openPanel('node', n.node)))
+  if (c?.version?.mixedBuilds) out.push(att('warn', 'Mixed builds', c.version.revs.map((r) => r.slice(0, 8)).join(', '), () => navigate(SECTION.nodes.path)))
+  for (const s of subscribersPoll.get().data?.subscribers.filter(isSlow) ?? [])
+    out.push(att('warn', `Subscriber #${s.conn} is ${dur(s.lagMs ?? 0)} behind`, `${s.relay ?? s.userAgent.split(' ')[0] ?? s.ip ?? ''} · ${s.node}`, () => openPanel('sub', `${s.node}/${s.conn}`)))
+  const cases = openCasesPoll.get().data ?? []
+  if (cases.length) {
+    const oldest = Math.min(...cases.map((k) => Date.parse(k.createdAt)))
+    out.push(att('warn', plural(cases.length, 'open case'), `oldest ${ago(oldest).replace(' ago', '')} · Moderation`, () => navigate(SECTION.moderation.path)))
+  }
+  const locks = lockoutsPoll.get().data
+  for (const l of locks?.supported ? locks.data : [])
+    out.push(att('warn', `Sign-in codes locked for @${l.handle ?? l.did}`, `${factorName(l.factor)} · clears in ${dur(l.lockedUntil - Date.now())}`, () => openPanel('account', l.did)))
+  for (const k of heldSignInKeys(rlPoll.get().data))
+    out.push(
+      att('err', `Sign-in held for ${k.ident ? (k.ident.includes('@') || k.ident.startsWith('did:') ? k.ident : `@${k.ident}`) : k.did}`, `${shortName(k.bucket.name)} · ${KEY_SHORT[k.bucket.key]} · clears in ${dur(k.c.resetMs - Date.now())}`, () =>
+        k.did ? openPanel('account', k.did) : openPanel('bucket', k.bucket.name),
+      ),
+    )
+  for (const r of crawlersPoll.get().data?.relays.filter((x) => x.status && !x.status.ok) ?? [])
+    out.push(att('warn', `${r.relay} refused the last crawl`, `${r.status!.httpStatus ? `HTTP ${r.status!.httpStatus}` : 'unreachable'} · ${ago(r.status!.lastAttemptMs)}`, () => openPanel('relay', r.relay)))
+  return out
+}
+
+/** Keeps the polls the attention items read running while the palette is open. */
+function WarmAttention() {
+  rlPoll.use()
+  crawlersPoll.use()
+  return null
+}
+
 /** The shell's own palette entries: sections, console actions, nodes, lookups. */
 function useCorePalette() {
   const { view } = useClusterView()
@@ -194,7 +242,8 @@ function useCorePalette() {
           hay: n.addr,
           run: () => openPanel('node', n.node),
         }))
-        return [...goto, ...acts, ...nodes]
+        const audit: PalItem = { group: 'Go to', glyph: '≡', title: 'Audit log', desc: 'every operator action · Moderation', hay: 'operator activity history', run: () => navigate(`${SECTION.moderation.path}#audit`) }
+        return [...attentionItems(), ...goto, audit, ...acts, ...nodes]
       },
     })
     return () => {
@@ -302,6 +351,7 @@ export function Shell({ section, crumbs, children }: { section: Section; crumbs?
   const { theme, toggle } = useTheme()
   useKeyboard(path)
   useCorePalette()
+  const palOpen = usePaletteOpen()
   const wasPaused = useRef(live.paused)
   useEffect(() => {
     if (wasPaused.current && !live.paused) releaseHeld()
@@ -396,6 +446,7 @@ export function Shell({ section, crumbs, children }: { section: Section; crumbs?
       </nav>
       <Drawer />
       <Palette />
+      {palOpen && <WarmAttention />}
       <DialogHost />
       <Toasts />
     </div>

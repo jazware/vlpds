@@ -2109,6 +2109,56 @@ a.cx-rrow:hover {
   color: var(--accent);
   font-weight: 700;
 }
+.cx-pi.hint {
+  cursor: default;
+}
+.cx-pi.hint .pt {
+  white-space: normal;
+}
+
+/* a panel a link lands on (#audit): clear of the top bar */
+.cx-anchor {
+  scroll-margin-top: 64px;
+}
+
+/* Object store: what drives requests */
+.cx-drivebar {
+  display: flex;
+  height: 10px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--sunk);
+  gap: 2px;
+}
+.cx-drivebar i {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+}
+.cx-drivers {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px 16px;
+  margin-top: 10px;
+}
+.cx-drivers > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.cx-drivers .sq {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex: none;
+}
+@media (max-width: 720px) {
+  .cx-drivers {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 .cx-pal .pfoot {
   display: flex;
   gap: 14px;

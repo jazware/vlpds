@@ -647,7 +647,10 @@ async fn get_account_security(State(app): AppState, Auth(creds): Auth, Query(q):
         .collect();
     app_passwords.sort_by(|a, b| b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
     let log: super::signin::Log = super::server::get_json(&app, did, super::signin::LOG).await?.unwrap_or_default();
-    let recent: Vec<J> = log
+    let failed: super::signin::Failures =
+        super::server::get_json(&app, did, super::signin::FAILED).await?.unwrap_or_default();
+    // newest first within each, so the stable sort keeps that order within a second
+    let mut recent: Vec<J> = log
         .entries
         .iter()
         .rev()
@@ -664,7 +667,21 @@ async fn get_account_security(State(app): AppState, Auth(creds): Auth, Query(q):
                 "newDevice": e.new_device,
             })
         })
+        .chain(failed.entries.iter().rev().map(|f| {
+            json!({
+                "at": secs_ms(f.last_at),
+                "firstAt": secs_ms(f.at),
+                "method": f.method,
+                "device": super::signin::describe_user_agent(f.user_agent.as_deref()),
+                "userAgent": f.user_agent,
+                "ip": f.ip,
+                "newDevice": false,
+                "failed": f.reason,
+                "count": f.count,
+            })
+        }))
         .collect();
+    recent.sort_by_key(|e| std::cmp::Reverse(e["at"].as_u64()));
     Ok(Json(json!({
         "did": did,
         "passwordSet": !acct.password_hash.is_empty(),
@@ -1033,22 +1050,33 @@ async fn list_segments(State(app): AppState, Auth(creds): Auth, Query(q): Query<
 // --------------------------------------------------------------------- mail
 
 #[derive(Deserialize, Default)]
-struct LimitQ {
+struct MailQ {
     #[serde(default)]
     limit: Option<usize>,
+    /// Only the mail sent for this account.
+    #[serde(default)]
+    did: Option<String>,
 }
 
-async fn internal_mail(State(app): AppState, headers: HeaderMap, Query(q): Query<LimitQ>) -> XResult<Json<J>> {
-    internal::check(&app, &headers)?;
+fn local_mail(q: &MailQ) -> J {
     let limit = q.limit.unwrap_or(100).clamp(1, crate::mail::MailLog::KEPT);
-    Ok(Json(json!({"mail": crate::mail::MAIL_LOG.recent(limit), "queued": crate::mail::MAIL_QUEUE.get()})))
+    json!({"mail": crate::mail::MAIL_LOG.recent(limit, q.did.as_deref()), "queued": crate::mail::MAIL_QUEUE.get()})
 }
 
-async fn list_mail(State(app): AppState, Auth(creds): Auth, Query(q): Query<LimitQ>) -> XResult<Json<J>> {
+async fn internal_mail(State(app): AppState, headers: HeaderMap, Query(q): Query<MailQ>) -> XResult<Json<J>> {
+    internal::check(&app, &headers)?;
+    Ok(Json(local_mail(&q)))
+}
+
+async fn list_mail(State(app): AppState, Auth(creds): Auth, Query(q): Query<MailQ>) -> XResult<Json<J>> {
     require_admin(&creds)?;
     let limit = q.limit.unwrap_or(100).clamp(1, crate::mail::MailLog::KEPT);
-    let mine = json!({"mail": crate::mail::MAIL_LOG.recent(limit), "queued": crate::mail::MAIL_QUEUE.get()});
-    let g = internal::gather(&app, "/internal/v1/console/mail", &[("limit", limit.to_string())]).await;
+    let mine = local_mail(&q);
+    let mut params = vec![("limit", limit.to_string())];
+    if let Some(d) = &q.did {
+        params.push(("did", d.clone()));
+    }
+    let g = internal::gather(&app, "/internal/v1/console/mail", &params).await;
     let (nodes, unreachable) = gathered_nodes(&app, mine, g);
     let mut mail: Vec<J> = Vec::new();
     let mut summary = Vec::new();

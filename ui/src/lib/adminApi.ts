@@ -198,8 +198,9 @@ export type AccountSecurity = {
   lockouts: { factor: FactorLockKind; failures: number; lockedUntil?: number | null }[]
   trustedBrowsers: { device: string; ip?: string | null; createdAt: number; lastUsedAt: number; expiresAt: number }[]
   appPasswords: { name: string; createdAt: string; privileged: boolean; scopes?: string | null }[]
-  /** Newest first, last 30 days, at most 50. */
+  /** Newest first, last 30 days: at most 50 sign-ins and 20 refused ones (`failed` set). */
   recentSignIns: {
+    /** A refused entry's latest attempt. */
     at: number
     method: 'password' | 'app_password' | 'oauth' | 'passkey' | string
     appPassword?: string | null
@@ -210,8 +211,15 @@ export type AccountSecurity = {
     ip?: string | null
     factor?: string | null
     newDevice: boolean
+    /** Refused. Like attempts (method, reason, address) within 10 minutes are one entry. */
+    failed?: SignInFailure
+    /** The attempts a refused entry stands for, and its first. */
+    count?: number
+    firstAt?: number
   }[]
 }
+
+export type SignInFailure = 'wrong_password' | 'wrong_code' | 'factor_locked' | 'rate_limited'
 
 export const getAccountSecurity = (c: AdminClient, did: string, signal?: AbortSignal) =>
   call<AccountSecurity>(c, 'vlpds.admin.getAccountSecurity', { params: { did }, signal })
@@ -385,7 +393,9 @@ export type MailEntry = {
   node: string
   at: number
   purpose: string
-  /** All that is kept of the recipient. */
+  /** The account it was sent for. */
+  did?: string
+  /** All that is kept of the recipient's address. */
   toDomain: string
   status: MailStatus
   attempts: number
@@ -397,9 +407,10 @@ export type MailEntry = {
   sendMs?: number
 }
 
-export const listMail = (c: AdminClient, limit = 100, signal?: AbortSignal) =>
+/** `did`: only the mail sent for that account. */
+export const listMail = (c: AdminClient, limit = 100, signal?: AbortSignal, did?: string) =>
   call<Gathered & { mail: MailEntry[]; nodes: (NodeTagged & { queued?: number })[] }>(c, 'vlpds.admin.listMail', {
-    params: { limit },
+    params: { limit, did },
     signal,
   })
 

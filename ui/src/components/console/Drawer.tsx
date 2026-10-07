@@ -2,6 +2,7 @@ import { useEffect, useRef, type ReactNode } from 'react'
 import { Link, navigate } from '../../lib/router'
 import { Empty, Kbd, Loading, PageHead } from './kit'
 import { closePanel, fullPath, openPanel, usePanel } from './nav'
+import { noteDetail } from './recent'
 import { SECTION, type SectionId } from './sections'
 
 // One renderer per kind of row (node, shard, event, account…), shown either in the slide-over
@@ -38,9 +39,20 @@ export const detailPath = (type: string, id: string) => {
   return k ? fullPath(SECTION[k.section].path, type, id) : undefined
 }
 
+/** Notes a detail for ⌘K's "Recent" once it has loaded, by the title it shows. */
+function useNoteRecent<E extends HTMLElement>(type: string, id: string, k: DetailKind, v: DetailView) {
+  const title = useRef<E>(null)
+  const ready = !v.loading && !v.missing
+  useEffect(() => {
+    if (ready) noteDetail({ type, id, kind: k.kind, title: title.current?.textContent?.trim() || id })
+  }, [type, id, ready, k.kind])
+  return title
+}
+
 function Inner({ type, id, k }: { type: string; id: string; k: DetailKind }) {
   const v = k.use(id, 'drawer')
   const body = useRef<HTMLDivElement>(null)
+  const title = useNoteRecent<HTMLHeadingElement>(type, id, k, v)
   useEffect(() => {
     body.current?.scrollTo(0, 0)
   }, [id])
@@ -49,7 +61,9 @@ function Inner({ type, id, k }: { type: string; id: string; k: DetailKind }) {
       <header>
         <div style={{ minWidth: 0, flex: 1 }}>
           <div className="kind">{k.kind}</div>
-          <h2 id="cx-drawer-t">{v.title}</h2>
+          <h2 id="cx-drawer-t" ref={title}>
+            {v.title}
+          </h2>
         </div>
         {v.chip}
         <button type="button" className="cx-btn sm" title="Open as a full page (o)" onClick={() => navigate(detailPath(type, id)!)}>
@@ -88,13 +102,14 @@ export function Drawer() {
 export function DetailPage({ type, id }: { type: string; id: string }) {
   const k = registry.get(type)!
   const v = k.use(id, 'page')
+  const title = useNoteRecent<HTMLSpanElement>(type, id, k, v)
   const sec = SECTION[k.section]
   return (
     <div className={`cx-fullpage${v.wide ? ' wide' : ''}`}>
       <PageHead
         title={
           <>
-            {v.title} {v.chip}
+            <span ref={title}>{v.title}</span> {v.chip}
           </>
         }
         sub={

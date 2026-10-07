@@ -6,7 +6,8 @@ import { useClusterView } from '../../lib/console/cluster'
 import { ago, dur, fmtNum, plural } from '../../lib/console/fmt'
 import { configPoll, mailBudgetPoll, mailPoll, missing, sumSeries, useNodeMetrics, type MailBudget } from '../../lib/console/sys'
 import type { MailEntry, MailStatus } from '../../lib/adminApi'
-import { navigate } from '../../lib/router'
+import { navigate, useSearch } from '../../lib/router'
+import { AccountLink, Who } from './peopleUi'
 
 // Mail: each node's queue, the budgets that hold sends back, and the recent mail log. The log
 // keeps the purpose, the recipient's domain and the outcome; never an address, body or code.
@@ -32,6 +33,35 @@ export function MailChip({ m }: { m: Pick<MailEntry, 'status' | 'attempts'> }) {
   }
   return <Chip k="plain">{m.status}</Chip>
 }
+
+const PURPOSE_LABEL: Record<string, string> = {
+  reset_password: 'reset email',
+  confirm_email: 'confirmation email',
+  update_email: 'email-change code',
+  delete_account: 'deletion code',
+  plc_operation: 'PLC code',
+  auth_factor: 'sign-in code',
+  sign_in_alert: 'sign-in alert',
+  security_change: 'security notice',
+  admin: 'operator email',
+}
+export const purposeLabel = (p: string) => PURPOSE_LABEL[p] ?? p
+
+/** What happened to it, in words: sent means the provider accepted it. */
+export function mailOutcome(m: Pick<MailEntry, 'status' | 'attempts' | 'reason'>): string {
+  switch (m.status) {
+    case 'sent':
+      return 'delivered'
+    case 'logged':
+      return 'logged (dev)'
+    case 'retrying':
+      return `retrying ${m.attempts}/3`
+    case 'suppressed':
+      return `suppressed${m.reason ? ` (${m.reason.replace('_', ' ')})` : ''}`
+  }
+  return m.status
+}
+export const mailTone = (m: Pick<MailEntry, 'status'>) => (m.status === 'sent' || m.status === 'logged' ? 'ok' : m.status === 'failed' || m.status === 'dropped' ? 'err' : m.status === 'suppressed' ? 'idle' : 'info')
 
 export const BUDGET_TEXT: Record<string, string> = {
   'mail-cluster-day': 'the whole cluster, per UTC day',
@@ -70,6 +100,16 @@ export function Mail() {
   const m = useNodeMetrics()
   const { view } = useClusterView()
   const [filter, setFilter] = useState<Filter>(() => (new URLSearchParams(location.search).get('status') === 'problems' ? 'problems' : 'all'))
+  const search = useSearch()
+  const purpose = search.get('purpose') ?? ''
+  const domain = search.get('domain') ?? ''
+  const did = search.get('did') ?? ''
+  const setParam = (k: string, v: string) => {
+    const sp = new URLSearchParams(location.search)
+    if (v) sp.set(k, v)
+    else sp.delete(k)
+    navigate(`${location.pathname}${sp.size ? `?${sp}` : ''}`, { replace: true })
+  }
   const color = (n: string) => view?.nodes.find((x) => x.node === n)?.color
 
   if (!mail.data) {
@@ -107,9 +147,12 @@ export function Mail() {
     purposes.set(x.purpose, p)
   }
 
-  const rows = d.mail.filter((x) =>
+  const domains = [...new Set(d.mail.map((x) => x.toDomain))].sort()
+  const narrowed = d.mail.filter((x) => (!purpose || x.purpose === purpose) && (!domain || x.toDomain === domain) && (!did || x.did === did))
+  const rows = narrowed.filter((x) =>
     filter === 'all' ? true : filter === 'problems' ? PROBLEM.includes(x.status) : filter === 'sent' ? x.status === 'sent' || x.status === 'logged' : x.status === 'suppressed',
   )
+  const countIn = (s: MailStatus[]) => narrowed.filter((x) => s.includes(x.status)).length
 
   const banners: BannerSpec[] = []
   if (d.unreachableNodes?.length) banners.push({ id: 'unreach', tone: 'warn', title: `${d.unreachableNodes.join(', ')} didn't answer`, desc: 'Their queues and mail are missing below.' })
@@ -251,14 +294,25 @@ export function Mail() {
               />
             )}
           </Panel>
-          <Panel title="By purpose" src={<Src>listMail</Src>} right={<span className="muted sm">in the log</span>}>
+          <Panel title="By purpose" src={<Src>listMail</Src>} right={<span className="muted sm">in the log · click to filter</span>}>
             <DataTable
               compact
               rows={[...purposes.values()].sort((a, b) => b.total - a.total)}
               rowKey={(p) => p.purpose}
+              onRow={(p) => setParam('purpose', purpose === p.purpose ? '' : p.purpose)}
+              dim={(p) => !!purpose && purpose !== p.purpose}
               empty={<div className="cx-empty">No mail since the nodes started.</div>}
               cols={[
-                { id: 'p', label: 'Purpose', render: (p) => <span className="mono sm">{p.purpose}</span> },
+                {
+                  id: 'p',
+                  label: 'Purpose',
+                  render: (p) => (
+                    <span className="cx-cellid">
+                      <span className="mono sm">{p.purpose}</span>
+                      {purpose === p.purpose && <Chip k="acc">filtering</Chip>}
+                    </span>
+                  ),
+                },
                 { id: 's', label: 'Sent', r: true, render: (p) => <span className="mono">{fmtNum(p.sent)}</span> },
                 { id: 'b', label: 'Failed', r: true, render: (p) => (p.bad ? <span className="s-err"><Glyph k="err" /> {fmtNum(p.bad)}</span> : <span className="muted">0</span>) },
                 { id: 'x', label: 'Suppressed', r: true, render: (p) => <span className="mono">{fmtNum(p.suppressed)}</span> },
@@ -271,20 +325,44 @@ export function Mail() {
           title="Recent messages"
           src={<Src>vlpds.admin.listMail · 5 s</Src>}
           right={
-            <Seg
-              label="Show"
-              value={filter}
-              onChange={setFilter}
-              options={[
-                { v: 'all', label: 'All', n: d.mail.length },
-                { v: 'problems', label: 'Problems', n: count(PROBLEM) },
-                { v: 'sent', label: 'Sent', n: count(['sent', 'logged']) },
-                { v: 'suppressed', label: 'Suppressed', n: count(['suppressed']) },
-              ]}
-            />
+            <>
+              <select className="cx-inp sm" aria-label="Recipient domain" value={domain} onChange={(e) => setParam('domain', e.target.value)} style={{ height: 26, width: 'auto' }}>
+                <option value="">every domain</option>
+                {domains.map((x) => (
+                  <option key={x} value={x}>
+                    …@{x}
+                  </option>
+                ))}
+              </select>
+              <Seg
+                label="Show"
+                value={filter}
+                onChange={setFilter}
+                options={[
+                  { v: 'all', label: 'All', n: narrowed.length },
+                  { v: 'problems', label: 'Problems', n: countIn(PROBLEM) },
+                  { v: 'sent', label: 'Sent', n: countIn(['sent', 'logged']) },
+                  { v: 'suppressed', label: 'Suppressed', n: countIn(['suppressed']) },
+                ]}
+              />
+            </>
           }
-          foot="Only the purpose, the recipient's domain and the outcome are kept, the last 200 per node, in memory. Bodies, codes and addresses never are."
+          foot="Only the purpose, the account, the recipient's domain and the outcome are kept, the last 200 per node, in memory. Bodies, codes and addresses never are."
         >
+          {(purpose || did) && (
+            <div className="cx-toolbar">
+              {purpose && (
+                <button type="button" className="cx-tog on" onClick={() => setParam('purpose', '')} title="Clear">
+                  purpose <span className="mono">{purpose}</span> ✕
+                </button>
+              )}
+              {did && (
+                <button type="button" className="cx-tog on" onClick={() => setParam('did', '')} title="Clear">
+                  account <Who did={did} /> ✕
+                </button>
+              )}
+            </div>
+          )}
           <DataTable
             compact
             rows={rows}
@@ -294,7 +372,13 @@ export function Mail() {
             cols={[
               { id: 'at', label: 'When', sort: (a, b) => a.at - b.at, render: (x) => ago(x.at) },
               { id: 'p', label: 'Purpose', render: (x) => <span className="mono sm">{x.purpose}</span> },
-              { id: 't', label: 'To', render: (x) => <span className="t2">…@{x.toDomain}</span> },
+              { id: 't', label: 'To', render: (x) => (
+                  <span className="cx-cellid">
+                    {x.did && <AccountLink did={x.did} />}
+                    <span className={x.did ? 'muted sm' : 't2'}>…@{x.toDomain}</span>
+                  </span>
+                ),
+              },
               {
                 id: 'n',
                 label: 'Node',

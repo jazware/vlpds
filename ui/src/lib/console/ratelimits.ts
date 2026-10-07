@@ -157,6 +157,34 @@ export function busiest(rows?: Consumer[]): Consumer | undefined {
 }
 export const held = (r: Consumer) => r.limit != null && r.maxNodeUsed >= r.limit
 
+/** An identifier + IP key's two halves ("alice.example.com-203.0.113.9"). */
+export function splitIdentKey(key: string): { ident: string; ip: string } {
+  const i = key.lastIndexOf('-')
+  return i < 0 ? { ident: key, ip: '' } : { ident: key.slice(0, i), ip: key.slice(i + 1) }
+}
+
+/** A key that can hold a sign-in: createSession's identifier + IP buckets, and DID buckets named for sign-in. */
+export const isSignInBucket = (l: Pick<Limiter, 'name' | 'key'>) => l.key === 'identifier-ip' || (l.key === 'did' && /sign-in|createSession/.test(l.name))
+
+export type HeldKey = { bucket: Limiter; c: Consumer; ident?: string; did?: string }
+
+/** Sign-in keys at their limit now; `who` narrows them to one account's handle, email and DID. */
+export function heldSignInKeys(d: RateLimits | undefined, who?: { did: string; handle?: string; email?: string | null }): HeldKey[] {
+  if (!d) return []
+  const names = who ? [who.handle, who.email, who.did].filter((x): x is string => !!x).map((x) => x.toLowerCase()) : []
+  const out: HeldKey[] = []
+  for (const b of d.limiters) {
+    if (!b.enabled || !isSignInBucket(b)) continue
+    for (const c of d.top[b.name] ?? []) {
+      if (!held(c)) continue
+      const k = b.key === 'identifier-ip' ? { ident: splitIdentKey(c.key).ident } : { did: c.key }
+      if (who && !(k.did ? k.did === who.did : names.includes(k.ident!))) continue
+      out.push({ bucket: b, c, ...k })
+    }
+  }
+  return out
+}
+
 /** The override a key can get: a DID or an IP (an identifier+IP key's IP), or none. */
 export function overrideTarget(kind: KeyKind, key: string): { ip?: string; did?: string } | undefined {
   if (kind === 'did' && key.startsWith('did:')) return { did: key }

@@ -17,7 +17,7 @@ The console at `/admin` is a status-first shell: a top bar with the strata rule,
 2. Start the page with `<PageHead title sub actions />`, then `<Banners>` if anything needs attention, then `<Tiles boxed>` for the figures, then panels in `cx-grid2` / `cx-grid3` / `cx-stack`.
 3. Every row that has more to show opens in the slide-over. Register a detail kind (below) and give the table `open={(row) => ({ type, id })}`.
 4. Anything that changes the cluster goes through `confirmAction`. No mock actions: call the real endpoint, or the adapter, and let the dialog show the error.
-5. Add your entities and verbs to ⌘K with `registerPalette`.
+5. Add your entities and verbs to ⌘K with `registerPalette`. An empty palette opens on "Needs attention" (one item per live banner, from the shell's `attentionItems` in `Shell.tsx`: add your banner there too) and "Recent" (the last six details opened in the tab, `recent.ts`, noted by the drawer from the title it shows).
 6. Check it at 390 px and in both themes, and that the console log stays clean.
 
 ## Kit
@@ -107,11 +107,11 @@ The footer shows `call`, the request it makes. `run` errors stay in the dialog. 
 | Object store | `/admin/storage` | Built (`Storage.tsx`). Detail kind `storecomp` (a key component). No bucket listing |
 | Firehose & relays | `/admin/firehose` | Built, alias `/admin/relays`. Detail kinds `event`, `sub` (live or disconnected, id `node/conn`), `relay` |
 | Accounts | `/admin/accounts` | Built. Detail kind `account` (`accountDetail.tsx`, actions in `accountActions.tsx`), full page at `/admin/accounts/account/<did>`; the old `/admin/accounts/<did>` still lands there |
-| Moderation | `/admin/moderation` | Built. Detail kinds `case`, `subject` (id: what resolveSubject takes), `audit`. `?q=` and `/admin/moderation/cases/:id` still land |
+| Moderation | `/admin/moderation` | Built. Detail kinds `case`, `subject` (id: what resolveSubject takes), `audit`. `#audit` lands on the audit log. `?q=`, `?tab=audit` and `/admin/moderation/cases/:id` still land |
 | Limits & lockouts | `/admin/limits` | Built, alias `/admin/ratelimits`. Detail kinds `bucket`, `override`. Every edit goes through `editLimits` (diff, then updateRateLimits with ifVersion) |
 | Domains & invites | `/admin/domains` | Built. Detail kinds `domain`, `invite` |
 | Spaces | `/admin/spaces` | Built. Detail kind `space` (id: the space URI); `/admin/spaces/space?uri=` shows its full page |
-| Mail | `/admin/mail` | Built. Detail kind `mail` (id `node:id`). Budgets from getRateLimits' `mail-*` buckets |
+| Mail | `/admin/mail` | Built. Detail kind `mail` (id `node:id`). Budgets from getRateLimits' `mail-*` buckets. `?purpose=`, `?domain=` and `?did=` filter the log |
 | Config | `/admin/config` | Built. Detail kind `cfg` (id: the flag). getConfig from every node, relayed by `x-vlpds-node` |
 
 ## Trying it

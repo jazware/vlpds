@@ -38,6 +38,7 @@ import { openCasesPoll } from '../../lib/console/polls'
 import { useAction, useLoad } from '../../lib/hooks'
 import { Link, navigate, useSearch } from '../../lib/router'
 import { admin, errText } from '../../lib/xrpc'
+import { Ops } from './accountDetail'
 import { openAccount, Who } from './peopleUi'
 import { spaceUrl } from './Spaces'
 
@@ -563,6 +564,8 @@ registerDetail('subject', {
         )}
       </Sec>
     )
+    // a spam report about an account wants what it's been posting
+    const ops = s.kind === 'account' && <Ops did={a.did} mode={mode} open />
     const subjectCards = (
       <>
         {record}
@@ -592,6 +595,7 @@ registerDetail('subject', {
               <div>
                 {subjectCards}
                 {account}
+                {ops}
               </div>
               <div>
                 {quota}
@@ -603,6 +607,7 @@ registerDetail('subject', {
             <>
               {subjectCards}
               {account}
+              {ops}
               {quota}
               {aboutCases}
               {history}

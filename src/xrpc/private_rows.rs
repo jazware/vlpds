@@ -34,6 +34,11 @@ pub fn sign_in_row_fixtures(did: &str) -> Vec<PrivateRow> {
     super::signin::fixture_rows(did)
 }
 
+/// Failed sign-ins (`private/sign_in_failures.json`), added after that.
+pub fn sign_in_failure_row_fixtures(did: &str) -> Vec<PrivateRow> {
+    super::signin::failure_fixture_rows(did)
+}
+
 /// Passkeys, and the session rows that record which passkey signed them in
 /// (`private/passkeys.json`), added after that.
 pub fn passkey_row_fixtures(did: &str) -> Vec<PrivateRow> {

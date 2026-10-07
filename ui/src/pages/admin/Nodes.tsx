@@ -3,7 +3,8 @@ import { Banners, Chip, Copy, ErrorState, KV, Loading, Mini, Minis, PageHead, Pa
 import { registerPalette } from '../../components/console/Palette'
 import { openPanel } from '../../components/console/nav'
 import { clusterPoll, clusterView, useClusterView, type ClusterView } from '../../lib/console/cluster'
-import { ago, fmtBytes, fmtMs, fmtNum, fmtPct, fmtSec, fmtSi, plural } from '../../lib/console/fmt'
+import { ago, dur, fmtBytes, fmtMs, fmtNum, fmtPct, fmtSec, fmtSi, plural } from '../../lib/console/fmt'
+import { useStartedAt } from '../../lib/console/nodeMetrics'
 import { col, last, nodeGauges, nodePoints, useMetrics, type MetricsState } from '../../lib/console/metrics'
 import { lockoutsPoll, subscribersPoll } from '../../lib/console/polls'
 import { Link } from '../../lib/router'
@@ -89,6 +90,7 @@ const CARDS_ONLY = 3
 
 function Many({ view, m, focus, setFocus }: { view: ClusterView; m: MetricsState; focus?: string; setFocus: Dispatch<SetStateAction<string | undefined>> }) {
   const v = view.raw.version
+  const started = useStartedAt()
   const fenced = Object.entries(view.raw.fencedLogs)
   const live = new Set(view.nodes.map((n) => n.log))
   const draining = view.raw.firehose.sources.filter((s) => !live.has(s.log))
@@ -135,7 +137,18 @@ function Many({ view, m, focus, setFocus }: { view: ClusterView; m: MetricsState
                     ['watermark lag', <span className="mono">{fmtMs(n.wmLagMs)}{n.slowest && <> <Chip k="warn">slowest log</Chip></>}</span>],
                     ['shards', <>{n.shards}{!view.single && <> · writer byte {n.writer}</>}</>],
                     ['memory', g?.resident !== undefined ? <span className="mono">{fmtBytes(g.resident)}{g.memLimit ? <span className="muted"> of {fmtBytes(g.memLimit)}</span> : null}</span> : '—'],
-                    ['build', n.rev ? <span className="mono">{n.rev.slice(0, 12)} <span className="muted">L{n.minLevel}–{n.maxLevel}</span></span> : '—'],
+                    [
+                      'build',
+                      <span className="mono">
+                        {n.rev ? n.rev.slice(0, 12) : '—'} {n.rev && <span className="muted">L{n.minLevel}–{n.maxLevel}</span>}
+                        {started.get(n.node) && (
+                          <span className="muted" title={`started ${new Date(started.get(n.node)!).toLocaleString()}`}>
+                            {' '}
+                            · up {dur(Date.now() - started.get(n.node)!)}
+                          </span>
+                        )}
+                      </span>,
+                    ],
                     ...(n.addr ? [['address', <Copy text={n.addr.replace(/^https?:\/\//, '')} />] as [string, React.ReactNode]] : []),
                   ]}
                 />

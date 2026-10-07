@@ -1,9 +1,10 @@
+import { useState } from 'react'
 import { DataTable } from '../../components/console/DataTable'
-import { Banners, Chip, ErrorState, Glyph, KV, Loading, Meter, Mini, Minis, NeedsVersion, PageHead, Panel, PanelBody, Spark, Src, Swatch, Tiles, type BannerSpec } from '../../components/console/kit'
+import { Banners, Chip, ErrorState, Glyph, KV, Loading, Meter, NeedsVersion, PageHead, Panel, PanelBody, Seg, Spark, Src, Swatch, Tiles, type BannerSpec } from '../../components/console/kit'
 import { registerPalette } from '../../components/console/Palette'
 import { useClusterView } from '../../lib/console/cluster'
-import { ago, fmtBytes, fmtMs, fmtNum, fmtSi } from '../../lib/console/fmt'
-import { configPoll, storageStatsPoll, maxLatest, nodeSeries, sumLatest, sumSeries, useNodeMetrics, worstSeries, type NodeSeries, type StorageStats } from '../../lib/console/sys'
+import { ago, fmtBytes, fmtMs, fmtNum, fmtSi, plural } from '../../lib/console/fmt'
+import { configPoll, storageStatsPoll, maxLatest, sumLatest, sumSeries, useNodeMetrics, worstSeries, type NodeSeries, type StorageStats } from '../../lib/console/sys'
 import { navigate } from '../../lib/router'
 
 // Object store: request rates by billing class (A: writes, lists, CAS; B: reads), by key component
@@ -55,6 +56,105 @@ export const COMPONENTS: Record<string, { name: string; what: string }> = {
   other: { name: 'Everything else', what: 'config, mail budget, moderation, spaces' },
 }
 export const componentName = (c: string) => COMPONENTS[c]?.name ?? c
+
+/**
+ * What sends a component's requests. The floor grows with nodes × shards whatever the traffic
+ * (every shard polls its manifest, every node renews its lease); writes follow commits; reads
+ * follow what clients fetch.
+ */
+export type Driver = 'floor' | 'writes' | 'reads'
+const DRIVER: Record<string, Driver> = {
+  state_manifest: 'floor',
+  state_gc_boundary: 'floor',
+  state_compactions: 'floor',
+  ctl_lease: 'floor',
+  ctl_assign: 'floor',
+  ctl_writer: 'floor',
+  ctl_stats: 'floor',
+  ctl_version: 'floor',
+  other: 'floor',
+  log_segment: 'writes',
+  retention_report: 'writes',
+  state_sst: 'writes',
+  state_wal: 'writes',
+  state_other: 'writes',
+  blob: 'reads',
+  account_index: 'reads',
+}
+export const driverOf = (c: string): Driver => DRIVER[c] ?? 'floor'
+const DRIVERS: { d: Driver; label: string; what: string; color: string }[] = [
+  { d: 'floor', label: 'Floor', what: 'manifest polls, leases, GC boundary', color: 'var(--amber)' },
+  { d: 'writes', label: 'Writes', what: 'log segments, SSTs, compactions', color: 'var(--accent)' },
+  { d: 'reads', label: 'Reads', what: 'blobs, handle index, cold repo loads', color: 'var(--c2)' },
+]
+const DRIVER_CHIP: Record<Driver, 'plain' | 'acc' | 'info'> = { floor: 'plain', writes: 'acc', reads: 'info' }
+
+/** "118 M", "1.03 B": a request count, no prices. */
+function fmtCount(n: number): string {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(n >= 1e10 ? 1 : 2)} B`
+  if (n >= 1e6) return `${(n / 1e6).toFixed(n >= 1e8 ? 0 : 1)} M`
+  if (n >= 1e3) return `${(n / 1e3).toFixed(n >= 1e5 ? 0 : 1)} k`
+  return fmtNum(Math.round(n))
+}
+
+const MONTH_SECS = 30 * 86400
+
+/** Floor, writes and reads as shares of one class, with the month the current rate adds up to. */
+function Drivers({ comps, nodes, shards, commits, aNow, bNow, windowMin }: { comps: ComponentRow[]; nodes: number; shards: number; commits?: number; aNow?: number; bNow?: number; windowMin: number }) {
+  const [cls, setCls] = useState<'a' | 'b'>('a')
+  const by = { floor: 0, writes: 0, reads: 0 }
+  for (const r of comps) by[driverOf(r.component)] += r[cls]
+  const total = by.floor + by.writes + by.reads
+  const note: Record<Driver, string> = {
+    floor: `${plural(nodes, 'node')} × ${fmtNum(shards)} shards`,
+    writes: commits !== undefined ? `${fmtSi(commits)} commits/s` : '',
+    reads: '',
+  }
+  return (
+    <Panel
+      title="What drives requests"
+      src={<Src>getNodeMetrics · storeComponents</Src>}
+      right={
+        <>
+          <span className="muted sm">last {windowMin || 3} min · all nodes</span>
+          <Seg label="Request class" value={cls} onChange={setCls} options={[{ v: 'a', label: 'class A' }, { v: 'b', label: 'class B' }]} />
+        </>
+      }
+      foot={
+        <span>
+          At this rate, per 30 days: <b className="mono">≈ {aNow === undefined ? '—' : fmtCount(aNow * MONTH_SECS)}</b> class A · <b className="mono">≈ {bNow === undefined ? '—' : fmtCount(bNow * MONTH_SECS)}</b> class B{' '}
+          <span className="muted">· counts, not prices</span>
+        </span>
+      }
+    >
+      <PanelBody>
+        {total > 0 ? (
+          <>
+            <div className="cx-drivebar" role="img" aria-label={DRIVERS.map((x) => `${x.label} ${Math.round((by[x.d] / total) * 100)}%`).join(', ')}>
+              {DRIVERS.map((x) => (by[x.d] > 0 ? <i key={x.d} style={{ width: `${(by[x.d] / total) * 100}%`, background: x.color }} /> : null))}
+            </div>
+            <div className="cx-drivers">
+              {DRIVERS.map((x) => (
+                <div key={x.d}>
+                  <span className="cx-cellid">
+                    <i className="sq" style={{ background: x.color }} />
+                    <b>{Math.round((by[x.d] / total) * 100)}%</b> {x.label} · <span className="mono">{fmtNum(by[x.d], 1)}/s</span>
+                  </span>
+                  <span className="muted sm">
+                    {x.what}
+                    {note[x.d] ? ` · ${note[x.d]}` : ''}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <span className="muted sm">No class {cls.toUpperCase()} requests counted yet.</span>
+        )}
+      </PanelBody>
+    </Panel>
+  )
+}
 
 export type ComponentRow = { component: string; a: number; b: number; byNode: { node: string; a: number; b: number }[] }
 /** storeComponents summed over the nodes that answered. */
@@ -157,16 +257,18 @@ export function Storage() {
             sec: counts ? `${fmtSi(counts.totalObjects)} objects` : undefined,
           },
           { label: 'Errors · timeouts / s', right: 'after retries', value: errNow ? fmtSi(errNow) : '0', spark: <Spark data={sumSeries(nodes, 'storeErrorsPerSec')} color="warn" /> },
-          { label: 'Segment PUT p99', right: 'worst node · p50 dashed', value: fmtMs(putP99), spark: <Spark data={worstSeries(nodes, 'putP99Ms')} l2={worstSeries(nodes, 'putP50Ms')} color="amber" /> },
+          { label: 'Segment PUT p99', right: 'worst node · p50 dashed', value: fmtMs(putP99), title: nodes.map((n) => `${n.node}: ${fmtMs(n.latest?.putP99Ms)}`).join('\n'), spark: <Spark data={worstSeries(nodes, 'putP99Ms')} l2={worstSeries(nodes, 'putP50Ms')} color="amber" /> },
         ]}
       />
+      <div className="cx-mt">
+        <Drivers comps={comps} nodes={nodes.length} shards={view?.table.length ?? 0} commits={sumLatest(nodes, 'commitsPerSec')} aNow={aNow} bNow={bNow} windowMin={windowMin} />
+      </div>
       <div className="cx-grid2 cx-mt">
         <div className="cx-stack">
           <Panel
             title="Requests by component"
             src={<Src>getNodeMetrics · storeComponents</Src>}
             right={<span className="muted sm">last {windowMin || 3} min · all nodes</span>}
-            foot="Requests follow nodes and shards more than traffic: every shard polls its SlateDB manifest and every node renews its lease, idle or not."
           >
             <DataTable
               compact
@@ -184,6 +286,7 @@ export function Storage() {
                     </span>
                   ),
                 },
+                { id: 'd', label: 'Driver', title: 'What sends these requests: the floor grows with nodes × shards, writes with commits, reads with clients', render: (r) => <Chip k={DRIVER_CHIP[driverOf(r.component)]} glyph={false}>{driverOf(r.component)}</Chip> },
                 { id: 'a', label: 'A/s', r: true, sort: (x, y) => x.a - y.a, render: (r) => <span className="mono">{fmtNum(r.a, 2)}</span> },
                 { id: 'b', label: 'B/s', r: true, sort: (x, y) => x.b - y.b, render: (r) => <span className="mono">{fmtNum(r.b, 2)}</span> },
                 {
@@ -200,22 +303,41 @@ export function Storage() {
               ]}
             />
           </Panel>
-          <Panel title="Latency" src={<Src>getNodeMetrics · putP50Ms, putP99Ms</Src>} foot="Segment PUTs run until durable, hedges and retries included. A commit is acked only once its segment is.">
-            <Minis n={Math.min(3, Math.max(1, nodes.length))}>
-              {nodes.map((n) => (
-                <Mini
-                  key={n.node}
-                  label={
-                    <>
-                      <Swatch color={color(n.node)} /> {n.node} PUT p99
-                    </>
-                  }
-                  value={fmtMs(n.latest?.putP99Ms)}
-                >
-                  <Spark data={nodeSeries(n, 'putP99Ms')} l2={nodeSeries(n, 'putP50Ms')} color="amber" />
-                </Mini>
-              ))}
-            </Minis>
+          <Panel title="By node" src={<Src>getNodeMetrics · latest 10 s</Src>} foot="Segment PUTs run until durable, hedges and retries included. A commit is acked only once its segment is.">
+            <DataTable
+              compact
+              rows={byNode}
+              rowKey={(r) => r.n.node}
+              open={(r) => ({ type: 'node', id: r.n.node })}
+              cols={[
+                {
+                  id: 'n',
+                  label: 'Node',
+                  render: (r) => (
+                    <span className="cx-cellid">
+                      <Swatch color={color(r.n.node)} />
+                      <span className="mono">{r.n.node}</span>
+                    </span>
+                  ),
+                },
+                { id: 'a', label: 'A/s', r: true, sort: (x, y) => x.a - y.a, render: (r) => <span className="mono">{fmtNum(r.a, 2)}</span> },
+                { id: 'b', label: 'B/s', r: true, sort: (x, y) => x.b - y.b, render: (r) => <span className="mono">{fmtNum(r.b, 2)}</span> },
+                {
+                  id: 'e',
+                  label: 'Errors/s',
+                  r: true,
+                  render: (r) =>
+                    r.err > 0 ? (
+                      <span className="s-err">
+                        <Glyph k="err" /> {fmtSi(r.err)}
+                      </span>
+                    ) : (
+                      <span className="muted">0</span>
+                    ),
+                },
+                { id: 'p', label: 'PUT p99', r: true, render: (r) => <span className="mono">{fmtMs(r.put)}</span> },
+              ]}
+            />
           </Panel>
         </div>
         <div className="cx-stack">
@@ -272,42 +394,6 @@ export function Storage() {
                 ]}
               />
             )}
-          </Panel>
-          <Panel title="By node" src={<Src>getNodeMetrics · latest 10 s</Src>}>
-            <DataTable
-              compact
-              rows={byNode}
-              rowKey={(r) => r.n.node}
-              open={(r) => ({ type: 'node', id: r.n.node })}
-              cols={[
-                {
-                  id: 'n',
-                  label: 'Node',
-                  render: (r) => (
-                    <span className="cx-cellid">
-                      <Swatch color={color(r.n.node)} />
-                      <span className="mono">{r.n.node}</span>
-                    </span>
-                  ),
-                },
-                { id: 'a', label: 'A/s', r: true, sort: (x, y) => x.a - y.a, render: (r) => <span className="mono">{fmtNum(r.a, 2)}</span> },
-                { id: 'b', label: 'B/s', r: true, sort: (x, y) => x.b - y.b, render: (r) => <span className="mono">{fmtNum(r.b, 2)}</span> },
-                {
-                  id: 'e',
-                  label: 'Errors/s',
-                  r: true,
-                  render: (r) =>
-                    r.err > 0 ? (
-                      <span className="s-err">
-                        <Glyph k="err" /> {fmtSi(r.err)}
-                      </span>
-                    ) : (
-                      <span className="muted">0</span>
-                    ),
-                },
-                { id: 'p', label: 'PUT p99', r: true, render: (r) => <span className="mono">{fmtMs(r.put)}</span> },
-              ]}
-            />
           </Panel>
           <Panel title="Bucket">
             <PanelBody>

@@ -47,8 +47,8 @@ lazy!(MAIL_QUEUE: IntGauge = register_int_gauge!("vlpds_mail_queue_depth", "Mail
 lazy!(MAIL_SEND_SECONDS: Histogram = register_histogram!("vlpds_mail_send_seconds", "One successful send, enqueue to accepted (incl. retries)", exponential_buckets(0.01, 2.0, 14).unwrap()));
 
 /// This process's recent mail for the console (`vlpds.admin.listMail`):
-/// purpose, the recipient's domain and the outcome. Never the address, the
-/// body or a token.
+/// purpose, the account it was for, the recipient's domain and the outcome.
+/// Never the address, the body or a token.
 pub static MAIL_LOG: LazyLock<MailLog> = LazyLock::new(MailLog::default);
 
 #[derive(Default)]
@@ -63,6 +63,10 @@ pub struct MailLogEntry {
     /// Unix ms it was queued (or refused).
     pub at: u64,
     pub purpose: String,
+    /// The account it was sent for; None for mail to an address with no
+    /// account behind it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did: Option<String>,
     pub to_domain: String,
     /// queued | retrying | sent | failed | dropped | suppressed | logged
     /// (no mailer configured: written to the log only)
@@ -103,13 +107,14 @@ pub fn redact_error(why: &str) -> String {
 impl MailLog {
     pub const KEPT: usize = 200;
 
-    fn push(&self, purpose: &str, to: &str, status: &str, f: impl FnOnce(&mut MailLogEntry)) -> u64 {
+    fn push(&self, purpose: &str, did: Option<&str>, to: &str, status: &str, f: impl FnOnce(&mut MailLogEntry)) -> u64 {
         let mut g = self.inner.lock();
         g.0 += 1;
         let mut e = MailLogEntry {
             id: g.0,
             at: now_ms(),
             purpose: purpose.to_string(),
+            did: did.map(String::from),
             to_domain: recipient_domain(to),
             status: status.into(),
             attempts: 0,
@@ -126,19 +131,19 @@ impl MailLog {
         g.0
     }
 
-    pub fn queued(&self, purpose: &str, to: &str) -> u64 {
-        self.push(purpose, to, "queued", |_| {})
+    pub fn queued(&self, purpose: &str, did: Option<&str>, to: &str) -> u64 {
+        self.push(purpose, did, to, "queued", |_| {})
     }
 
-    pub fn suppressed(&self, purpose: &str, to: &str, reason: &str) {
-        self.push(purpose, to, "suppressed", |e| {
+    pub fn suppressed(&self, purpose: &str, did: Option<&str>, to: &str, reason: &str) {
+        self.push(purpose, did, to, "suppressed", |e| {
             e.reason = Some(reason.into());
             e.done_at = Some(e.at);
         });
     }
 
-    pub fn logged(&self, purpose: &str, to: &str) {
-        self.push(purpose, to, "logged", |e| e.done_at = Some(e.at));
+    pub fn logged(&self, purpose: &str, did: Option<&str>, to: &str) {
+        self.push(purpose, did, to, "logged", |e| e.done_at = Some(e.at));
     }
 
     fn update(&self, id: u64, f: impl FnOnce(&mut MailLogEntry)) {
@@ -161,9 +166,10 @@ impl MailLog {
         });
     }
 
-    /// Newest first.
-    pub fn recent(&self, limit: usize) -> Vec<MailLogEntry> {
-        self.inner.lock().1.iter().rev().take(limit).cloned().collect()
+    /// Newest first; with `did`, only that account's.
+    pub fn recent(&self, limit: usize, did: Option<&str>) -> Vec<MailLogEntry> {
+        let g = self.inner.lock();
+        g.1.iter().rev().filter(|e| did.is_none() || e.did.as_deref() == did).take(limit).cloned().collect()
     }
 }
 
@@ -401,7 +407,7 @@ fn parse_from(from: &str) -> anyhow::Result<Mailbox> {
 
 impl Mailer for QueueMailer {
     fn send(&self, mail: &Mail) {
-        let id = MAIL_LOG.queued(&mail.purpose, &mail.to);
+        let id = MAIL_LOG.queued(&mail.purpose, mail.did.as_deref(), &mail.to);
         match self.tx.try_send((id, mail.clone())) {
             Ok(()) => MAIL_QUEUE.inc(),
             Err(e) => {
@@ -821,11 +827,13 @@ mod tests {
             "550 5.1.1 [address] Recipient address rejected"
         );
         let log = MailLog::default();
-        let id = log.queued("confirm_email", "carol@example.net");
+        let id = log.queued("confirm_email", Some("did:plc:fixture"), "carol@example.net");
         log.update(id, |e| e.status = "retrying".into());
         log.finish(id, "failed", 3, Some("rejected carol@example.net"));
-        log.suppressed("reset_password", "dave@example.net", "recipient_limit");
-        let r = log.recent(10);
+        log.suppressed("reset_password", None, "dave@example.net", "recipient_limit");
+        let mine = log.recent(10, Some("did:plc:fixture"));
+        assert_eq!((mine.len(), mine[0].did.as_deref()), (1, Some("did:plc:fixture")));
+        let r = log.recent(10, None);
         assert_eq!((r[0].status.as_str(), r[0].reason.as_deref()), ("suppressed", Some("recipient_limit")));
         assert_eq!((r[1].status.as_str(), r[1].attempts), ("failed", 3));
         let all = serde_json::to_string(&r).unwrap();
@@ -845,6 +853,7 @@ mod tests {
             body: "code ABCDE-12345".into(),
             html: html.map(Into::into),
             purpose: "reset_password".into(),
+            did: None,
             token: Some("ABCDE-12345".into()),
             sent_at: String::new(),
         }

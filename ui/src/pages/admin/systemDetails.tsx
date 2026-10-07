@@ -6,8 +6,10 @@ import { useClusterView } from '../../lib/console/cluster'
 import { ago, clock, fmtMs, fmtNum } from '../../lib/console/fmt'
 import { configPoll, crawlersPoll, mailPoll, setCrawlers, sumSeries, useNodeMetrics } from '../../lib/console/sys'
 import { flagRows, groupOf, PER_NODE, shown, sourceChip } from './Config'
-import { crawlNow, RelayResult } from './Firehose'
+import { crawlNow, RelayResult, RelaySubscribed } from './Firehose'
+import { subscribersPoll } from '../../lib/console/polls'
 import { MailChip, mailId } from './Mail'
+import { AccountLink } from './peopleUi'
 import { COMPONENTS, componentName, componentRows } from './Storage'
 
 // Slide-over / full-page details for the system sections: relay, mail, setting, object-store
@@ -26,6 +28,7 @@ registerDetail('relay', {
   section: 'firehose',
   use: (id) => {
     const cr = crawlersPoll.use()
+    const subs = subscribersPoll.use()
     const r = cr.data?.relays.find((x) => x.relay === id)
     if (!cr.data) return { title: id, body: null, loading: true }
     if (!r) return { title: <span className="mono">{id}</span>, body: null, missing: 'This relay is no longer on the list.' }
@@ -46,6 +49,7 @@ registerDetail('relay', {
                 ['Result', s ? (s.ok ? `${s.httpStatus ?? ''} accepted` : `${s.httpStatus ?? 'no answer'} ${s.error ?? ''}`) : '—'],
                 ['Asked by', s ? <span className="mono">{s.node}</span> : '—'],
                 ['Last accepted', s?.lastSuccessMs ? ago(s.lastSuccessMs) : '—'],
+                ['Subscribed', <RelaySubscribed relay={r.relay} d={subs.data} />],
                 ['Interval', `at most once every ${cr.data.intervalSecs % 60 ? `${cr.data.intervalSecs} s` : `${cr.data.intervalSecs / 60} min`} after new activity`],
               ]}
             />
@@ -114,6 +118,7 @@ registerDetail('mail', {
           <Sec title="Delivery" digest={m.status} open>
             <KV
               rows={[
+                ['Account', m.did ? <AccountLink did={m.did} /> : <span className="muted">none: sent to an address</span>],
                 ['To', <>…@{m.toDomain} <span className="muted">(only the domain is kept)</span></>],
                 ['Queued', <>{new Date(m.at).toISOString().replace('T', ' ').slice(0, 19)}Z · {clock(m.at)} here</>],
                 ['Node', <span className="cx-cellid"><Swatch color={color} /><span className="mono">{m.node}</span></span>],

@@ -29,6 +29,10 @@ export function usePath(): string {
   return useSyncExternalStore(subscribe, () => location.pathname)
 }
 
+export function useHash(): string {
+  return useSyncExternalStore(subscribe, () => location.hash)
+}
+
 export function useSearch(): URLSearchParams {
   const s = useSyncExternalStore(subscribe, () => location.search)
   return new URLSearchParams(s)

@@ -1136,7 +1136,7 @@ async fn send_email(State(app): AppState, Auth(creds): Auth, Json(inp): Json<Sen
     let a = app.account(&inp.recipient_did).await.map_err(|_| invalid_request("Recipient not found"))?;
     let to = a.email.ok_or_else(|| invalid_request("account does not have an email address"))?;
     let subject = inp.subject.unwrap_or_else(|| "Message via your PDS".into());
-    super::server::deliver_moderation(&app, &to, &subject, &inp.content);
+    super::server::deliver_moderation(&app, &a.did, &to, &subject, &inp.content);
     Ok(Json(json!({"sent": true})))
 }
 

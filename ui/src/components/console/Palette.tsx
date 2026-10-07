@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { listAccounts } from '../../lib/adminApi'
 import { withAdmin } from '../../lib/console/adminAdapter'
+import { relTime } from '../../lib/format'
 import { navigate } from '../../lib/router'
 import { openPanel } from './nav'
 import { Kbd } from './kit'
+import { recentDetails } from './recent'
 
 // ⌘K. Items come from providers: the shell's (sections, actions, nodes, lookups) and any a
 // section registers with registerPalette(). A provider gets the query and returns items now,
@@ -42,7 +44,28 @@ export function setPaletteOpen(v: boolean) {
   subs.forEach((l) => l())
 }
 
-const ORDER = ['Look up', 'Actions', 'Go to', 'Accounts', 'Nodes', 'Firehose', 'Recent']
+/** What an empty palette opens on: one item per live banner, then the details opened lately. */
+export const ATTENTION = 'Needs attention'
+export const RECENT = 'Recent'
+
+const ORDER = [ATTENTION, RECENT, 'Look up', 'Actions', 'Go to', 'Accounts', 'Nodes', 'Firehose']
+
+const RECENT_GLYPH: Record<string, string> = { account: '@', node: '◆', shard: '▦', case: '▤', subject: '⚑', audit: '≡', sub: '≋', relay: '⇄', bucket: '◔', mail: '✉' }
+
+/** The last six details opened in this tab (recent.ts). */
+const recentProvider: PalProvider = {
+  items: () =>
+    recentDetails().map((r) => ({
+      group: RECENT,
+      glyph: RECENT_GLYPH[r.type] ?? '›',
+      title: r.title,
+      desc: `${r.kind.toLowerCase()} · ${relTime(r.at)}`,
+      hay: r.id,
+      always: true,
+      run: () => openPanel(r.type, r.id),
+    })),
+}
+providers.add(recentProvider)
 const rank = (g: string) => {
   const i = ORDER.indexOf(g)
   return i < 0 ? ORDER.length : i
@@ -97,16 +120,16 @@ export const lookupProvider: PalProvider = {
   },
 }
 
+const subscribeOpen = (l: () => void) => {
+  subs.add(l)
+  return () => {
+    subs.delete(l)
+  }
+}
+export const usePaletteOpen = () => useSyncExternalStore(subscribeOpen, () => openState)
+
 export function Palette() {
-  const open = useSyncExternalStore(
-    (l) => {
-      subs.add(l)
-      return () => {
-        subs.delete(l)
-      }
-    },
-    () => openState,
-  )
+  const open = usePaletteOpen()
   if (!open) return null
   return <PaletteInner />
 }
@@ -134,11 +157,22 @@ function PaletteInner() {
     }
   }, [q])
 
+  // the attention items follow the shell's polls while the palette is open
+  const [tick, setTick] = useState(0)
+  useEffect(() => {
+    if (ql) return
+    const t = setInterval(() => setTick((n) => n + 1), 2000)
+    return () => clearInterval(t)
+  }, [ql])
+
   const items = useMemo(() => {
     const all = [...providers].flatMap((p) => p.items(q.trim()))
     let shown: PalItem[]
-    if (!ql) shown = all.filter((x) => x.always)
-    else {
+    if (!ql) {
+      const inbox = all.filter((x) => x.group === ATTENTION || x.group === RECENT)
+      // sections and actions stay a keystroke away; they open the palette only when nothing else would
+      shown = inbox.length ? inbox : all.filter((x) => x.always)
+    } else {
       const direct = all.filter((x) => x.group === 'Look up')
       const scored = all
         .filter((x) => x.group !== 'Look up')
@@ -150,7 +184,9 @@ function PaletteInner() {
       shown = [...direct, ...scored, ...extra.filter((e) => !scored.some((s) => s.title === e.title))]
     }
     return shown.map((x, i) => ({ x, i })).sort((a, b) => rank(a.x.group) - rank(b.x.group) || a.i - b.i).map((y) => y.x)
-  }, [q, ql, extra])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, ql, extra, tick])
+  const inboxOnly = !ql && items.some((x) => x.group === ATTENTION || x.group === RECENT)
 
   useEffect(() => {
     setIdx((i) => Math.min(i, Math.max(0, items.length - 1)))
@@ -233,6 +269,18 @@ function PaletteInner() {
               </div>
             )
           })}
+          {inboxOnly && (
+            <>
+              <div className="cx-gh">Go to · Actions</div>
+              <div className="cx-pi hint" aria-hidden="true">
+                <span className="pg">○</span>
+                <span className="pt muted">Type to search sections and actions</span>
+                <span className="pk">
+                  <Kbd k="g" />
+                </span>
+              </div>
+            </>
+          )}
           {!items.length && <div className="cx-empty">{ql ? `Nothing matches “${q.trim()}”. Try a handle, a DID, an email or a node.` : 'Type to search.'}</div>}
         </div>
         <div className="pfoot">

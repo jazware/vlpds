@@ -9,7 +9,7 @@ import { registerPalette } from '../../components/console/Palette'
 import { toast } from '../../components/console/toast'
 import { useClusterView } from '../../lib/console/cluster'
 import { ago, dur, fmtBytes, fmtMs, fmtNum, fmtSi, plural, seqMillis, seqWriter } from '../../lib/console/fmt'
-import { isSlow, isThisBrowser, subscribersPoll, type Subscriber } from '../../lib/console/polls'
+import { isSlow, isThisBrowser, subscribersPoll, type Subscriber, type SubscriberList } from '../../lib/console/polls'
 import { crawlersPoll, maxLatest, requestCrawl, setCrawlers, subKey, useNodeMetrics, useSubRates, worstSeries, type CrawlResult, type Relay } from '../../lib/console/sys'
 
 // Firehose & relays: every subscribeRepos connection on every node with its rate against the
@@ -135,6 +135,39 @@ export function RelayResult({ r }: { r: Relay }) {
   return <Chip k="err">{s.httpStatus ? `rejected (${s.httpStatus})` : 'unreachable'}</Chip>
 }
 
+/** A relay's socket: connected now (several: the one furthest behind), else its latest disconnect. */
+export function relaySocket(relay: string, d?: SubscriberList): { live?: Subscriber; gone?: Subscriber } {
+  const live = d?.subscribers.filter((s) => s.relay === relay).sort((a, b) => (b.lagMs ?? 0) - (a.lagMs ?? 0))[0]
+  if (live) return { live }
+  const gone = d?.recentDisconnects.filter((s) => s.relay === relay).sort((a, b) => (b.disconnectedAt ?? 0) - (a.disconnectedAt ?? 0))[0]
+  return { gone }
+}
+
+/** "● #41 live · caught up", "◆ #45 backfilling · 6h behind", "○ not connected · left 2d ago, too slow". */
+export function RelaySubscribed({ relay, d }: { relay: string; d?: SubscriberList }) {
+  if (!d) return <span className="muted">…</span>
+  const { live, gone } = relaySocket(relay, d)
+  if (live) {
+    const lag = live.state === 'backfilling' ? (live.lagMs != null ? `${dur(live.lagMs)} behind` : 'backfilling') : isSlow(live) ? `${dur(live.lagMs ?? 0)} behind` : 'caught up'
+    return (
+      <button type="button" className="cxp-link" onClick={() => openPanel('sub', subKey(live))} title={`${live.node}, connected ${dur(Date.now() - live.connectedAt)}`}>
+        <Chip k={live.state === 'backfilling' ? 'info' : isSlow(live) ? 'warn' : 'ok'}>
+          #{live.conn} {live.state === 'backfilling' ? 'backfilling' : 'live'} · {lag}
+        </Chip>
+      </button>
+    )
+  }
+  if (gone)
+    return (
+      <button type="button" className="cxp-link" onClick={() => openPanel('sub', subKey(gone))}>
+        <Chip k="idle">
+          not connected · left {gone.disconnectedAt ? ago(gone.disconnectedAt) : ''}, {reasonText(gone.reason).toLowerCase()}
+        </Chip>
+      </button>
+    )
+  return <Chip k="idle">not connected</Chip>
+}
+
 registerPalette({
   items: () => {
     const out = [
@@ -177,7 +210,9 @@ export function Firehose() {
   const cr = crawlersPoll.use()
   const d = subs.data
   const color = (node: string) => view?.nodes.find((n) => n.node === node)?.color
-  const pdsNow = rates.pds[rates.pds.length - 1]
+  // the node-metrics poll has the rate from its first answer; two subscriber polls take 10 s
+  const fhSeries = worstSeries(m.nodes, 'firehoseEventsPerSec')
+  const pdsNow = maxLatest(m.nodes, 'firehoseEventsPerSec') ?? rates.pds[rates.pds.length - 1]
   const seq = view?.raw.firehose.lastEmitted
   const sms = seqMillis(seq)
   const w = seqWriter(seq)
@@ -321,7 +356,7 @@ export function Firehose() {
             label: "This PDS's events / s",
             right: 'every node emits the whole stream',
             value: pdsNow === undefined ? '—' : fmtSi(pdsNow),
-            spark: <Spark data={rates.pds} color="accent" />,
+            spark: <Spark data={fhSeries.length ? fhSeries : rates.pds} color="accent" />,
           },
           {
             label: 'Subscribers',
@@ -427,13 +462,14 @@ export function Firehose() {
                   { id: 'res', label: 'Last result', render: (r) => <RelayResult r={r} /> },
                   { id: 'asked', label: 'Asked', render: (r) => (r.status ? ago(r.status.lastAttemptMs) : <span className="muted">—</span>) },
                   { id: 'ok', label: 'Accepted', render: (r) => (r.status?.lastSuccessMs ? ago(r.status.lastSuccessMs) : <span className="muted">—</span>) },
+                  { id: 'sub', label: 'Subscribed', title: 'Its subscribeRepos socket now, from the subscriber list', render: (r) => <RelaySubscribed relay={r.relay} d={d} /> },
                   {
                     id: 'act',
                     label: '',
                     r: true,
                     render: (r) => (
-                      <button type="button" className="cx-btn sm" onClick={() => crawlNow([r.relay])}>
-                        Crawl now
+                      <button type="button" className="cx-btn sm quiet" onClick={() => crawlNow([r.relay])} title="Crawl now: requestCrawl to this relay">
+                        Crawl
                       </button>
                     ),
                   },
