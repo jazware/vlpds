@@ -20,7 +20,8 @@ static ON_DEMAND: AtomicBool = AtomicBool::new(false);
 
 /// VLPDS_GIT_REV at run time, else at build time, else the source tree's
 /// `git describe`. The image sets it at run time so that a commit touching
-/// only the UI reuses the cached binary.
+/// only the UI reuses the cached binary. The `git describe` is for `cargo run`
+/// in a git clone; anywhere else it fails and gives "unknown".
 pub fn git_rev() -> String {
     if let Some(r) = std::env::var("VLPDS_GIT_REV").ok().filter(|r| !r.is_empty()) {
         return r;

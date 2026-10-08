@@ -13,6 +13,7 @@ parent=..
 if [ -f "$parent/../scripts/vcs.sh" ]; then
   . "$parent/../scripts/vcs.sh"
 else
+  # the public repo: a git clone, without mono's scripts/
   vcs_root() { git rev-parse --show-toplevel; }
   vcs_prefix() { git rev-parse --show-prefix; }
   vcs_archive() { if [ "$1" = -C ]; then git -C "$2" archive "${@:3}"; else git archive "$@"; fi; }
