@@ -4,7 +4,7 @@ vlpds is an atproto PDS that uses an object store as its database. Every acknowl
 already in your S3, R2 or GCS bucket. Nodes only keep caches, so scaling out just means starting
 another node on the same bucket.
 
-![The operator console's overview for a 5-node cluster on one MinIO bucket under write load: node leases, the write path, each node's log segments and the firehose watermark, and live events](docs/assets/console.png)
+![The operator console's overview on a local 5-node cluster with fake accounts under write load: node leases, the write path, each node's log segments and the firehose watermark, and live events](docs/assets/console.png)
 
 vlpds speaks the same XRPC, OAuth and sync 1.1 firehose as the reference PDS, so apps, relays and
 AppViews talk to it like any other PDS. It can run a personal server on one small VM, or a cluster
@@ -44,6 +44,12 @@ single-node deployment (one 4-vCPU VPS with its data on Cloudflare R2), and it s
 - It's built to be operated. It has Prometheus metrics, 92 alerts that each have a runbook
   section, rolling upgrades with feature levels, Cloud KMS or a local key wrapping every signing
   key, SMTP mail and Ozone moderation. → [Operations](docs/operations/index.md)
+
+The screenshots here come from a local 5-node cluster on one MinIO bucket, with 120 fake accounts
+(`alice0.vlpds.test` and so on) and `loadgen` writing ~300 commits/s. The Nodes & shards page has
+each node's lease, log and memory, and which node owns each of the 64 shards:
+
+![The Nodes & shards page on the same cluster: five nodes with their leases, commit rates, logs and watermark lag, the shard ownership map, the firehose merge and the feature level](docs/assets/console-nodes.png)
 
 ## Quickstart
 
