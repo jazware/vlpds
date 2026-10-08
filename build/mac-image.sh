@@ -22,9 +22,7 @@ t_start=$(date +%s)
 ctx=$(mktemp -d)
 cfg=$(mktemp -d)
 trap 'rm -rf "$ctx" "$cfg"' EXIT
-# run from the top: in a subdirectory, git archive narrows the tree to it again
-vcs_archive -C "$(vcs_root)" "HEAD:$(vcs_prefix)" | tar -x -C "$ctx"
-[ -f "$ctx/Dockerfile" ] || { echo "mac-image: empty build context" >&2; exit 1; }
+build/context.sh "$ctx"
 docker buildx build --platform "${PLATFORM:-linux/amd64}" \
   --build-arg "VLPDS_GIT_REV=$tag" \
   ${FEATURES:+--build-arg "VLPDS_FEATURES=$FEATURES"} \

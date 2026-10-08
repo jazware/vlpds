@@ -8,7 +8,8 @@
 # build from it. The monorepo's `just image-push` makes the same image without
 # Docker, putting a cross-compiled binary and the UI on the runtime-base stage.
 #
-#   docker build -t vlpds:local .            (or: just docker-build)
+#   docker build -t vlpds:local .            (or: just docker-build; in the
+#                                            monorepo build/context.sh makes .)
 #   docker run -p 2583:2583 -e VLPDS_S3_ENDPOINT=... -e VLPDS_JWT_SECRET=... \
 #     -e VLPDS_ADMIN_TOKEN=... -e VLPDS_INTERNAL_TOKEN=... vlpds:local
 #
@@ -57,8 +58,10 @@ COPY rust-toolchain.toml ./
 RUN case "$TARGETARCH" in amd64) t=x86_64-unknown-linux-gnu ;; arm64) t=aarch64-unknown-linux-gnu ;; esac \
     && rustup show active-toolchain && rustup target add "$t" && echo "$t" > /rust-target
 COPY Cargo.toml Cargo.lock ./
+# the shared vlsync crates (build/context.sh adds the monorepo's)
+COPY vlsync/Cargo.toml ./vlsync/
+COPY vlsync/crates ./vlsync/crates
 COPY src ./src
-COPY crates ./crates
 COPY lexicons ./lexicons
 # embedded by `vlpds dashboards` (src/cli/dashboards.rs)
 COPY bench/obs/grafana/dashboards ./bench/obs/grafana/dashboards

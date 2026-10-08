@@ -165,7 +165,7 @@ checker-rs host="http://127.0.0.1:2620" *args:
 
 # Production image (Dockerfile: UI build, release build, slim non-root runtime)
 docker-build tag="vlpds:local":
-    docker build -t {{tag}} .
+    if [ -f ../../scripts/oci/lib.sh ]; then ctx=$(mktemp -d); build/context.sh "$ctx"; else ctx=.; fi; docker build -t {{tag}} "$ctx"
 
 # Build the production amd64 image from the committed tree and push it; prints the ref. In the
 # monorepo: zigbuild + crane onto the pinned base, no Docker build (build/oci-image.sh); elsewhere

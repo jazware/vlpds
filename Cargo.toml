@@ -13,9 +13,11 @@ publish = false
 # instead of one per file.
 autotests = false
 
-# bench/results holds standalone harnesses.
+# bench/results holds standalone harnesses. vlsync/ is where the public repo
+# and the Docker build context (build/context.sh) carry vlsync, its own
+# workspace.
 [workspace]
-exclude = ["bench", "checker-rs", "passkey-differential"]
+exclude = ["bench", "checker-rs", "passkey-differential", "vlsync"]
 
 [features]
 default = ["jemalloc", "slatedb-metrics"]
@@ -34,7 +36,7 @@ profiling = ["dep:pyroscope", "dep:prost", "dep:inferno"]
 # one `db` label per shard (vlsync's slate-metrics)
 slatedb-metrics = ["dep:slate-metrics"]
 # TEST ONLY, never in a release image: adds the test feature level
-# (src/version.rs TEST_LEVEL = newest real level + 1), which changes the
+# (vlsync-store/src/version.rs TEST_LEVEL = newest real level + 1), which changes the
 # segment magic/header and a retain/ report field, so rolling upgrades are
 # exercised with a real format change (tests/level_gating.rs, bench/ha
 # upgrade-* scenarios, `just upgrade-ci`).
@@ -50,7 +52,7 @@ vlsync-firehose = { git = "https://github.com/jazware/vlsync", rev = "0fc77d93a5
 slatedb = { package = "vlsync-slatedb", git = "https://github.com/jazware/vlsync", rev = "0fc77d93a5e1099628729eb3cd3ee894006685bb" }
 # the SST block cache (partition.rs BlockCache): SlateDB's FoyerCache can't be resized
 foyer = "0.22"
-# log segment body compression (src/segment.rs; the same zstd SlateDB links)
+# log segment body compression (vlsync-store/src/segment.rs; the same zstd SlateDB links)
 zstd = "0.13"
 # decoding gzip/deflate AppView responses for read-after-write munging (the
 # flate2 tower-http already links)
