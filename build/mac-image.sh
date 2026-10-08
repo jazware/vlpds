@@ -7,26 +7,29 @@
 #
 #   build/mac-image.sh [tag]        (or: just docker-push [tag])
 #
-# Builds the committed tree (`git archive HEAD`), as benchbox-image.sh does, so
+# Builds the committed tree (vcs_archive), as benchbox-image.sh does, so
 # uncommitted edits never reach an image.
 #
 # Env: IMAGE (ghcr.io/jazware/vlpds), PLATFORM (linux/amd64), FEATURES
 # (cargo features, e.g. profiling), CARGO_BUILD_JOBS, PUSH=0 (load only).
 set -euo pipefail
 IMAGE=${IMAGE:-ghcr.io/jazware/vlpds}
+. "$(dirname "$0")/../../../scripts/vcs.sh"
 cd "$(dirname "$0")/.."
-tag=${1:-$(git rev-parse --short=12 HEAD)}
+tag=${1:-$(vcs_short)}
+git_sha=$(vcs_delta_git_sha)
 t_start=$(date +%s)
 ctx=$(mktemp -d)
 cfg=$(mktemp -d)
 trap 'rm -rf "$ctx" "$cfg"' EXIT
 # run from the top: in a subdirectory, git archive narrows the tree to it again
-git -C "$(git rev-parse --show-toplevel)" archive "HEAD:$(git rev-parse --show-prefix)" | tar -x -C "$ctx"
+vcs_archive -C "$(vcs_root)" "HEAD:$(vcs_prefix)" | tar -x -C "$ctx"
 [ -f "$ctx/Dockerfile" ] || { echo "mac-image: empty build context" >&2; exit 1; }
 docker buildx build --platform "${PLATFORM:-linux/amd64}" \
   --build-arg "VLPDS_GIT_REV=$tag" \
   ${FEATURES:+--build-arg "VLPDS_FEATURES=$FEATURES"} \
   ${CARGO_BUILD_JOBS:+--build-arg "CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS"} \
+  ${git_sha:+--label "dev.example.delta.git-sha=$git_sha"} \
   -t "$IMAGE:$tag" --load "$ctx"
 if [ "${PUSH:-1}" = 1 ]; then
   # DOCKER_HOST keeps the current context's daemon (contexts live in DOCKER_CONFIG)

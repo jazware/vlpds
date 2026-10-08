@@ -170,7 +170,7 @@ docker-build tag="vlpds:local":
 # Build the production amd64 image from the committed tree and push it; prints the ref. In the
 # monorepo: zigbuild + crane onto the pinned base, no Docker build (build/oci-image.sh); elsewhere
 # the Dockerfile (build/mac-image.sh). FEATURES=profiling, PUSH=0 to only build it.
-image-push tag=`git rev-parse --short=12 HEAD`:
+image-push tag=`../../scripts/vcs.sh short`:
     if [ -f ../../scripts/oci/lib.sh ]; then build/oci-image.sh {{tag}}; else build/mac-image.sh {{tag}}; fi
 
 alias docker-push := image-push
@@ -180,7 +180,7 @@ image-base:
     build/oci-image.sh base
 
 # The same image from the Dockerfile with docker buildx (build/mac-image.sh; PUSH=0 to only load it)
-docker-push-buildx tag=`git rev-parse --short=12 HEAD`:
+docker-push-buildx tag=`../../scripts/vcs.sh short`:
     build/mac-image.sh {{tag}}
 
 # Observability stack for load tests (bench/obs/README.md): Prometheus (1 s scrapes) :9090,
