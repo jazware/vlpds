@@ -4,7 +4,7 @@ vlpds is an atproto PDS that uses an object store as its database. Every acknowl
 already in your S3, R2 or GCS bucket. Nodes only keep caches, so scaling out just means starting
 another node on the same bucket.
 
-![The operator console's live metrics for a 5-node cluster on one MinIO bucket under write load](docs/assets/console.png)
+![The operator console's overview for a 5-node cluster on one MinIO bucket under write load: node leases, the write path, each node's log segments and the firehose watermark, and live events](docs/assets/console.png)
 
 vlpds speaks the same XRPC, OAuth and sync 1.1 firehose as the reference PDS, so apps, relays and
 AppViews talk to it like any other PDS. It can run a personal server on one small VM, or a cluster
@@ -38,7 +38,10 @@ single-node deployment (one 4-vCPU VPS with its data on Cloudflare R2), and it s
 - The operator console covers accounts, invites, takedowns and moderation cases, rate limits,
   relays, cluster ownership and live metrics. An admin CLI makes the same calls.
   → [Admin console and CLI](docs/operations/admin-console.md)
-- It's built to be operated. It has Prometheus metrics, 83 alerts that each have a runbook
+- Spaces, atproto's permissioned-data alpha, is built in behind `--spaces`. A node hosts its
+  accounts' private space repos and the spaces they run, and space writes never reach the
+  firehose. → [Spaces](docs/spaces/index.md)
+- It's built to be operated. It has Prometheus metrics, 92 alerts that each have a runbook
   section, rolling upgrades with feature levels, Cloud KMS or a local key wrapping every signing
   key, SMTP mail and Ozone moderation. → [Operations](docs/operations/index.md)
 
@@ -83,7 +86,8 @@ The docs live in [`docs/`](docs), and every node serves them at `/docs`.
 | [Keys and security](docs/keys-security.md) | [Scaling and clustering](docs/operations/scaling-and-clustering.md) | [Firehose](docs/firehose.md) |
 | | [Monitoring](docs/operations/monitoring.md) | [Blobs](docs/blobs.md) |
 | | [Upgrades](docs/operations/upgrades.md) | [Proxying](docs/proxying.md) |
-| | [Runbook](docs/operations/runbook.md) | [DESIGN.md](DESIGN.md) (the full design notes) |
+| | [Runbook](docs/operations/runbook.md) | [Spaces](docs/spaces/index.md) (alpha) |
+| | | [DESIGN.md](DESIGN.md) (the full design notes) |
 
 If you're running a server, you'll also want [ops/RUNBOOK.md](ops/RUNBOOK.md) and
 [ops/alerts.yml](ops/alerts.yml). [tests/STATUS.md](tests/STATUS.md) describes the test suite, and

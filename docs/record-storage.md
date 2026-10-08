@@ -140,8 +140,8 @@ edges:
 Each repo belongs to one **repo worker** thread, picked by a hash of the DID. There are
 `--workers` of them (half the cores by default). The worker keeps a `LazyTree` for each cached
 repo. It holds the nodes on the paths recent operations visited, and every other subtree is just
-its CID. Inserts, deletes, CIDs and proofs run the same MST code a fully loaded tree would, so
-commits are byte-identical. A written repo costs ~10–20 KB of memory whether it has 100 records or
+its CID. Inserts, deletes, CIDs and proofs run the same MST code a fully loaded tree would (the
+`mst` module of [vlatproto](https://github.com/jazware/vlatproto)), so commits are byte-identical. A written repo costs ~10–20 KB of memory whether it has 100 records or
 10 million, and ~3 KB once it drops back to its root.
 
 The worker's cache has two limits:

@@ -56,6 +56,11 @@ before you run more than one node, or when an ownership alert fires.
 | Cluster loop | lease renewal, membership, acquiring and releasing shards, fencing dead logs, split/merge steps | `src/cluster.rs`, `src/node.rs` |
 | Background passes | log retention, retired-state GC, checkpoints, memory re-planning | `src/retention.rs`, `src/reshard_gc.rs`, `src/memory.rs` |
 
+`vlsync-store` and `vlsync-firehose` are crates in [vlsync](https://github.com/jazware/vlsync),
+which vlpds shares with vlRelay. They hold the object-store client, the log segment format and the
+firehose merger. The atproto data model, signing and firehose frames are in
+[vlatproto](https://github.com/jazware/vlatproto).
+
 ```diagram
 caption: Three object-store clients, each with its own connection pool and permit cap, so a takeover's burst of state reads can never delay a lease renewal or a segment PUT.
 nodes:

@@ -59,7 +59,7 @@ groups:
 | Key or secret | Used for | Where it lives | Protected by | Rotated by |
 |---|---|---|---|---|
 | KEK | wrapping the keys below | Cloud KMS (`--gcp-kms-key`), Vault Transit (`--vault-transit-key`) or a 32-byte file (`--kek-file`) | KMS IAM, a Vault policy, or file mode 0400 | new key version or key, then `rewrap-secrets` |
-| Repo signing key (secp256k1, one per account) | commits, service-auth JWTs | account row `a/{did}` | KEK, bound to the DID | admin `updateAccountSigningKey` |
+| Repo signing key (secp256k1, one per account) | commits, service-auth JWTs, space commits and space JWTs ([Spaces](spaces/reading.md#the-three-tokens)) | account row `a/{did}` | KEK, bound to the DID | admin `updateAccountSigningKey` |
 | Reserved signing key | migrations in (`reserveSigningKey`) | `p/_reserved:{did:key}` | KEK, bound to the did:key | used once |
 | TOTP secret | second factor | `p/{did}` private row | KEK, bound to the DID | the user re-enrolls |
 | Passkey public keys | checking passkey sign-ins | `p/{did}\0passkeys` private row | nothing (public keys aren't secrets) | the user adds or removes passkeys |
@@ -112,8 +112,8 @@ purpose, fails to unwrap. The `kid` names the KEK (`G…` for a Cloud KMS key, `
   CRC32C checks. The KEK never leaves KMS, and every unwrap shows up in the KMS audit log. A copy of the
   bucket is useless without decrypt permission on the key. On GCE, credentials come from the metadata
   server. Off GCE they come from a service-account JSON key (`--gcp-credentials-file`) that holds only
-  `cloudkms.cryptoKeyEncrypterDecrypter` on that one key. `deploy/gcp` has an OpenTofu module that creates
-  such a key in a multi-region key ring.
+  `cloudkms.cryptoKeyEncrypterDecrypter` on that one key. Put the key in a multi-region key ring
+  ([KEK provisioning](operations/kek-and-key-rotation.md#kek-provisioning)).
 - Vault Transit (`--vault-transit-key`, Vault 1.13+ or OpenBao). The same model as Cloud KMS, with
   the associated data sent as Transit's `associated_data` on an AEAD key (aes256-gcm96, aes128-gcm96 or
   chacha20-poly1305). Older Vaults drop that parameter (some with a warning, some silently), so a node
@@ -255,7 +255,7 @@ between nodes)", and joining a node is in [Scaling and clustering](operations/sc
 - { value: "'self'", label: the only script source, note: "every UI page · OAuth pages allow only hashed inline code", tone: accent }
 - { value: "DENY", label: framing, note: "frame-ancestors 'none' + X-Frame-Options" }
 - { value: public, label: addresses only for outbound fetches, note: "private, loopback and link-local are refused", tone: blue }
-- { value: "33", unit: rate limits, label: built in, note: "per IP, account, node or cluster · tunable live", tone: amber }
+- { value: "46", unit: rate limits, label: built in, note: "per IP, account, node, cluster or space credential · tunable live", tone: amber }
 ```
 
 - Headers. The web UI (`/`, `/account`, `/admin`, `/docs`) is served with a same-origin CSP

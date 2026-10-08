@@ -44,7 +44,7 @@ domain and the handle checks are the same as before.
 - title: Get certificates
   body: "With on-demand TLS, Caddy asks `/tls-check` before issuing for any name, so there's nothing to do. With one wildcard certificate per domain, add the domain to the proxy's config first (see [Certificates](#certificates))."
 - title: Add it
-  body: "In the console's Handle domains page (`/admin/handle-domains`), or `vlpds admin handle-domain add at.group-a.org`. Every node serves it within a second."
+  body: "On the console's Domains & invites page (`/admin/domains`), or `vlpds admin handle-domain add at.group-a.org`. Every node serves it within a second."
 - title: Hand out sign-up links
   body: "`describeServer` now lists every domain, primary first. The sign-up and handle pages show a domain picker, and `/account/signup?domain=at.group-a.org` preselects one."
 ```
@@ -83,8 +83,7 @@ shard opens on a build that keeps these counts, it reads its account rows once t
 then writes them back.
 
 `vlpds admin handle-domain list --recount` (or `listHandleDomains?recount=true`) counts every
-account row on every node instead, which is what each list used to do. Use it to check the kept
-counts. It reads every account in the cluster, so don't put it on a schedule.
+account row on every node instead. Use it to check the kept counts. It reads every account in the cluster, so don't put it on a schedule.
 
 ## Removing a domain
 

@@ -265,6 +265,8 @@ prefix, and it joins the cluster, follows the other nodes' logs and takes its sh
 - If you're running a server, start at [Operations](operations/index.md), then
   [Deploy](operations/deploy.md).
 - To move an account here, see [Migration](migration.md).
+- Spaces, atproto's permissioned-data alpha, is off unless you start nodes with `--spaces`. See
+  [Spaces](spaces/index.md).
 - For how identity and keys are protected, see [Keys and security](keys-security.md) and
   [OAuth and 2FA](oauth-2fa.md).
 - `DESIGN.md` in the repository is the full design log, with every measurement and rejected

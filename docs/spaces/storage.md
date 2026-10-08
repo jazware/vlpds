@@ -116,10 +116,10 @@ memory first:
   collections the records are in is checked once the index is in.
 - An account gets 100 imports an hour (`space-import`), and runs 2 at once. A node runs 8, or as
   many as its import budget holds at their largest if that's fewer (one on the smallest budget,
-  192 MiB; two on a 7 GB VPS). Past that they get 503 `Overloaded` at once.
+  192 MiB, and two on a 7 GB VPS). Past that they get 503 `Overloaded` at once.
 - The import reserves what it can hold from the import budget, as `com.atproto.repo.importRepo`
   does, and waits up to 30 s for room (then 503 `Overloaded`). That's ~75 MB at the default record
-  limit for a chunked body; a body that declares its length reserves less.
+  limit for a chunked body. A body that declares its length reserves less.
 - A body that sends nothing for 30 s, or takes over an hour, fails and gives its slot and room
   back (as `com.atproto.repo.importRepo`'s does).
 - Every block is refused from its length, before it's read. The commit gets 1 KiB (a real one is
@@ -197,7 +197,8 @@ Fan-out queues live only in memory on the authority's node. A forward still queu
 moves can be lost, so the new owner sends each live registration one catch-up forward when the shard
 opens ([Fan-out](writing-and-sync.md#fan-out)).
 
-The phase 2 cluster tests cover each row. Split and merge keep every `s*` row under writes, and a
+The cluster tests in `tests/all/spaces_side/` (`cluster_reshard.rs`, `cluster_takeover.rs`) cover
+each row. Split and merge keep every `s*` row under writes, and a
 kill -9 mid-burst on three nodes loses no acked write and keeps spaceRevs moving forward. The heads
 cache remembers the shard and epoch each entry was read under, so a node never serves a head for a
 shard it no longer owns.

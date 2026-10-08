@@ -26,7 +26,7 @@ diagram:
     - "mail -> budget: CAS"
     - { from: config, to: layer, dash: true }
 facts:
-  - { value: "35", unit: buckets, label: built in, note: "keyed by IP, identifier + IP, DID, node or cluster", tone: amber }
+  - { value: "46", unit: buckets, label: built in, note: "keyed by IP, identifier + IP, DID, node, cluster or space credential", tone: amber }
   - { value: "3,000", unit: "/ 5 min", label: XRPC calls per IP, note: "`global-ip` · the one most clients hit first" }
   - { value: "10 s", label: for a change to reach every node, note: "peers are nudged at once · 10 s bounds a lost nudge", tone: blue }
   - { value: per node, label: counters, note: "a restart starts them over · only `mail-cluster-day` is cluster-wide", tone: muted }
@@ -136,7 +136,7 @@ Admin `sendEmail` is exempt from every mail bucket. `subscribeRepos` and `_healt
 limited. `subscribeRepos` has its own per-IP connection cap instead
 ([Firehose](../firehose.md#serving-subscribers)). Proxied calls have a separate cap of 64 in flight
 per account on its owner ([Proxying](../proxying.md#connection-pools-and-limits)). Neither of those
-is a bucket here, so neither shows up in the console's Rate limits tab.
+is a bucket here, so neither shows up in the console's Limits & lockouts page.
 
 ### The response
 
@@ -241,8 +241,8 @@ bucket off, the config's global switch or `--no-rate-limits` lifts them.
 ```
 
 The config is `config/ratelimits.json` under the bucket prefix. It holds only the changes from the
-built-in defaults, so `{}` (or no object) means the defaults. Edit it from the console's Rate
-limits tab (`/admin/ratelimits`), which calls `vlpds.admin.updateRateLimits`. A save checks that you
+built-in defaults, so `{}` (or no object) means the defaults. Edit it from the console's Limits &
+lockouts page (`/admin/limits`), which calls `vlpds.admin.updateRateLimits`. A save checks that you
 edited the version you read and writes the next version with a compare-and-swap, so two admins on
 different nodes can't overwrite each other. The saving node applies it at once and nudges its
 peers. Every node also re-reads it every 10 s, so a lost nudge costs at most that.
@@ -328,13 +328,13 @@ moderation audit log. See [Deploy](deploy.md#without-ansible).
 
 ```steps
 - title: A third-party app backend on one IP gets 429s
-  body: "A confidential OAuth client calls `/oauth/par`, `/oauth/token` and `/oauth/revoke` for all its users from one address, and an AppView-style backend may make XRPC calls the same way. Add an IP override for that address on the Rate limits page, with `limiters` set to `oauth-ip` (or `global-ip`) and higher points, or exempt. See [Admin console](admin-console.md#common-tasks)."
+  body: "A confidential OAuth client calls `/oauth/par`, `/oauth/token` and `/oauth/revoke` for all its users from one address, and an AppView-style backend may make XRPC calls the same way. Add an IP override for that address on the Limits & lockouts page, with `limiters` set to `oauth-ip` (or `global-ip`) and higher points, or exempt. See [Admin console](admin-console.md#common-tasks)."
 - title: A user mid-migration hits 429s
   body: "The migration page backs off on a 429 by itself ([Migration](../migration.md#what-gets-copied)). Uploads of blobs the imported repo references don't count. If they still hit `global-ip` or `uploadBlob-0`, add a temporary IP override for their address. For `repo-write-*` after the move, add a DID override. Remove it when they're done."
 - title: A login flood
-  body: "Look at `vlpds_logins_total{result=\"rate_limited\"}` and the Rate limits page's busiest keys. One account under attack is held by `sign-in-account`, so its new sign-ins (app passwords included) are refused for up to an hour. Live sessions keep working. A DID override lifts it for the owner. A flood from many IPs that sheds Argon2 (`VlpdsPasswordHashingShed`) calls for lower `createSession-*` or `oauth-sign-in-ip` points. See [OAuth and 2FA](../oauth-2fa.md#passwords-and-argon2)."
+  body: "Look at `vlpds_logins_total{result=\"rate_limited\"}` and the Limits & lockouts page's busiest keys. One account under attack is held by `sign-in-account`, so its new sign-ins (app passwords included) are refused for up to an hour. Live sessions keep working. A DID override lifts it for the owner. A flood from many IPs that sheds Argon2 (`VlpdsPasswordHashingShed`) calls for lower `createSession-*` or `oauth-sign-in-ip` points. See [OAuth and 2FA](../oauth-2fa.md#passwords-and-argon2)."
 - title: A mail flood
-  body: "`vlpds_mail_suppressed_total` by `reason` says which budget is refusing. `recipient_limit` is one account being mailed too much, and a DID override lifts it if the user needs the mail. `node_limit` and `cluster_limit` mean real users aren't getting codes. Find the source on the Rate limits page, then raise the budget or override the abuser down. See [Mail budgets](email-and-moderation.md#mail-budgets)."
+  body: "`vlpds_mail_suppressed_total` by `reason` says which budget is refusing. `recipient_limit` is one account being mailed too much, and a DID override lifts it if the user needs the mail. `node_limit` and `cluster_limit` mean real users aren't getting codes. Find the source on the Limits & lockouts page, then raise the budget or override the abuser down. See [Mail budgets](email-and-moderation.md#mail-budgets)."
 - title: A load test
   body: "Against a test cluster, start it with `--no-rate-limits`. Against a real cluster, set `--rate-limit-bypass-key-file` and send `x-ratelimit-bypass` from the load generator. Mail budgets still apply with the bypass key, so don't load-test mailing endpoints against a real mail provider."
 ```

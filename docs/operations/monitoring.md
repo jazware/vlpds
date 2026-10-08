@@ -8,13 +8,13 @@ summary: "Metrics, dashboards and alerts: what a healthy node looks like, the ha
 
 ```hero
 diagram:
-  caption: "The Ansible deployment's pipeline. Each node serves Prometheus text on a loopback port; the host's Alloy scrapes it and ships the container's JSON logs. vmalert evaluates `ops/alerts.yml`; Grafana shows two generated dashboards. The console's Live metrics page reads `/metrics` directly."
+  caption: "The Ansible deployment's pipeline. Each node serves Prometheus text on a loopback port; the host's Alloy scrapes it and ships the container's JSON logs. vmalert evaluates `ops/alerts.yml`; Grafana shows two generated dashboards. The console's Live metrics page reads every node's last few minutes through `vlpds.admin.getNodeMetrics`."
   nodes:
     - { id: node, label: vlpds node, sub: "/metrics · 127.0.0.1:9583", at: [0, 3.5], size: [10, 3], tone: accent }
     - { id: console, label: Live metrics, sub: "/admin/metrics · 2 s", at: [0, 9.5], size: [10, 2.6], tone: accent }
     - { id: alloy, label: Alloy, sub: "scrape 10 s · logs", at: [16, 3.5], size: [8, 3], tone: muted }
     - { id: prom, label: Prometheus, sub: VictoriaMetrics, at: [28, 0], size: [9, 2.6], tone: muted }
-    - { id: vmalert, label: vmalert, sub: "86 alerts · ops/alerts.yml", at: [28, 3.7], size: [9, 2.6], tone: muted }
+    - { id: vmalert, label: vmalert, sub: "92 alerts · ops/alerts.yml", at: [28, 3.7], size: [9, 2.6], tone: muted }
     - { id: loki, label: Loki, sub: JSON log lines, at: [28, 7.4], size: [9, 2.6], tone: muted }
     - { id: grafana, label: Grafana, sub: operator · internals, at: [41, 3.5], size: [8, 3], tone: blue }
   edges:
@@ -28,7 +28,7 @@ diagram:
     - { from: console.t, to: node.b, label: polls }
 facts:
   - { value: "~200", unit: metrics, label: "vlpds_* names per node", note: "Prometheus text; histograms for every latency that matters" }
-  - { value: "86", unit: alerts, label: in ten groups, note: "17 page, 69 ticket; each links its RUNBOOK section", tone: blue }
+  - { value: "92", unit: alerts, label: in eleven groups, note: "18 page, 74 ticket · each links its RUNBOOK section", tone: blue }
   - { value: "0.4", unit: × TTL, label: lease renewal ceiling, note: "vlpds_lease_renew_ttl_ratio; past it the node fail-stops", tone: violet }
   - { value: "~150 ms", label: commit p99 on S3, note: "design target; alerts at 500 ms (ticket) and 2 s (page)", tone: amber }
 ```
@@ -71,7 +71,7 @@ gap and the node fail-stops. That's 4 s at the default 10 s TTL, or 24 s on the 
 [Architecture](../architecture.md#leases) for why.
 
 Some signals don't have a metric. Per-log firehose watermark lag and clock offset between nodes only
-show up in `vlpds admin cluster status` (the console's Cluster page). The specific cause of an exit 5
+show up in `vlpds admin cluster status` (the console's Nodes & shards page). The specific cause of an exit 5
 is only in the log line before it. RUNBOOK
 [Metric gaps](https://github.com/jazware/vlpds/blob/main/ops/RUNBOOK.md#metric-gaps)
 keeps the list.
@@ -152,8 +152,8 @@ against `vlpds_firehose_events_total`.
 
 ```facts
 - { value: "vlpds", label: operator dashboard, note: "Is my PDS up · users · sign-in security · content · federation · moderation · cost · alerts, in plain words with every row open" }
-- { value: "internals", label: engineer's dashboard, note: "a Health row for incidents, then 15 collapsed rows per subsystem", tone: blue }
-- { value: "2 s", label: console Live metrics, note: "charts from /metrics in the browser, no Prometheus needed", tone: violet }
+- { value: "internals", label: engineer's dashboard, note: "a Health row for incidents, then 16 collapsed rows per subsystem", tone: blue }
+- { value: "2 s", label: console Live metrics, note: "charts from getNodeMetrics, no Prometheus needed", tone: violet }
 ```
 
 - `vlpds` (uid `vlpds`) is for someone running a PDS for a community. It shows request outcomes,
@@ -163,19 +163,20 @@ against `vlpds_firehose_events_total`.
   connection against the PDS's own), moderation actions, resources and cost, and firing alerts. It reads the same for one
   server and for a cluster.
 - `vlpds internals` (uid `vlpds-internals`) opens on a Health row (requests, 5xx, 429s, read and
-  write p99, commit p99, firehose lag, nodes up, shards owned, lease renewal ÷ TTL, store errors and
-  permit waits, restarts, fail-stops, firing alerts). Below that it has one collapsed row per
-  subsystem: commit pipeline, log and retention, firehose, repo workers, HTTP and proxy, rate
-  limits, accounts (scheduled deletion, sign-in security, OAuth scopes), leases and failover, forwarding and resharding, object-store clients, SlateDB, process and
-  runtime, KMS / PLC / mail, MinIO (bench only), CPU profiles. Pick the cluster and node in the variables at the top.
+  write p99, commit p99, firehose lag and subscribers, nodes up, shards owned, lease renewal ÷ TTL,
+  store errors and permit waits, restarts, fail-stops, firing alerts). Below that it has one
+  collapsed row per subsystem: commit pipeline, log and retention, firehose, repo workers, HTTP and
+  proxy, rate limits, accounts (scheduled deletion, sign-in security, OAuth scopes), Spaces, leases
+  and failover, forwarding and resharding, object-store clients, SlateDB, process and runtime,
+  KMS / PLC / mail, MinIO (bench only), CPU profiles. Pick the cluster and node in the variables at the top.
 - `bench/obs/grafana/gen_dashboard.py` generates both into `bench/obs/grafana/dashboards/`
   (`just dashboards`), and the vlpds binary embeds that copy. `--check` fails if one is stale.
   Edit the generator and leave the JSON alone.
-- The [operator console](admin-console.md#pages) has a Cluster page (ownership map, nodes, firehose
-  sources, feature level), which polls `getClusterStatus` every 2 s. Its Live metrics page scrapes
-  `/metrics` every 2 s and keeps 6 minutes. Live metrics needs `/metrics` on the console's own
-  origin. The tailnet console mounts it, but through a plain SSH tunnel to port 2583 the page says
-  "Not updating".
+- The [operator console](admin-console.md#pages) has a Nodes & shards page (ownership map, nodes,
+  firehose merge, feature level), which polls `getClusterStatus` every 2 s. Its Live metrics page
+  (`/admin/metrics`) reads `getNodeMetrics` every 2 s, which gathers every node's last 3 minutes over
+  the peer listener. So it works through a plain SSH tunnel too, with no `/metrics` on the console's
+  origin.
 
 ### Import into your own Grafana
 
@@ -217,7 +218,7 @@ bound to your datasource: `vlpds dashboards --out DIR --datasource-uid <uid>` (o
 ```diagram
 caption: "Every rule carries a severity and a `runbook_url` whose anchor is the alert's own section in `ops/RUNBOOK.md`."
 nodes:
-  - { id: rules, label: "ops/alerts.yml", sub: 86 alerts · 10 groups, at: [0, 2], size: [9, 3], tone: accent }
+  - { id: rules, label: "ops/alerts.yml", sub: 92 alerts · 11 groups, at: [0, 2], size: [9, 3], tone: accent }
   - { id: eval, label: vmalert, sub: or Prometheus, at: [13, 2], size: [8, 3], tone: muted }
   - { id: page, label: page, sub: "17: act now", at: [25, 0], size: [8, 2.6], tone: danger }
   - { id: ticket, label: ticket, sub: "69: act today", at: [25, 4], size: [8, 2.6], tone: amber }
@@ -238,10 +239,11 @@ edges:
 | `vlpds-writes` | 15 | commit p99 over 2 s, the commit log stalled, 5xx over 5% |
 | `vlpds-forwarding` | 3 | (tickets only) |
 | `vlpds-firehose` | 6 | emit delay over 20 s, the firehose stalled |
-| `vlpds-object-store` | 10 | a brownout on two or more nodes |
+| `vlpds-object-store` | 11 | a brownout on two or more nodes |
 | `vlpds-durability` | 9 | (tickets only: checkpoints, retention, dead logs, reshard GC) |
 | `vlpds-resources` | 18 | memory over 95%, KMS or PLC directory down, a signature fault |
 | `vlpds-accounts` | 3 | (tickets only: scheduled deletions failing or surging, sign-in alerts not mailed) |
+| `vlpds-spaces` | 5 | saturated revocation blocks |
 
 A `vlpds-derived` group holds the recording rules (`vlpds:layout_shards`). Read the header of
 `ops/alerts.yml` before loading it anywhere. The main points:

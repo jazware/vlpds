@@ -54,12 +54,12 @@ reshard GC). The others re-check leadership every 60 s. On a single node, that's
 
 `--crawlers` sets the relays (default `bsky.network`). It takes comma-separated hostnames or
 `https://` origins, or empty for none. `--crawl-interval-secs` sets the interval (default 1,200).
-The console's Relays page (`/admin/relays`) overrides either one and stores the override in the
-bucket, where every node sees it. The flag list isn't copied in. Until someone stores a list in
+The console's Firehose & relays page (`/admin/firehose`) overrides either one and stores the
+override in the bucket, where every node sees it. The flag list isn't copied in. Until someone stores a list in
 the console, changing the flag takes effect, and `vlpds.admin.setCrawlers {relays: null}` goes back
 to it. You can have up to 32 relays and an interval from 1 s to 7 days.
 
-To ask now, use the console's Crawl all now button (or a relay's Crawl now), or
+To ask now, use the console's Request crawl from all button (or a relay's Crawl button), or
 `vlpds admin request-crawl [RELAY,...]` (the `pdsadmin request-crawl` equivalent). It asks
 immediately, whatever the throttle, and prints a result per relay (exit 1 if any refused). Do it
 after a first deploy and after moving accounts in.

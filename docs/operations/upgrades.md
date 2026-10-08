@@ -90,8 +90,9 @@ edges:
   writing its lease, and once per lease TTL while running. A build whose window doesn't contain
   the active level (or a running raise's target) exits 7 `incompatible_level`.
 - Leases advertise each node's `rev`, `min_level`, `max_level` and the level it last saw, so every
-  node knows the whole cluster's window. `vlpds admin cluster status` and the console's Cluster
-  page show it, with a "finalize available" banner when every node can run the next level.
+  node knows the whole cluster's window. `vlpds admin cluster status` and the console's Nodes &
+  shards page show it. When every node can run the next level, the status prints the finalize
+  command and the console shows a "ready to finalize" banner with a Finalize button.
 
 ## Rolling upgrade, finalize, rollback
 

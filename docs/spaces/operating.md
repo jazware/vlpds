@@ -24,7 +24,7 @@ facts:
   - { value: off, label: by default, note: "`--spaces` turns it on", tone: rust }
   - { value: "100k", unit: records, label: per space repo, note: "`--space-repo-max-records`", tone: amber }
   - { value: "7 d", label: of oplog, note: "`--space-oplog-retention`", tone: violet }
-  - { value: "4", unit: alerts, label: all tickets, note: "`VlpdsSpace*` in `ops/alerts.yml`", tone: blue }
+  - { value: "5", unit: alerts, label: four tickets and a page, note: "`VlpdsSpace*` in `ops/alerts.yml`", tone: blue }
 ```
 
 Spaces is an alpha that changes every week upstream, so leave it off unless you're testing against
@@ -93,7 +93,7 @@ cluster is the same, once every node runs a build that knows Spaces (see above).
 4. Check that vmalert has the five `VlpdsSpace*` rules from `ops/alerts.yml` loaded. The one that
    catches most problems is `VlpdsSpaceOutboxBacklog` (the oldest outbox row over 1 h for 10 min).
    `VlpdsSpaceNotifyFanoutFailing`, `VlpdsSpaceCredentialRejectsHigh` and
-   `VlpdsSpaceDigestMismatch` cover the rest ([Alerts](#alerts)). Those four are tickets;
+   `VlpdsSpaceDigestMismatch` cover the rest ([Alerts](#alerts)). Those four are tickets.
    `VlpdsSpaceRevocationsSaturated` pages, since remote authorities' credentials stop working.
 
 An app that was approved for a bare `space:` grant that writes before the flag was on has no
@@ -130,10 +130,12 @@ The operator console has a Spaces tab. On a node without `--spaces` it says Spac
 methods behind it answer 501.
 
 - The overview counts the spaces your accounts govern, the space repos stored here, their members,
-  writers and records. Its health cards read this node's `/metrics` every 5 s and go amber or red at
-  the thresholds of the four `VlpdsSpace*` alerts. The table lists every space hosted in the
-  cluster, sorted by last write, members, writers or records. Records only count space repos stored
-  here, since a writer on another PDS keeps its own.
+  writers and records. Its health table asks every node for `vlpds.admin.getSpacesStatus` every
+  10 s and shows the notify outbox, pending fan-out, revocations and the credential cache against
+  their caps (amber past half, red past 90%). A node whose revocation list is stale or not read yet
+  gets a red banner. The table below lists every space hosted in the cluster, sorted by last write,
+  members, writers, records or newest. Records only count space repos stored here, since a writer on
+  another PDS keeps its own.
 - A space's page shows its policies, members, writers (repoRev, spaceRev and the first 8 bytes of
   the set hash), the newest spaceRev of each writer, its notify registrations (the endpoint's host
   only), its records taken down here and its audit entries. You can take the space down or restore
@@ -174,7 +176,7 @@ also takes that much room from the memory plan's space exports. The room fits 4 
 | Space credential lifetime | 10 min minted by vlpds, 3,600 s accepted at most, 5 s of clock skew |
 | Delegation token and client attestation | 60 s minted, 300 s accepted at most, single use |
 | `Signature-Input` and `Signature` headers | 8 KiB each |
-| Revocations | 1–100 `jti`s per call (up to 128 characters each), each held 3,610 s · only ones with a stake here are stored · 2,000 live per authority, 1,000 per space, 5,000 per account here, 50,000 in all · one past a cap blocks its space, past 100 of an authority's the authority, past 1,000 authorities every remote one (`VlpdsSpaceRevocationsSaturated`; local authorities never), each for 3,610 s · 8 waiting per node · credential reads 503 after 6 min without a good read |
+| Revocations | 1–100 `jti`s per call (up to 128 characters each), each held 3,610 s · only ones with a stake here are stored · 2,000 live per authority, 1,000 per space, 5,000 per account here, 50,000 in all · one past a cap blocks its space, past 100 of an authority's the authority, past 1,000 authorities every remote one (`VlpdsSpaceRevocationsSaturated`, never local authorities), each for 3,610 s · 8 waiting per node · credential reads 503 after 6 min without a good read |
 | `applyWrites` | 200 ops |
 | `notifyWrite` with a future `repoRev` | refused past 5 min |
 | Outbox | 262,144 rows in memory, 256 sends in flight, 8 per authority and 32 in all to authorities whose last send failed, retries for 24 h |
@@ -219,11 +221,11 @@ the fan-out queue and drops, and revocations held.
 | `VlpdsSpaceOutboxBacklog` | a node's oldest outbox row is over 1 h old for 10 min | `notifyWrite by hop and result`: `out retry` means the authority is failing. Inactive writers' rows wait without aging the outbox |
 | `VlpdsSpaceNotifyFanoutFailing` | over 50% of fan-out sends fail, at over 0.1/s, for 30 min | one syncer down (nothing to do) or this node's egress |
 | `VlpdsSpaceCredentialRejectsHigh` | over 25% of credential reads are refused, at over 0.5/s, for 15 min (expired ones left out) | which `result` dominates. One client stuck on `bad_sig` is that app's bug |
-| `VlpdsSpaceRevocationsSaturated` (page) | the revocation blocks are saturated: every remote authority's credentials are refused | `vlpds_space_revocation_blocks{kind}` and the `space revocation not stored` warnings; it clears 3,610 s after the last block ([runbook](https://github.com/jazware/vlpds/blob/main/ops/RUNBOOK.md#vlpdsspacerevocationssaturated)) |
+| `VlpdsSpaceRevocationsSaturated` (page) | the revocation blocks are saturated: every remote authority's credentials are refused | `vlpds_space_revocation_blocks{kind}` and the `space revocation not stored` warnings. It clears 3,610 s after the last block ([runbook](https://github.com/jazware/vlpds/blob/main/ops/RUNBOOK.md#vlpdsspacerevocationssaturated)) |
 | `VlpdsSpaceDigestMismatch` | a space repo's head disagrees with its records | run `vlpds admin check-space DID SPACE` |
 
-Each has a section in `ops/RUNBOOK.md`. All four are tickets, since a space write is durable and
-readable at its 200 whatever these say. For an outbox backlog, one failing authority needs nothing
+Each has a section in `ops/RUNBOOK.md`. All but `VlpdsSpaceRevocationsSaturated` are tickets, since
+a space write is durable and readable at its 200 whatever these say. For an outbox backlog, one failing authority needs nothing
 from you (the next retry, at most ~1 h away, delivers the newest rev). Many failing at once points at
 this node's DNS or egress.
 
@@ -297,8 +299,8 @@ are in `bench/results/spaces-sync.md`.
 - Public commit p99 didn't move under 20 spaces x 5 members x 3 pollers a second plus a syncer per
   space. Four runs gave 80 / 86 / 85 / 86 ms alone and 87 / 85 / 83 / 85 ms with the load.
 
-With the flag off, the commit path matches main. An A/B on the same box (the campaigns' bisect shape,
-grid 10k accounts / 5k active at 25 ms injected PUT latency, two rounds in alternating order) put
+With the flag off, the commit path matched its base. An A/B on the same box (the bench grid's bisect
+shape, 10k accounts / 5k active at 25 ms injected PUT latency, two rounds in alternating order) put
 `3ebf852d` with and without `--spaces` next to its base `36f0be7b`:
 
 | Rate | `36f0be7b` p99 | `3ebf852d` p99 | `3ebf852d --spaces` p99 | CPU µs/commit |
@@ -315,9 +317,9 @@ across earlier rounds). The reads (`getRecord`, `getLatestCommit`) and `createRe
 
 ### On Cloudflare R2
 
-The harness also ran against a real R2 bucket from the same desktop on wired home internet (a
-release build of `spaces-2c`, one node with 16 shards, and a 3-node cluster at the default 10 s
-lease TTL). Everything follows from R2's PUT latency. A 64 KiB PUT takes ~200 ms p50 (380 ms p99),
+The harness also ran against a real R2 bucket from the same desktop on wired home internet on
+2026-10-05 (a release build of `8346b200`, one node with 16 shards, and a 3-node cluster at the
+default 10 s lease TTL). Everything follows from R2's PUT latency. A 64 KiB PUT takes ~200 ms p50 (380 ms p99),
 and a GET ~60 ms, while the TCP and TLS round trip to the edge is under 20 ms. So the time goes to
 R2's storage path.
 
@@ -328,7 +330,7 @@ R2's storage path.
 | No-op `listRepoOps` poll, client | 0.57 ms p50 · 1.25 ms p99 · 0 bucket ops |
 | Delta pull, client | 1.3 ms p50 · 3.0 ms p99 |
 | Public commit p99, alone → with 8 space writers | 643 → 630 ms |
-| Cluster `kill -9` of one node during a 16-writer board load | 0 acked writes lost, all of its shards owned again ~10 s after the kill |
+| Cluster `kill -9` of one node during the harness's 16-writer boards load | 0 acked writes lost, all of its shards owned again ~10 s after the kill |
 
 - Polls and delta pulls never touch the bucket, so R2 doesn't slow them down. They stay well
   under the 1 ms and few-ms targets.

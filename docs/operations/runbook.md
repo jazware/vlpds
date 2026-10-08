@@ -47,7 +47,7 @@ docker exec vlpds vlpds admin cluster status       # on the host: reads the node
 
 It shows every node's lease, reachability, owned shards and build. It also shows unowned shards, a
 split or merge in progress, fenced logs, the firehose sources and their watermarks, and the feature
-level. The console's [Cluster page](admin-console.md#pages) shows the same thing live.
+level. The console's [Nodes & shards page](admin-console.md#pages) shows the same thing live.
 
 ## Exit codes and fail-stops
 
@@ -267,8 +267,8 @@ one cache's `--cache-entries`. Budget details: [Configuration](configuration.md#
 ## The full runbook
 
 ```facts
-- { value: "82", label: alert sections, note: "Means, Causes, Confirm, Do for the 83 alerts in ops/alerts.yml" }
-- { value: "23", label: procedures, note: "deploys, upgrades, keys, peer TLS, outages, users locked out", tone: blue }
+- { value: "91", label: alert sections, note: "Means, Causes, Confirm, Do for the 92 alerts in ops/alerts.yml" }
+- { value: "26", label: procedures, note: "deploys, upgrades, keys, peer TLS, outages, users locked out", tone: blue }
 - { value: "1", label: "list of metric gaps", note: "signals the alerts would want that no metric exports", tone: muted }
 ```
 

@@ -95,10 +95,15 @@ under different prefixes.
 | `cluster/version` | the active feature level and its history | at finalize |
 | `handle/{handle}`, `email/{sha256}` | uniqueness claims | create-only |
 | `blob/{did}/{cid}` | blob bytes, MIME type as Content-Type | streamed, multipart when large |
-| `config/ratelimits.json`, `config/crawlers.json` | settings changed in the console | on change, and polled (rate limits every 10 s) |
+| `blob-tmp/` | large uploads in progress, before their CID is known | multipart |
+| `blob-gc/{did}/{cid}` | unreferenced blobs the sweep set aside, deleted once nothing references them | per sweep |
+| `config/ratelimits.json`, `config/crawlers.json`, `config/handle-domains.json` | settings changed in the console | on change, and polled (rate limits every 10 s) |
 | `budget/mail.json` | the cluster's mail count for the current day (`mail-cluster-day`) | CAS per account mail, polled every minute |
 | `blob-quarantine/{did}/{cid}` | a taken-down blob's bytes, until restored or purged | per takedown |
 | `moderation/` | audit log, cases, active takedowns, accounts over their blob quota | per moderation action |
+| `invite-use/{code}/{n}` | one claim per use of an invite code | create-only |
+| `stats/storage`, `stats/backfill` | objects and bytes by key component, and a backfill's progress ([Storage stats](admin-console.md#storage-stats)) | every 5 min per node, and during a backfill |
+| `spaces/revocations.json` | blocks standing in for Spaces credential revocations that couldn't be stored | CAS |
 
 Never edit or delete objects by hand. `assign/` and `nodes/` are how nodes agree on ownership, and a
 missing segment is lost history. Details: [Architecture](../architecture.md#shards-and-ownership),
@@ -122,7 +127,7 @@ edges:
 
 | Provider | Abort incomplete multipart uploads after 1 day | Also |
 |---|---|---|
-| R2 | Dashboard: bucket → Settings → Object lifecycle rules, or OpenTofu (`cloudflare_r2_bucket_lifecycle`, as in `deploy/cloudflare/r2.tf`) | Nothing else. |
+| R2 | Dashboard: bucket → Settings → Object lifecycle rules, or OpenTofu (`cloudflare_r2_bucket_lifecycle`) | Nothing else. |
 | S3 | `aws s3api put-bucket-lifecycle-configuration` with an `AbortIncompleteMultipartUpload` rule, `DaysAfterInitiation: 1`, empty prefix filter | Versioning with a noncurrent-version expiry is optional insurance (see [Backups and recovery](backups-and-recovery.md)). |
 | GCS | an `AbortIncompleteMultipartUpload` lifecycle rule, age 1 day | Disable soft delete. |
 

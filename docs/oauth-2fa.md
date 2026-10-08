@@ -215,8 +215,8 @@ edges:
 A passkey can't be phished the way a code can. The browser signs over the origin it's on, and vlpds
 only accepts a `clientDataJSON.origin` equal to the `--public-url` origin. The relying-party ID is the public URL's host. So an assertion
 made on a lookalike site, or framed (`crossOrigin` or `topOrigin` set), is refused. The flip side is that
-passkeys only work on the public hostname, so the account page hides them on the tailnet console's
-address, and changing the hostname invalidates every passkey on the PDS
+passkeys only work on the public hostname, so the account page hides them on any other address it's
+served from (an internal admin hostname, say), and changing the hostname invalidates every passkey on the PDS
 ([Configuration](operations/configuration.md#where-configuration-comes-from)).
 
 | | |

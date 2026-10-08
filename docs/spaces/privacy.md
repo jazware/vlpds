@@ -125,7 +125,7 @@ paths, so it writes an audit entry as well.
 Logs and the console's rate-limit pages are the other places an operator could pick up space
 metadata, since skeys and rkeys are often meaningful names. So vlpds logs a space by its 32-character
 hex id and leaves member DIDs and record paths out of its log lines. That includes the errors of
-its own outbound calls, whose URLs can name a space and a member in their query: they're logged
+its own outbound calls, whose URLs can name a space and a member in their query, so they're logged
 without the URL. The two rate limits keyed by who
 talks to which authority (`space-credential` and `space-read-credential`) show a keyed hash of the
 pair in the console.

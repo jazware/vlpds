@@ -111,7 +111,7 @@ Production refuses the MinIO default S3 credentials, and
 | Cluster view (admin) | `GET /xrpc/vlpds.admin.getClusterStatus` with `Authorization: Basic base64(admin:$VLPDS_ADMIN_TOKEN)`. Returns `node`, `log`, `logDurableOrdinal`, `owned` (shard ids), `shards`, `table` (owner per shard in slot order, `null` = unowned), `layout` (`version`, `shards`, `op` = split/merge in progress), `leaseValid`, `leaseExpiresMs`, `fencedLogs`, `firehose.{lastEmitted,minWatermark,sources[{log,watermark,local}]}`, `version` (feature levels, see [Rolling upgrade](#rolling-upgrade-finalize-rollback): `active`, `target` while a raise runs, `history`, this build's `binary.{min,max,rev}`, `mixedBuilds`, `revs`, `finalizable`, `finalizedAt`), and `nodes[]` with each peer's `reachable`, `leaseValid`, `logDurableOrdinal`, `owned` count, `writer`, `expiresMs`, `rev`, `minLevel`, `maxLevel`, `seenLevel` (peers fetched with a 1.5 s timeout). |
 | Feature level raise (admin) | `POST /xrpc/vlpds.admin.setFeatureLevel {"level": N}` (CLI `vlpds admin cluster finalize`). Returns 200 with the new `cluster/version`, 409 `IncompatibleNodes` naming live nodes whose build can't run N (nothing changed), or 400 below the active level or past the asked node's build. With `"lower": true` (CLI `vlpds admin cluster lower`) it lowers instead, with 400 past a persistent level or during a raise and 409 while a live node can't run N. |
 | Cluster view (node-to-node) | `GET /internal/v1/cluster` on the peer address (`--advertise-url`) with header `x-vlpds-internal: $VLPDS_INTERNAL_TOKEN`. With peer TLS it needs a node certificate (`curl --cacert ca.crt --cert node.crt --key node.key`), so prefer getClusterStatus above. Returns this node's `owned`, `table`, `layout`, `peers`, `lease_valid`, `log_durable_ordinal`, `firehose_last_emitted`, `firehose_min_watermark`. |
-| Operator console | `/admin` (Cluster page polls getClusterStatus), `/admin/metrics` (live metrics). |
+| Operator console | `/admin` (Overview), `/admin/nodes` (Nodes & shards, polls getClusterStatus), `/admin/metrics` (live metrics from getNodeMetrics). See `docs/operations/admin-console.md` "Pages". |
 | Shard layout | `vlpds admin layout --url http://<node>:2583` (or `vlpds admin --url ... layout`, with `VLPDS_ADMIN_TOKEN` in the env), or `GET /xrpc/vlpds.admin.getShardLayout`. Also `shard-split`, `shard-merge` and `reshard-abort` (abort only before the flip). |
 | Accounts, identity, repos | `vlpds admin ...`, the pdsadmin equivalents. See [Admin CLI](#admin-cli). |
 | CPU profile | `just profile <node:port> [seconds]` (`/debug/pprof/`). Only in a build with `--features profiling`, like the image built with that feature. A default build has no profiler and the endpoint is absent |
@@ -243,7 +243,8 @@ confirmation, and off a terminal they refuse without `--yes`.
 | `pdsadmin account untakedown DID` | `vlpds admin account untakedown DID` | same, `applied: false` |
 | `pdsadmin account reset-password DID` | `vlpds admin account reset-password DID [--password P]` | `admin.updateAccountPassword`, prints the new password |
 | (none) | `vlpds admin account info DID` | `admin.getAccountInfo` + `getSubjectStatus` |
-| `pdsadmin create-invite-code` | `vlpds admin create-invite-code [--uses N] [--count N] [--for-account DID]` | `server.createInviteCode`, one code per line |
+| `pdsadmin create-invite-code` | `vlpds admin create-invite-code [--uses N] [--count N] [--for-account DID] [--handle-domain D]` | `server.createInviteCode`, one code per line. `--handle-domain` limits the codes to handles under one served domain |
+| (none) | `vlpds admin handle-domain list [--recount]`, `add DOMAIN`, `remove DOMAIN [--force]` | `vlpds.admin.listHandleDomains`, `addHandleDomain`, `removeHandleDomain` (docs `operations/handle-domains.md`) |
 | `pdsadmin request-crawl [RELAY,...]` | `vlpds admin request-crawl [RELAY,...]` | `vlpds.admin.requestCrawl`. The node asks each relay (default its `--crawlers`) to crawl its `--public-url` host. Per-relay result, exit 1 if any refused |
 | `pdsadmin update` | (none) | roll the image, see [Rolling deploy](#rolling-deploy) |
 | `publish-identity DID...` / `publish-identity-file F` | `vlpds admin publish-identity [DID...] [--file F]` | `vlpds.admin.publishIdentity`. Sends `#identity` for each DID (any status but deleted) and drops DID-document caches |
@@ -254,11 +255,13 @@ confirmation, and off a terminal they refuse without `--yes`.
 | (none) | `vlpds admin rewrap-secrets [--dry-run] [--check-versions]` | `vlpds.admin.rewrapSecrets` on every node ([KEK rotation](#kek-rotation)) |
 | `rebuild-repo DID` | `vlpds admin rebuild-repo DID [--dry-run] [--yes]` | `vlpds.admin.rebuildRepo`, see below |
 | (none) | `vlpds admin check-repo DID` | `vlpds.admin.checkRepo`, see below |
+| (none) | `vlpds admin check-space DID SPACE` | `vlpds.admin.checkSpace`. Checks an account's repo in one space (records against the head's set hash and count, the oplog, the notify outbox, the space host's rows). Exit 1 on a problem |
 | `sequencer-recovery`, `recovery-repair-repos`, `rotate-keys-recovery` | (none) | there's no single sequencer DB to replay. Durability is the log + SlateDB per shard (DESIGN "Backups and restore") |
 | (none) | `vlpds admin cluster status` | `vlpds.admin.getClusterStatus`. Shows this node, layout, unowned shards, firehose, feature level (and the finalize/mixed-builds banner), and a row per node (`*` = the one asked) with its rev and level window |
 | (none) | `vlpds admin cluster finalize [--level N] [--yes]` | `vlpds.admin.setFeatureLevel` (default N = active + 1, asks first). See [Rolling upgrade](#rolling-upgrade-finalize-rollback) |
 | (none) | `vlpds admin cluster lower --level N [--yes]` | `vlpds.admin.setFeatureLevel {"level": N, "lower": true}`, only past wire-only (non-persistent) levels. See [Rolling upgrade](#rolling-upgrade-finalize-rollback) |
 | (none) | `vlpds admin layout`, `shard-split`, `shard-merge`, `reshard-abort` | [Shard split / merge](#shard-split--merge) |
+| (none) | `vlpds admin tls ca`, `tls issue`, `tls show` | local files only, no node involved. See [Peer TLS](#peer-tls-mtls-between-nodes) |
 
 Per-DID batches (`publish-identity`, `rotate-keys`) run one DID at a time, like
 the reference scripts without their sleep. A file is one DID per line, with blank
@@ -322,8 +325,7 @@ from a node that's scraped and down (`up == 0`).
 
 **Causes:**
 - The host's Alloy isn't running or doesn't carry the `vlpds-monitoring`
-  fragment. On the prod inventory `vlpds_manage_alloy` is off until the host's
-  existing setup is reviewed, so this fires there until then.
+  fragment.
 - remote_write from Alloy to VictoriaMetrics is failing.
 - A renamed job or `cluster` label (`deploy_env`).
 - The monitoring host itself is unhealthy (then other deployments' alerts go
@@ -814,12 +816,12 @@ protects the sender's reputation from a flood that the per-recipient budget
 doesn't catch (many accounts at once).
 
 **Confirm:** `vlpds_mail_messages_total{result="sent"}` by `purpose` on the node
-shows which kind is surging. Check the console's Rate limits tab (top consumers
+shows which kind is surging. Check the console's Limits & lockouts page (top consumers
 of `mail-recipient-hour`, rejections by `mail:<purpose>` route) and
 `vlpds_signups_total` for a signup wave.
 
 **Do:** for a burst of real users (signups, a migration wave), raise
-`mail-node-hour` `points` in the console's Rate limits tab (live, no restart).
+`mail-node-hour` `points` in the console's Limits & lockouts page (live, no restart).
 The day's total stays capped by `mail-cluster-day`. For abuse (many fresh
 accounts asking for mail), find the accounts in the top consumers and take them
 down, or tighten the endpoint's buckets.
@@ -839,7 +841,7 @@ anyway.
 **Confirm:** `vlpds_mail_budget_remaining{window="day"}` at 0.
 `vlpds_mail_messages_total{result="sent"}` by `purpose`, summed over nodes,
 shows which kind used it up. Check `vlpds_signups_total` for a signup wave and
-the console's Rate limits tab (the `mail-cluster-day` count, top consumers of
+the console's Limits & lockouts page (the `mail-cluster-day` count, top consumers of
 `mail-recipient-*`).
 
 **Do:**
@@ -1692,7 +1694,7 @@ Flooding an inbox and then signing in from a new device is how an account
 takeover would stay unnoticed. (A spent node or cluster budget has its own
 alerts, VlpdsMailNodeBudgetExhausted and VlpdsMailClusterBudgetExhausted.)
 
-**Confirm:** the console's Rate limits tab: the top consumers of
+**Confirm:** the console's Limits & lockouts page: the top consumers of
 `mail-recipient-*` name the account, and the rejections by route
 (`mail:<purpose>`) show what filled its budget.
 `vlpds_password_resets_total` and `vlpds_logins_total` by result at the same time
@@ -1703,7 +1705,7 @@ the Security tab. If a sign-in isn't theirs: reset the password (revokes every
 session) and have them turn on a second factor. If the mail came from someone
 requesting resets or codes for the account, the per-account buckets are already
 holding it. Lift the budget early only for a real user (a DID override in the
-Rate limits tab).
+Limits & lockouts page).
 
 ### VlpdsSpaceOutboxBacklog
 
@@ -1811,8 +1813,8 @@ which.
 (`vlpds_space_revocations_saturated` is 1), so every space credential whose
 authority isn't hosted here is refused with a 503. Local authorities' spaces
 keep working. A revocation that can't be stored (its caps are full) blocks
-its space; over 100 blocked spaces of one authority become one block of the
-authority; over 1,000 blocked authorities, every remote one is refused.
+its space. Over 100 blocked spaces of one authority become one block of the
+authority, and over 1,000 blocked authorities, every remote one is refused.
 Blocks never fail open, so this is what's left when they're full.
 
 **Causes:** someone flooding `notifyCredentialRevoked` from many authorities
@@ -2166,9 +2168,9 @@ level is raised, and that's what makes rollback a plain redeploy.
    stop timeout, same `--node-id`, step 4's checks between nodes). Also check
    that the restarted node's row shows B's rev and `1..=L+1`-style levels, and
    that `vlpds_format_errors_total` stays flat.
-3. Soak with the whole fleet on B at level L (default 24 h). The console's
-   Cluster page and `cluster status` say "every node can run level L+1:
-   finalize available". Rollback is a plain redeploy of the previous build,
+3. Soak with the whole fleet on B at level L (default 24 h). `cluster status`
+   says "every node can run level L+1", and the console's Nodes & shards page
+   says "Feature level L+1 is ready to finalize". Rollback is a plain redeploy of the previous build,
    node by node, in any order, at any time.
 4. Finalize with `vlpds admin cluster finalize --level L+1` (it asks, so pass
    `--yes` off a terminal). It writes a raise `target` and lists every lease
@@ -2408,7 +2410,7 @@ never the token). `purpose="admin"` is moderation mail. Dev mode keeps every
 mail, with its HTML, in `vlpds.admin.getDevMail`.
 
 **Mail rate limits** (DESIGN "Rate limits", mail budgets). All of them are
-buckets in the console's Rate limits tab, editable live. Per-DID ones are counted
+buckets in the console's Limits & lockouts page, editable live. Per-DID ones are counted
 on the account's owner, so they hold cluster-wide. `mail-cluster-day` is one
 count in the bucket (`budget/mail.json`) that every node spends.
 
@@ -2436,8 +2438,8 @@ account or mail budgets answers 200 as if mailed. Mail not sent for a budget is
 counted in `vlpds_mail_suppressed_total{purpose,reason}` (`recipient_limit`,
 `node_limit`, `cluster_limit`, `account_limit`, `dedup`). The day's remaining
 cluster budget is `vlpds_mail_budget_remaining{window="day"}`. If a user says the
-code never came, check that counter and the account in the tab's top consumers.
-A DID override (or waiting out the hour) fixes it.
+code never came, check that counter, and look for the account among the top
+consumers on the Limits & lockouts page. A DID override (or waiting out the hour) fixes it.
 
 ### Moderation service, earned invites, external handles
 
@@ -2493,9 +2495,9 @@ vlpds TOTP. With both on, only TOTP is asked for.
   page for one account, from every address). The `sign-in-account` bucket (100
   attempts per hour per account) is spent, e.g. by someone guessing. It clears
   within the hour. App-password createSession is refused too (the bucket is
-  checked before the password); live sessions keep working. To lift it
-  early, add a DID override for `sign-in-account` in the console's Rate limits
-  tab.
+  checked before the password). Live sessions keep working. To lift it
+  early, add a DID override for `sign-in-account` in the console's Limits & lockouts
+  page.
 - An OAuth client app gets 429 `rate_limit_exceeded` from `/oauth/token` or
   `/oauth/par`. Its backend shares one address for all its users (`oauth-ip`,
   3000 per 5 min per IP). Add an IP override for that address.
@@ -2591,11 +2593,11 @@ and the email factor stay.
 - If someone other than the owner may be signed in now, tick "Also sign out
   everywhere" (`"revokeSessions": true`): it also ends every session and
   device sign-in, as a password change does.
-- Audited as `second_factors.reset` in the console's Moderation page, Audit log
-  tab: an entry marked `started` before anything changes, then one marked
-  `done` with what was removed (`passkeys`, `totp`, `trustedBrowsers`,
-  `signedOut`), or `failed` with the error. A `started` with no `done` after
-  it means the reset may have stopped partway; run it again.
+- Audited as `second_factors.reset` in the Audit log panel on the console's
+  Moderation page (and the account's own list). There's an entry marked
+  `started` before anything changes, then one marked `done` with what was
+  removed (`passkeys`, `totp`, `trustedBrowsers`, `signedOut`), or `failed` with the error. A `started` with no `done` after
+  it means the reset may have stopped partway. Run it again.
 - Counted in `vlpds_passkeys_total{event="reset"}` when it removed passkeys.
 - The user signs in with the password (plus an emailed code, if that's on) and
   sets up two-factor again on the Security tab.
@@ -2650,7 +2652,7 @@ account page"). It shows the DNS and HTTPS results separately.
   "Moderation service, earned invites, external handles".
 - 429: 60 checks per 5 min and 1,000 a day per account
   (`vlpds.identity.checkHandle-*`). Lift with a DID override in the console's
-  Rate limits tab.
+  Limits & lockouts page.
 
 ---
 

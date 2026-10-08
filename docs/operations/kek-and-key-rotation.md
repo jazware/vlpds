@@ -53,7 +53,7 @@ A key service is the recommended setup for anything beyond a personal server. Th
 
 ```steps
 - title: Create the key
-  body: "Create a symmetric `ENCRYPT_DECRYPT` key in a multi-region location. `deploy/gcp` does this in OpenTofu with key ring `vlpds` and key `secrets` in `us`, a 120-day destroy-scheduled duration and `prevent_destroy` (`just plan`, `just apply`)."
+  body: "Create a symmetric `ENCRYPT_DECRYPT` key in a multi-region location, for example key ring `vlpds` and key `secrets` in `us`. In OpenTofu or Terraform, give it a long destroy-scheduled duration (120 days, say) and `prevent_destroy`."
 - title: Grant one identity
   body: "Give the nodes' service account `roles/cloudkms.cryptoKeyEncrypterDecrypter` on that key only. Nobody routinely holds `cloudkms.cryptoKeyVersions.destroy`. Off GCE, create a JSON key for that account and store it with the other secrets (e.g. in sops or Ansible Vault)."
 - title: Point the nodes at it

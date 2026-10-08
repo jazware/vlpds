@@ -208,7 +208,8 @@ document, so an attacker gets to pick the endpoint. vlpds treats it that way, as
 
 - The URL must be `https`, and an IP-literal host must be a public unicast address (`localhost` and
   `*.localhost` are refused).
-- The request goes through the guarded client. Its DNS resolver drops every non-public address, so
+- The request goes through the guarded client (`http::guarded` in
+  [vlatproto](https://github.com/jazware/vlatproto)). Its DNS resolver drops every non-public address, so
   vlpds never connects to a name that resolves to `10.x`, `169.254.x` or loopback. The same client
   fetches `did:web` documents, handle `.well-known` files, OAuth client metadata and lexicons.
 - No client follows redirects, so an allowed host can't bounce a request inward.

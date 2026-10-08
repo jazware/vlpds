@@ -51,9 +51,10 @@ a log segment, and applied to the shard's memtable before it's acknowledged.
 | A new owner opening a shard in a fraction of a second | opening reads a manifest and copies nothing to the node |
 | Cheap split and merge | a clone references the parent's SSTs instead of copying them |
 
-vlpds uses SlateDB as a sorted key-value store. It builds SlateDB from a fork
-(`jazware/slatedb`): upstream `main` plus four patches, a fix for forced compactions, a faster scan
-path, metadata-cache seeding for compaction output and a cheaper cache hit.
+vlpds uses SlateDB as a sorted key-value store. It builds SlateDB from a fork (`jazware/slatedb`),
+which is upstream `main` plus a few patches: a faster scan path, cheaper cache hits, metadata-cache
+seeding for compaction output, and bug fixes. The fork is pinned in one place, the `vlsync-slatedb`
+crate in [vlsync](https://github.com/jazware/vlsync), and its Cargo.toml lists each patch.
 
 ## Key layout
 
@@ -91,6 +92,9 @@ notes:
 | **Shard** | | |
 | `meta/applied2` | log id, ordinal | the applied marker, which is where replay starts |
 | `meta/recent` | DIDs | recently written repos the next owner preloads |
+
+With `--spaces`, space repos and the spaces an account runs get twelve `s*` families of their own,
+in the same slots ([Spaces storage](spaces/storage.md#key-families)).
 
 `{gen}` is the repo's generation. An import writes the new repo under a fresh generation and
 switches the account to it in one entry, and old generations get swept in the background.

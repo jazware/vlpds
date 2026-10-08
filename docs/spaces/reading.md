@@ -205,5 +205,5 @@ Every node reads the object whole, so anyone with a DID could grow it if nothing
   don't wait behind appends, so a flood can't make the set go stale.
 
 On a three-node cluster a revoked credential was refused on every node within 0.5–5 ms of the
-revoke's 200 (the test allows 1 s), and still after restarts, missed nudges and joins (the phase 2
-cluster test). Details on the object: [How vlpds stores it](storage.md#revocations).
+revoke's 200 (the test allows 1 s), and still after restarts, missed nudges and joins
+(`tests/all/spaces_side/cluster_revocation.rs`). Details on the object: [How vlpds stores it](storage.md#revocations).

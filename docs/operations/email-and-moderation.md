@@ -113,7 +113,7 @@ On top of each endpoint's own rate limit, every account mail spends three budget
 is minted, so no path can mail around them. There's one for the recipient, one for the node and one
 for the cluster. They protect recipients, the sender's reputation and the provider's quota, so the
 bypass key, internal token, admin auth and IP overrides don't lift them. A DID override (console,
-Rate limits) lifts a recipient's budget, and `--no-rate-limits` turns them off along with
+Limits & lockouts) lifts a recipient's budget, and `--no-rate-limits` turns them off along with
 everything else. Admin `sendEmail` is exempt from all three.
 
 | Bucket | Default | Keyed by | Over it |
@@ -135,7 +135,7 @@ server, so a per-node budget would grow with every node you add. `mail-cluster-d
 the whole cluster. It's kept in the bucket (`budget/mail.json`) and spent by whichever node sends
 the mail, so it holds when nodes join, leave or restart. Set `--mail-daily-budget`
 (`VLPDS_MAIL_DAILY_BUDGET`) below the provider's daily quota, and leave room for moderation mail,
-which isn't counted. The console's Rate limits tab changes it live (`points`, or `windowSecs` for
+which isn't counted. The console's Limits & lockouts page changes it live (`points`, or `windowSecs` for
 another window). Windows are aligned to the epoch, so a day is the UTC day.
 `vlpds_mail_budget_remaining{window="day"}` and `vlpds_mail_budget_limit{window="day"}` show where
 the day stands on every node (they're read at least once a minute).
@@ -305,8 +305,8 @@ to re-upload a taken-down blob. The bytes count toward the account's quota until
 ### Upload quotas
 
 Each account can store `--blob-quota-gb` (25 GB, decimal) of blobs and make
-`--blob-uploads-per-day` (500) uploads per UTC day. Setting either to 0 turns it off. The console's
-Look up page shows an account's usage and sets a per-account override (or puts it back to the
+`--blob-uploads-per-day` (500) uploads per UTC day. Setting either to 0 turns it off. An account looked
+up on the console's Moderation page shows its usage and sets a per-account override (or puts it back to the
 defaults). Over a limit, `uploadBlob` answers:
 
 | Limit | Answer | Metric |
@@ -316,7 +316,7 @@ defaults). Over a limit, `uploadBlob` answers:
 
 An account migrating in uploads the blobs its imported repo references without counting toward the
 daily limit, and without being refused for size. Those blobs still count toward its bytes. An
-account that arrives over its quota is listed on the console's Quotas view until it's under (raise
+account that arrives over its quota is listed in the Over blob quota panel on the console's Moderation page until it's under (raise
 its quota, or ask the user to delete media). Its other uploads are held to both limits.
 
 ## Scheduled deletion
@@ -417,7 +417,7 @@ day per account, and a directory that refuses the PLC update leaves the handle a
 - title: Require invites
   body: "Set `--invite-required` (on in the Ansible defaults). createAccount then needs a code."
 - title: Hand out codes
-  body: "Use `vlpds admin create-invite-code [--count N] [--uses N]` or the console's Invite codes page. Admin-made codes don't count toward anyone's earned limit."
+  body: "Use `vlpds admin create-invite-code [--count N] [--uses N]` or the Invite codes panel on the console's Domains & invites page. Admin-made codes don't count toward anyone's earned limit."
 - title: Let accounts earn codes (optional)
   body: "With `--invite-interval-ms` (reference `PDS_INVITE_INTERVAL`), an account earns one single-use code per interval of age, up to 5 unused. The codes are created when its app asks for them (`getAccountInviteCodes`). `--invite-epoch-ms` counts only age after that time."
 - title: Stop or restrict

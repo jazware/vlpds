@@ -24,7 +24,7 @@ diagram:
     - "api -> owner: per DID"
     - { from: caddy.t, to: api.b, label: never public, dash: true, arrow: none }
 facts:
-  - { value: "9", unit: pages, label: in the console, note: "cluster, live metrics, accounts, moderation, invites, handle domains, rate limits, relays, firehose" }
+  - { value: "11", unit: pages, label: in the console, note: "overview, nodes and shards, object store, firehose and relays, accounts, moderation, limits and lockouts, domains and invites, Spaces, mail, config" }
   - { value: "2 s", label: cluster view refresh, note: "getClusterStatus polled from the node you opened", tone: blue }
   - { value: "pdsadmin", label: every command covered, note: "plus the reference's maintenance scripts and cluster ops", tone: violet }
   - { value: "0", label: direct bucket access, note: "the CLI needs only a node URL and the admin token", tone: amber }
@@ -63,7 +63,7 @@ edges:
   `getClusterStatus` call and keeps it in that browser tab only. Lock console forgets it.
 - Or let a proxy sign you in, with no token, as the next section shows.
 
-Every node serves the console, and any node will do. The Cluster page is that node's view of the
+Every node serves the console, and any node will do. The Nodes & shards page is that node's view of the
 cluster, and account pages are routed to each account's owner.
 
 ### Sign-in through a proxy
@@ -189,25 +189,29 @@ sure the proxy overwrites the header on every request.
 ## Pages
 
 ```facts
-- { value: Cluster, label: "/admin", note: "ownership map, nodes, firehose sources, feature level · every 2 s", tone: accent }
-- { value: Metrics, label: "/admin/metrics", note: "every node's rates and latencies every 2 s, last 3 min", tone: blue }
+- { value: Overview, label: "/admin", note: "what needs attention, one health line, the write path, live events", tone: accent }
+- { value: Nodes, label: "/admin/nodes", note: "ownership map, nodes, firehose merge, feature level · live charts at /admin/metrics", tone: blue }
 - { value: Accounts, label: "/admin/accounts", note: "every account, search, sessions, 2FA, takedown, key rotation, rebuild, delete", tone: violet }
-- { value: Limits, label: "/admin/ratelimits", note: "live 429s, top keys, buckets and overrides, cluster-wide", tone: amber }
+- { value: Limits, label: "/admin/limits", note: "live 429s, top keys, buckets and overrides, lockouts, cluster-wide", tone: amber }
 ```
+
+The sidebar has the Overview and ten sections in three groups (Cluster, People and System), and
+`g` then a letter jumps to one. Any row with more to show opens in a slide-over.
 
 | Page | What it shows | What you can do |
 |---|---|---|
-| Cluster | Nodes with a lease, shards owned by this node, its lease, durable log ordinal and feature level (with a finalize or mixed-builds banner) · a shard ownership map coloured by node · a node table (reachable, lease, owned, durable ordinal, firehose lag with the slowest log marked, build and level window) · the firehose's sources | Read only. Click a node to highlight its shards, or its address or build to copy it. |
-| Live metrics | Commits and ops, commit to durable, segment PUT, HTTP and 5xx, 429s, firehose events, bytes and emit delay, cold repo loads, class A and B object-store requests and errors, CPU, memory, repos in memory and subscribers: the cluster's line and each node's, from `getNodeMetrics` | Read only. Two buttons download the [Grafana dashboards](monitoring.md#import-into-your-own-grafana). |
+| Overview | Banners for anything that needs attention (unowned shards, a feature level to finalize, lockouts) · one health line across nodes, requests, commit to durable, firehose, object store, rate limits and mail · the write path for the last 3 minutes · the logs merging into the firehose, drawn from `listSegments` · the nodes and the live tail · a rail of subscribers, open cases, locked-out accounts, relays and operator activity | Read only. Each panel links to its section. |
+| Nodes & shards | The shard count, nodes with a lease, feature level and layout version · one card per node (commits/s, p99 and CPU sparklines, its log and durable ordinal, watermark lag with the slowest log marked, shards, memory, build and level window, uptime, address) · a shard ownership map coloured by node · the firehose merge (last emitted seq, min watermark, sources, draining and fenced logs) · the feature level's history · a table of every node past three. A cluster of one gets one panel for its node | Finalize a feature level that's ready (`setFeatureLevel`). Open a node's details, or pick a node above the map to highlight its shards. All charts opens the live metrics. |
+| Live metrics (`/admin/metrics`) | Commits and ops, commit to durable, segment PUT, HTTP and 5xx, 429s, firehose events, bytes and emit delay, cold repo loads, class A and B object-store requests and errors, CPU, memory, repos in memory and subscribers: the cluster's line and each node's, from `getNodeMetrics` | Read only. Two buttons download the [Grafana dashboards](monitoring.md#import-into-your-own-grafana). |
 | Object store | Class A and B requests per second, bytes and objects stored, errors and timeouts, segment PUT p99 · what drives requests: the floor that grows with nodes × shards, writes and reads, and the count a month at the current rate (counts, not prices) · requests by key component and its driver (log segments, leases, SlateDB manifests and SSTs, blobs and the rest) and each one's share · objects and bytes stored by component from [storage stats](#storage-stats), exact or approximate, and the last backfill · per node rates and PUT latency · the bucket's provider, endpoint, prefix and region | Read only. Bucket listings aren't part of the console: stored sizes come from the nodes' own counters. |
 | Accounts | Every account on every node's shards, most recently active first (`listAccounts`), searchable by handle prefix, email prefix or DID and filtered to those needing attention, deactivated, taken down, without a second factor or with an unconfirmed email · per row its shard and owner, records, blob bytes, last commit, second factors and state · an account opens in a side panel or full page: a "Can they sign in?" line (state, password or OAuth only, second factors, factor locks, any sign-in rate-limit key at its limit, the last good sign-in, refused attempts in the last day, email, the latest sign-in mail and what became of it), identity, placement, sign-in and second factors with recent sign-ins and refused ones, sessions, app passwords, recent ops from the firehose ring, blobs and quota, invites, spaces, cases and audit entries, its mail, the date a [scheduled deletion](email-and-moderation.md#scheduled-deletion) is due, and the dev mailbox in `--dev-mode` | Take down (with a reference) and reverse it · deactivate and reactivate · rotate the signing key · rebuild the repo (after a dry run) · check the repo · publish an `#identity` event · revoke one session, every session or an app password · clear a code lockout · change handle, email, password or blob quota · enable or disable its invites · reset its two-factor sign-in (audited and mailed to the user) · delete. Each asks for confirmation and shows the call it makes, and the destructive ones ask you to type the handle. ⌘K takes "take down @handle", "reset 2fa @handle" and the rest. |
 | Moderation | Look up a subject from a bsky.app URL, at:// URI, handle, DID or DID + blob CID, and see the account, the record's JSON and its blobs (previews load on request, blurred) · active takedowns by kind · cases · the audit log · accounts over their blob quota | Take down or restore an account, record or blob with a reason, filed under a case · open and update cases (notes, status, subjects) · change an account's blob quota. See [Email and moderation](email-and-moderation.md#operator-moderation). |
-| Handle domains | The primary (`--handle-domain`) and the domains added here, each with its active accounts (every 5 s), when it was added and by whom | Add a domain · remove one (refused while it has active accounts, with Remove anyway to force it). See [Handle domains](handle-domains.md). |
-| Invite codes | Every code, newest first, one per row: uses left out of its total, when it was made, who made it and for whom, who used it, and whether it's active, disabled or used up | Create codes (count, uses, for an account) · copy a code, or a usable code's migrate or sign-up link · disable one code, or select several and disable them together. |
-| Rate limits | Each bucket's busiest key, 429s in the last minute and 15 minutes, a 429/s chart, top keys, recent 429s by route, and each node's applied config version | Change a bucket's points, window or on/off · add routes · add IP, CIDR or DID overrides (exempt or a custom limit) · a global off switch. Changes apply to every node within seconds and are kept, with your name, in the last 50 changes. See [Rate limits](rate-limits.md#changing-limits-live). |
-| Firehose & relays | Every subscribeRepos connection on every node, every 5 s: subscribers, live vs backfilling, this PDS's events/s and the bytes/s sent, emit delay · per connection its `#conn` number and node, client address with its AS, the relay it matched, user agent, how long it's been connected, start cursor, state, lag, and its events/s drawn against the PDS's · the last 50 disconnects per node with their reason · the relays asked to crawl this PDS (`--crawlers`, or a list stored from here), each one's last ask and result, whether it's subscribed now and how far behind, and the minimum interval · the merged live tail, filtered by kind, text or node | Disconnect a connection (`kickSubscriber`, type its `#conn` to confirm; it can reconnect with its cursor) · add or remove relays, reset to the flag's list, change the interval, request a crawl now. A live connection well under the PDS's events/s is falling behind. See [Relays and crawling](relays-and-crawling.md#crawl-requests). |
+| Domains & invites: handle domains | The primary (`--handle-domain`) and the domains added here, each with its active accounts (every 5 s), when it was added and by whom | Add a domain · remove one (refused while it has active accounts, with Remove anyway to force it). See [Handle domains](handle-domains.md). |
+| Domains & invites: invite codes | Every code, newest first, one per row: uses left out of its total, when it was made, who made it and for whom, who used it, and whether it's active, disabled or used up | Create codes (count, uses, for an account) · copy a code, or a usable code's migrate or sign-up link · disable one code, or select several and disable them together. |
+| Limits & lockouts | Each bucket's busiest key, 429s in the last minute and 15 minutes, a 429/s chart, top keys, recent 429s by route, and each node's applied config version · the accounts locked out now after wrong codes (`listLockouts`) | Clear a lockout (`clearLockout`) · change a bucket's points, window or on/off · add routes · add IP, CIDR or DID overrides (exempt or a custom limit) · a global off switch. Changes apply to every node within seconds and are kept, with your name, in the last 50 changes. See [Rate limits](rate-limits.md#changing-limits-live). |
+| Firehose & relays | Every subscribeRepos connection on every node, every 5 s: subscribers, live vs backfilling, this PDS's events/s and the bytes/s sent, emit delay · per connection its `#conn` number and node, client address with its AS, the relay it matched, user agent, how long it's been connected, start cursor, state, lag, and its events/s drawn against the PDS's · the last 50 disconnects per node with their reason · the relays asked to crawl this PDS (`--crawlers`, or a list stored from here), each one's last ask and result, whether it's subscribed now and how far behind, and the minimum interval · the merged live tail, filtered by kind, text or node | Disconnect a connection (`kickSubscriber`, type its `#conn` to confirm, and it can reconnect with its cursor) · add or remove relays, reset to the flag's list, change the interval, request a crawl now. A live connection well under the PDS's events/s is falling behind. See [Relays and crawling](relays-and-crawling.md#crawl-requests). |
 | Spaces (alpha) | Spaces whose authority is an account here, with members, writers, records and last write · each node's notify outbox, fan-out, revocation list and credential cache · a space's writers, members, notify registrations, taken-down records and audit entries | Take down or restore a space or one of its records, with a reason · remove a notify registration · read a writer's records after giving a reason (each page is an audited read). |
-| Mail | Each node's queue, the mail budgets (`mail-cluster-day`, `mail-node-hour`, the per-recipient ones) and how much of each is spent, mail by purpose, and the recent mail log: purpose, the account it was for, the recipient's domain, node and result, filtered by purpose, domain or account | Read only. Budgets are rate-limit buckets: change them on the Limits page. |
+| Mail | Each node's queue, the mail budgets (`mail-cluster-day`, `mail-node-hour`, the per-recipient ones) and how much of each is spent, mail by purpose, and the recent mail log: purpose, the account it was for, the recipient's domain, node and result, filtered by purpose, domain or account | Read only. Budgets are rate-limit buckets: change them on the Limits & lockouts page. |
 | Config | Every flag each node runs with and where its value came from (flag, env, default, unset or a `-file` secret), with its help · secrets as set or unset with a fingerprint · settings stored in the bucket · each node's build · any setting that differs between nodes, apart from their addresses and `--node-id` | Read only. Filter by name, value or help, or show only what's set or only what differs. |
 
 The rate-limit config lives in the bucket (`config/ratelimits.json`), so it survives restarts and
@@ -222,7 +226,7 @@ the configured relays every 5 minutes in the background and names a relay when t
 is one of them or its user agent contains the hostname. A relay that connects from other addresses
 and doesn't name itself shows up unnamed, unless its reverse DNS name is under the relay's hostname
 and resolves back to its address. The client cell shows the address, its AS from bgp.tools (a link to
-the AS page; `--asn-lookup off` hides it) and that forward-confirmed reverse DNS name. A name that
+the AS page, which `--asn-lookup off` hides) and that forward-confirmed reverse DNS name. A name that
 doesn't resolve back is only in the tooltip, marked unverified, because anyone can put any name in
 their reverse zone. Both are looked up in the background, so a new address shows them on a later
 refresh. The `#conn` number is the `conn` label of
@@ -259,7 +263,7 @@ another one over peer mTLS.
 | `listSegments` (GET) | `since?` (default the last 20 s) | Per node: its log, durable ordinal, watermark and its lag, and each segment's ordinal, seq range, entries against firehose events, bytes before and after compression, when it was sealed and when it was durable (null while its PUT is in flight) · the firehose's last emitted seq and min watermark |
 | `listMail` (GET) | `limit?` (default 100), `did?` | Every node's recent mail, newest first, or only one account's: purpose, the account's DID, the recipient's domain only, status (`queued`, `retrying`, `sent`, `failed`, `dropped`, `suppressed`, `logged`), attempts, the provider's error with any address removed, and the budget that suppressed it · each node's queue depth |
 | `listLockouts` (GET) | | Accounts whose TOTP and recovery codes (`second_factor`) or email codes (`email_code`) are locked after wrong codes, with the count and when the lock ends, from the lockout index of every node's shards |
-| `clearLockout` | `{did, reason}` | Clears both locks and their counts. Audited as `lockout.clear`. The sign-in rate-limit buckets are separate: a DID override on the Rate limits page lifts those |
+| `clearLockout` | `{did, reason}` | Clears both locks and their counts. Audited as `lockout.clear`. The sign-in rate-limit buckets are separate: a DID override on the Limits & lockouts page lifts those |
 | `getConfig` (GET) | | This node's flags, each with its source (`flag`, `env`, `default`, `unset`, or `file` for a secret set by its `-file` flag) and value · settings stored in the bucket (handle domains, rate-limit version, shard layout, feature level) · version and build rev · `peerTls`: the peer certificate in use (`nodeId`, `subject`, `hosts`, `notBefore`, `notAfter`, the earliest CA's `caNotAfter`), null without peer TLS · `secretFiles`: each `-file` secret's `flag`, `path` and the file's `modifiedAt`, so a rotation shows as a recent change |
 | `getStorageStats` (GET) | | Objects and bytes in the bucket by key component (`components`, each `exact` or not, with its count of guessed changes), `totalObjects`, `totalBytes`, `exact`, `inexactBecause`, `seeded` and `lastBackfillAt` · `backfill`: the latest run's phase, requests, keys and place · per node: what it hasn't folded yet and when it last did. See [Storage stats](#storage-stats) |
 | `backfillStorageStats` | `{dryRun?, maxRequests?, pagesPerSecond?, restart?}` | Lists the bucket once in the background to seed the counts. `dryRun` answers the estimate (`estimatedObjects`, `estimatedRequests`, `estimatedSeconds`) and starts nothing. Otherwise `maxRequests` is required. Audited as `storage.backfill` |
@@ -277,7 +281,7 @@ What these never return:
 Each node keeps the last 1,024 segments it sealed, the last 200 mails and 3 minutes of metrics in
 memory, so none of this reads the bucket. A restart starts them empty. Lockouts are indexed in the
 shards (`L/{did}\0{factor}`, written in the same batch as the lock), so the list survives restarts
-and shard moves; an entry whose lock has run out is dropped the next time the list finds it.
+and shard moves. An entry whose lock has run out is dropped the next time the list finds it.
 `listRepoOps` reads only the ring, so a quiet account's older events aren't there.
 `getStorageStats` reads one control-plane object and asks each node for what it holds, and never
 lists the bucket.
@@ -415,13 +419,13 @@ already write, so it costs no read and no extra write. A created record adds its
 a new node its own. The blocks a commit replaces aren't read, so a deleted record takes off the
 repo's mean record size, a replaced node the mean node size, and an update is taken to keep the
 record's size: close, not exact. `recountRepo` makes it exact again. A counts row written before
-bytes were counted has none (`repoBytes` is absent); the repo's next load counts them, a read of
+bytes were counted has none (`repoBytes` is absent). The repo's next load counts them, which reads
 the whole repo once.
 
-The filter counts ride in each slot's account totals (crate::totals), moved by the same
-account changes that move the status counts: they are exact once a shard's totals have loaded.
+The filter counts ride in each slot's account totals (`src/totals.rs`), moved by the same
+account changes that move the status counts. They're exact once a shard's totals have loaded.
 `unconfirmed` is accounts whose email isn't confirmed, `no2fa` active accounts with no second
-factor on their account row (TOTP, email codes or a passkey; the passkey count is written to the
+factor on their account row (TOTP, email codes or a passkey, whose count is written to the
 row with each passkey change). A totals row written before they were counted is counted from the
 slot's account rows when the shard opens. `attention` has no count: it depends on blob quotas and
 lockouts, which the totals don't follow.
@@ -464,7 +468,7 @@ first, and refuse to run off a terminal without `--yes`.
 | Invites and relays | `create-invite-code [--uses N] [--count N] [--for-account DID] [--handle-domain D]`, `request-crawl [RELAY,…]` |
 | Handle domains | `handle-domain list [--recount]`, `handle-domain add DOMAIN`, `handle-domain remove DOMAIN [--force]` |
 | Identity | `publish-identity [DID…] [--file F]`, `rotate-keys [DID…] [--generate]`, `rotate-plc-keys`, `ensure-recovery-key` |
-| Repos | `check-repo DID`, `rebuild-repo DID [--dry-run]` |
+| Repos | `check-repo DID`, `check-space DID SPACE`, `rebuild-repo DID [--dry-run]` |
 | Secrets | `rewrap-secrets [--dry-run] [--check-versions]` |
 | Cluster | `cluster status`, `cluster finalize [--level N]`, `cluster lower --level N`, `layout`, `shard-split`, `shard-merge`, `reshard-abort` |
 | Peer TLS | `tls ca`, `tls issue`, `tls show` (local files only, no node involved) |
@@ -491,13 +495,13 @@ The full mapping from each reference command is in RUNBOOK
 - title: Create an account for someone
   body: "`vlpds admin account create alice@example.com alice.pds.example` prints a generated 24-character password once. If invites are required, it makes a single-use code for the account."
 - title: Hand out invite codes
-  body: "`vlpds admin create-invite-code --count 5` (one per line), or the console's Invite codes page. To let accounts earn their own, see [Email and moderation](email-and-moderation.md#invites)."
+  body: "`vlpds admin create-invite-code --count 5` (one per line), or the Invite codes panel on the console's Domains & invites page. To let accounts earn their own, see [Email and moderation](email-and-moderation.md#invites)."
 - title: Take an account down
   body: "Run `vlpds admin account takedown <did> --ref <ticket>`, or use the account's Takedown panel. The repo is hidden and its sessions are revoked, and `untakedown` reverses it. For a record or blob, or to keep a reason and a case with it, use the Moderation page ([Operator moderation](email-and-moderation.md#operator-moderation)). A moderation service can do the same with a service token ([Moderation service](email-and-moderation.md#moderation-service))."
 - title: A user is locked out
-  body: "Too many wrong codes or passwords clear up by themselves. The factor lock doubles from 5 min, and the per-account sign-in bucket clears within the hour. A DID override on the Rate limits page lifts it early. If they lost their email inbox, change the address with `updateAccountEmail`, which drops the email factor. If they lost their authenticator or a passkey, a recovery code works in its place. If they lost those too, check it's them and use the account page's \"Two-factor sign-in\" panel, which resets every strong factor (`vlpds.admin.resetSecondFactors`, audited as `second_factors.reset`). See [OAuth and 2FA](../oauth-2fa.md#second-factors)."
+  body: "Too many wrong codes or passwords clear up by themselves. The factor lock doubles from 5 min, and the per-account sign-in bucket clears within the hour. A DID override on the Limits & lockouts page lifts it early. If they lost their email inbox, change the address with `updateAccountEmail`, which drops the email factor. If they lost their authenticator or a passkey, a recovery code works in its place. If they lost those too, check it's them and use the account page's \"Two-factor sign-in\" panel, which resets every strong factor (`vlpds.admin.resetSecondFactors`, audited as `second_factors.reset`). See [OAuth and 2FA](../oauth-2fa.md#second-factors)."
 - title: An OAuth client app gets 429s
-  body: "Its backend uses one address for all of its users, and `oauth-ip` allows 3,000 per 5 min per IP. Add an IP override for that address on the Rate limits page. See [Rate limits](rate-limits.md#common-tasks)."
+  body: "Its backend uses one address for all of its users, and `oauth-ip` allows 3,000 per 5 min per IP. Add an IP override for that address on the Limits & lockouts page. See [Rate limits](rate-limits.md#common-tasks)."
 - title: Check the cluster after a change
   body: "Run `vlpds admin cluster status` and look for every lease valid, no unowned shards, no stuck split or merge, and one build rev (or the one you're rolling to)."
 ```

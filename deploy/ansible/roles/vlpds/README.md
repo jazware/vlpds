@@ -7,8 +7,8 @@ firewall, security updates, the operator console and (when clustered) the
 peer port on the tailnet. [`playbooks/vlpds.yml`](../../playbooks/vlpds.yml)
 runs it between roles/common and roles/caddy + roles/alloy.
 
-- Every variable, with its meaning: [`defaults/main.yml`](defaults/main.yml);
-  the checked interface: [`meta/argument_specs.yml`](meta/argument_specs.yml).
+- Every variable, with its meaning: [`defaults/main.yml`](defaults/main.yml).
+  The checked interface: [`meta/argument_specs.yml`](meta/argument_specs.yml).
 - A worked inventory to copy: [`inventories/example`](../../inventories/example)
   and the kit's [README](../../README.md).
 - The node's own procedures and alerts: `ops/RUNBOOK.md`,
@@ -20,22 +20,21 @@ runs it between roles/common and roles/caddy + roles/alloy.
 |---|---|---|
 | Refuse bad config | `assert.yml` (`vlpds-assert`) | Pinned image, identity (service DID = `did:web:<hostname>`), bucket, secrets (>= 32 bytes, all distinct), KEK (local, or Cloud KMS with an optional service-account key), PLC key, email, log format, disk cache size, lease >= 10 s, stop grace >= 60 s, the peer TLS material when clustered, the Spaces knobs, and no dev mode or `--lexicon-authority-override` in `vlpds_extra_env` / `vlpds_extra_args`. Runs before anything changes. |
 | Host prep | `host.yml` (`vlpds-host`) | chrony, sysctls (`/etc/sysctl.d/90-vlpds.conf`), ufw (SSH + 80/443 public, everything on `tailscale0`), unattended-upgrades (security only, **no automatic reboot**), an optional NVMe cache device. |
-| Node | `deploy.yml` (`vlpds-deploy`) | Disk cache size and a free-space check, secret files (0400, uid 10001, read-only at `/run/vlpds`, passed as `VLPDS_*_FILE` so neither the compose file nor `docker inspect` shows a secret; an emptied secret's file is removed), peer TLS files, `/opt/vlpds/docker-compose.yml` (0600), the `vlpds` docker network, image pull, optional bucket probe, then `compose up`. |
+| Node | `deploy.yml` (`vlpds-deploy`) | Disk cache size and a free-space check, secret files (0400, uid 10001, read-only at `/run/vlpds`, passed as `VLPDS_*_FILE` so neither the compose file nor `docker inspect` shows a secret, and an emptied secret's file is removed), peer TLS files, `/opt/vlpds/docker-compose.yml` (0600), the `vlpds` docker network, image pull, optional bucket probe, then `compose up`. |
 | Console | `console.yml` (`vlpds-console`) | `tailscale serve` on `vlpds_tailnet_console_port` for `/admin` (tailnet only). |
 | Peer port | `peer.yml` (`vlpds-peer`) | Clustered only: `tailscale serve` forwards TCP `vlpds_peer_port` on the tailnet to the loopback-published peer port. |
-| Verify | `verify.yml` (`vlpds-verify`) | `/xrpc/_health`, then `getClusterStatus` until the lease is valid and every shard is owned; `/tls-check` approves the hostname and refuses an unknown handle; `/.well-known/did.json` is the service DID's; prints the build, feature level, disk cache size and how the previous process ended. |
+| Verify | `verify.yml` (`vlpds-verify`) | `/xrpc/_health`, then `getClusterStatus` until the lease is valid and every shard is owned. `/tls-check` approves the hostname and refuses an unknown handle, and `/.well-known/did.json` is the service DID's. Then it prints the build, feature level, disk cache size and how the previous process ended. |
 
 **Restarts are graceful and only when needed.** The node is recreated only
 when its compose file, a secret file or the image changed (or with
 `-e vlpds_force_restart=true`). Compose sends SIGTERM and waits
-`vlpds_stop_grace_period` (90 s) before SIGKILL; the node hands its shards
+`vlpds_stop_grace_period` (90 s) before SIGKILL. The node hands its shards
 back, fences its own log and exits 0, and the new process (same
 `--node-id`) reclaims them. Peer TLS files are re-read by the running node
 (renewals need no restart). A second run with nothing changed changes
 nothing.
 
-Docker compose rather than systemd: every service in this repo is a
-compose project, and compose gives what vlpds needs (restart on fail-stop
+Docker compose rather than systemd, because compose gives what vlpds needs (restart on fail-stop
 with backoff, SIGTERM + stop timeout, ulimits, per-container
 `net.core.somaxconn`, a memory limit the node sizes its caches from,
 json-file logs Alloy ships).
@@ -54,8 +53,8 @@ json-file logs Alloy ships).
 The node sizes its caches from the container memory limit
 (`docker exec vlpds vlpds --memory-plan` prints the plan). Tiny idles at
 ~0.12 Class A + ~0.41 Class B object-store requests a second (inside R2's
-free tier); the price of its 60 s lease is that a *crash* restart waits
-about one TTL before writing again (a graceful restart takes ~1 s).
+free tier). The price of its 60 s lease is that a restart after a crash
+waits about one TTL before writing again (a graceful restart takes ~1 s).
 
 ## Object store
 
@@ -71,9 +70,11 @@ prefix (`vlpds_s3_prefix`) is one PDS: never point two deployments at it.
 ## First deploy
 
 1. **Bucket**: create it, add the lifecycle rule, make the scoped key pair.
-2. **Image**: build and push one from the repo root (`just docker-push
-   <tag> <registry>/vlpds`, linux/amd64); set `vlpds_image` to that pinned
-   tag.
+2. **Image**: pin a release of `ghcr.io/jazware/vlpds` (`:1.0.0`, never
+   `:latest` or `:main`) in `vlpds_image`. To run your own build, build it
+   from the repo root with `just docker-build <registry>/vlpds:<tag>` (or
+   `docker buildx build --platform linux/amd64` for another platform), push
+   it and pin that tag.
 3. **Secrets** (the inventory's sops file, mapped onto the role variables in
    its `group_vars`): `openssl rand -hex 32` for `vlpds_jwt_secret`,
    `vlpds_admin_token`, `vlpds_internal_token` (three different values) and a
@@ -81,8 +82,9 @@ prefix (`vlpds_s3_prefix`) is one PDS: never point two deployments at it.
    `vlpds_gcp_credentials_json` off GCE). Back the KEK up offline: it wraps
    every signing key and is not in the bucket.
 4. **PLC rotation key**: `docker run --rm -i -e VLPDS_KEK <image>
-   --wrap-plc-rotation-key </dev/null` (stdout: the `vw1.…` key for
-   `vlpds_plc_rotation_key`; stderr: its did:key, record it).
+   --wrap-plc-rotation-key </dev/null` prints the `vw1.…` key for
+   `vlpds_plc_rotation_key` on stdout and its did:key on stderr. Record the
+   did:key.
 5. **DNS**: `A` for the hostname and `*.<handle domain>`. Prefer one wildcard
    certificate (`vlpds_caddy_wildcard_dns: cloudflare` +
    `vlpds_cloudflare_dns_token`) over per-handle on-demand ones.
@@ -97,10 +99,12 @@ prefix (`vlpds_s3_prefix`) is one PDS: never point two deployments at it.
 
 ## Upgrades and rollback
 
-A lone node means every restart is a 5-30 s outage (SIGTERM, shard close,
-start, replay). Set `vlpds_image` to the new tag and run `--tags
+A lone node means every restart is a short outage. The graceful stop takes
+well under a second, the new process takes its first write ~1.3 s after it
+starts, and Caddy retries the connection for up to 10 s in between
+(`docs/operations/upgrades.md`). Set `vlpds_image` to the new tag and run `--tags
 vlpds-deploy,vlpds-verify`. Until `vlpds admin cluster finalize --level L+1`
-a rollback is a redeploy of the previous tag; after it, forward fixes only.
+a rollback is a redeploy of the previous tag. After it, only forward fixes work.
 RUNBOOK "Rolling upgrade, finalize, rollback" has the details. In a cluster
 `playbooks/vlpds.yml` restarts one node at a time (`serial: 1`).
 
@@ -117,7 +121,7 @@ first. The knobs only matter with it on, and empty keeps vlpds' default:
 | `vlpds_spaces` | `--spaces` | `false` |
 | `vlpds_space_repo_max_records` | `--space-repo-max-records` | empty (vlpds: 100000) |
 | `vlpds_space_oplog_retention` | `--space-oplog-retention` | empty (vlpds: `7d`, `off` keeps all) |
-| `vlpds_max_import_mb` | `--max-import-mb` | empty (vlpds: 1024; Caddy's importRepo cap is this + 64 MiB) |
+| `vlpds_max_import_mb` | `--max-import-mb` | empty (vlpds: 1024, and Caddy's importRepo cap is this + 64 MiB) |
 
 Turning it on or off is a graceful restart. With it off again, space-only
 blobs stay private and the space data stays in the bucket.
@@ -135,17 +139,17 @@ repo stand in for a lexicon's DNS authority, which could widen OAuth grants.
 gets them:
 
 - `--peer-listen 0.0.0.0:2584` in the container, published on
-  `127.0.0.1:vlpds_peer_host_port`; `tailscale serve` forwards
-  `<tailnet address>:vlpds_peer_port` to it (TLS passes through; the peer
+  `127.0.0.1:vlpds_peer_host_port`. `tailscale serve` forwards
+  `<tailnet address>:vlpds_peer_port` to it. TLS passes through, the peer
   port is never on a public interface, and Docker never has to bind a
-  tailnet address at boot).
+  tailnet address at boot.
 - `--advertise-url https://<vlpds_peer_host>:<vlpds_peer_port>`:
   `vlpds_peer_host` is the node's tailnet IPv4 (a DNS name works only if
   the containers can resolve it).
 - `--peer-tls-dir /run/vlpds/peer-tls`: `ca.crt` (`vlpds_peer_tls_ca_cert`),
   `<node id>.crt` (`vlpds_peer_tls_cert`) and `<node id>.key`
   (`vlpds_peer_tls_key`, a secret) from `vlpds admin tls ca` / `tls issue
-  --node-id <vlpds_node_id> --host <vlpds_peer_host>`; the CA key stays
+  --node-id <vlpds_node_id> --host <vlpds_peer_host>`. The CA key stays
   offline.
 
 Every node needs the same bucket, prefix, jwt/admin/internal tokens, KEK (or
@@ -153,7 +157,7 @@ KMS key) and PLC rotation key, and its own `vlpds_node_id` (the inventory
 hostname by default). The tailnet policy must allow node-to-node TCP on the
 peer port. `playbooks/vlpds.yml` refuses to run two enabled nodes without
 clustering, and skips nodes with `vlpds_node_enabled: false`. Turning
-clustering on is a graceful restart of each node; the join and
+clustering on is a graceful restart of each node. The join and
 decommission steps are in `docs/operations/scaling-and-clustering.md`
 ("With the Ansible role").
 
@@ -165,7 +169,7 @@ before DNS points at it.
 
 vlpds serves handles under more domains than `vlpds_handle_domain` once an
 operator adds them at runtime (`vlpds admin handle-domain add <domain>` or the
-console's Handle domains page). Ansible doesn't push that set. It only gets
+console's Domains & invites page). Ansible doesn't push that set. It only gets
 Caddy the certificates:
 
 - On-demand mode (`vlpds_caddy_wildcard_dns: ""`) needs only DNS. The site
@@ -178,19 +182,19 @@ Caddy the certificates:
 ## Monitoring
 
 - **Metrics**: `roles/alloy/templates/vlpds-monitoring.alloy.j2` scrapes
-  `127.0.0.1:9583` as `job="vlpds"`, `instance=<node id>`; remote_write adds
+  `127.0.0.1:9583` as `job="vlpds"`, `instance=<node id>`, and remote_write adds
   `cluster=<deploy_env>`.
 - **Alerts**: `ops/alerts.yml`, for Prometheus or vmalert on your
-  monitoring stack; scope them with a `cluster` matcher if other vlpds
+  monitoring stack. Scope them with a `cluster` matcher if other vlpds
   instances (bench nodes) report to the same place.
 - **Dashboards**: `vlpds dashboards --out DIR --datasource-uid <uid>`
   writes both, bound to your Grafana's Prometheus, for file provisioning
   (without `--datasource-uid`: import-ready, as in
   `bench/obs/grafana/dashboards/`).
-- **Logs**: JSON lines on stderr; Loki `{container="vlpds"} | json`.
+- **Logs**: JSON lines on stderr, read in Loki with `{container="vlpds"} | json`.
 
 ## Backups
 
 Not built (DESIGN.md "Backups and restore"). The bucket's durability is all
-there is; back up by hand, offline, what is not in the bucket: the KEK (or
+there is. Back up by hand, offline, what isn't in the bucket: the KEK (or
 KMS access), the wrapped PLC rotation key and the sops files' keys.

@@ -76,8 +76,8 @@ edges:
 - Where the reference PDS has a setting, its `PDS_*` variable works as a fallback
   (`PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX`, `PDS_EMAIL_SMTP_URL`, `PDS_INVITE_INTERVAL`, ...), so
   an existing `pds.env` mostly carries over.
-- Some settings live in the bucket. The shard layout, the active feature level, the rate-limit config
-  and the relay list are cluster-wide, and you change them at runtime from the
+- Some settings live in the bucket. The shard layout, the active feature level, the rate-limit config,
+  the relay list and the added handle domains are cluster-wide, and you change them at runtime from the
   [admin console](admin-console.md) or `vlpds admin`. A crawler list set in the console overrides
   `--crawlers` until it's reset.
 - To check a config, run `vlpds --memory-plan` with the same flags. It prints the memory plan as JSON
@@ -257,19 +257,19 @@ has the flags the sections above don't cover.
 | Group | Flags |
 |---|---|
 | Identity | `--public-url`, `--handle-domain`, `--service-did` (`did:web:<hostname>`), `--node-id` (default `single`, keep it stable across restarts) |
-| Listeners | `--listen` (`0.0.0.0:2583`), `--metrics-listen` (`127.0.0.1:9583`, or `app` for the app port), `--listen-backlog`, `--admin-listen` (unset: none; the console for operators only) |
+| Listeners | `--listen` (`0.0.0.0:2583`), `--metrics-listen` (`127.0.0.1:9583`, or `app` for the app port), `--listen-backlog`, `--admin-listen` (unset by default: a second listener for operators only, see below) |
 | Operator sign-in | `--admin-proxy-header`, `--admin-proxy-from`, `--admin-operators`: a proxy in front of `--admin-listen` names the operator, and the token form is skipped. All three or none. See [Sign-in through a proxy](admin-console.md#sign-in-through-a-proxy). |
 | Peers (clusters only) | `--peer-listen`, `--peer-tls-dir`, `--advertise-url` (all three or none, see [Scaling and clustering](scaling-and-clustering.md#peer-tls)), `--peer-connections` |
 | Object store | `--s3-endpoint`, `--s3-bucket`, `--s3-region`, `--s3-access-key[-file]`, `--s3-secret-key[-file]`, `--prefix`, `--store-inflight` (1,024), `--log-store-inflight` (256) |
 | Secrets | `--jwt-secret[-file]`, `--admin-token[-file]`, `--internal-token[-file]` (32+ bytes, all different) |
-| Keys | `--kek[-file]`, `--kek-old[-file]`, `--gcp-kms-key`, `--gcp-kms-old-key`, `--gcp-credentials-file`, `--kms-concurrency` (see [KEK and key rotation](kek-and-key-rotation.md)) |
+| Keys | `--kek[-file]`, `--kek-old[-file]`, `--gcp-kms-key`, `--gcp-kms-old-key`, `--gcp-credentials-file`, `--gcp-kms-endpoint`, `--kms-concurrency` (see [KEK and key rotation](kek-and-key-rotation.md)) |
 | Vault KEK | `--vault-addr`, `--vault-transit-key` (`<mount>/<key>`), `--vault-transit-old-key`, `--vault-namespace`, `--vault-ca-file`, and one auth method: `--vault-token-file`, `--vault-approle-role-id[-file]` with `--vault-approle-secret-id-file` and `--vault-approle-mount` (`approle`), or `--vault-k8s-role` with `--vault-k8s-mount` (`kubernetes`) and `--vault-k8s-jwt-file` (see [Vault Transit](kek-and-key-rotation.md#vault-transit)). `--vault-ca-only` trusts only that CA. `--vault-addr` must be https (http only to loopback or in dev mode). A node refuses to start if Vault answers its startup check with a 403/404 or refuses the login, and starts anyway if Vault is down or sealed, unless its PLC rotation key file is Vault-wrapped. |
 | PLC | `--plc-url`, `--plc-mode` (`auto`, `directory`, `unregistered`), `--plc-rotation-key-file`, `--plc-rotation-key-old[-file]`, `--plc-recovery-did-key`, and the one-shot `--wrap-plc-rotation-key` and `--generate-did-key` |
 | Services | `--appview`, `--report-service` (`<url>,<did>`), `--bsky-app-view-cdn-url-pattern`, `--mod-service-did` |
 | Spaces | `--spaces` (off): AT Protocol Spaces, permissioned data, tracking the reference's alpha. With it on, `com.atproto.space.*` and `com.atproto.simplespace.*` are served here and never proxied. `--space-repo-max-records` (100,000) caps one account's repo in one space, and `--space-oplog-retention` (`7d`) is how long `listRepoOps` keeps ops. See [Operating Spaces](../spaces/operating.md). |
 | Relays | `--crawlers` (`bsky.network`), `--crawl-interval-secs` (1,200). See [Relays and crawling](relays-and-crawling.md). `--asn-lookup` (`bgp.tools`) looks up the AS of each firehose subscriber for the console's Firehose page. It sends subscriber addresses to bgp.tools' whois, batched and cached for a day. `off` turns it off. |
 | Accounts | `--invite-required`, `--invite-interval-ms`, `--invite-epoch-ms`, `--trusted-device-days` (30, 0 turns "Trust this browser" off), `--resolve-lexicons`, `--privacy-policy-url`, `--terms-of-service-url`, `--contact-email-address`, `--delete-after` (on) and `--delete-after-min-hold-days` (3) (see [Scheduled deletion](email-and-moderation.md#scheduled-deletion)) |
-| Email | `--email-smtp-url[-file]` or `--email-api-url` with `--email-api-token[-file]`, `--email-from-address`, `--email-brand-name` and the other branding flags, `--moderation-email-smtp-url[-file]` or `--moderation-email-api-url` (`--moderation-email-api-token[-file]`), `--moderation-email-address` (see [Email and moderation](email-and-moderation.md)) |
+| Email | `--email-smtp-url[-file]` or `--email-api-url` with `--email-api-token[-file]`, `--email-from-address`, `--email-brand-name` and the other branding flags, `--moderation-email-smtp-url[-file]` or `--moderation-email-api-url` (`--moderation-email-api-token[-file]`), `--moderation-email-address`, and `--mail-daily-budget` (900 account mails per UTC day, cluster-wide). See [Email and moderation](email-and-moderation.md). |
 | SlateDB | `--sst-compression` (`zstd`), `--compaction-polling` (`adaptive`), `--compaction-poll` (30 s), `--slatedb-gc-min-age` (10 min), `--slatedb-checkpoint-lifetime` (1 h), `--slatedb-detach-interval` |
 | Resharding | `--reshard-split-mb`, `--reshard-split-writes`, `--reshard-gc-grace` (1 h), `--forced-detach-after` (5 min), `--full-compaction-every` (off) |
 | Takeover | `--preload-recent` (2,048 repos per shard), `--forwarded-write-start-ms` (1,000), `--retry-unapplied-writes` (on), `--checkpoint-stagger` (on) |

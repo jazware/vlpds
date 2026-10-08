@@ -35,7 +35,7 @@ data is protected by the bucket's own durability and whatever you turn on at the
 
 All of a deployment's state is under one prefix of one bucket: `log/` (segments), `state/`
 (SlateDB per shard), `blob/`, `assign/`, `nodes/`, `writers/`, `retain/`, `cluster/`, `handle/`,
-`email/` and `config/`. A node's `--cache-dir` only holds caches and the exit-state file, and
+`email/`, `config/` and the rest of the [bucket layout](object-store.md#bucket-layout). A node's `--cache-dir` only holds caches and the exit-state file, and
 nothing in it has to survive.
 
 | Protection | What it covers |
