@@ -5,10 +5,10 @@
 #
 # Assumptions (edit to match the deployment):
 # - Nodes are scraped under job="vlpds" (bench/obs/prometheus/prometheus.yml
-#   and deploy/ansible/roles/alloy/templates/vlpds-bench-monitoring.alloy.j2
-#   both use that name). The bench scrape configs list ~30 ports that are
-#   usually down: load these rules only against a Prometheus that scrapes the
-#   real cluster's nodes, or VlpdsNodeDown fires for every idle bench port.
+#   and deploy/ansible/roles/alloy/templates/vlpds-monitoring.alloy.j2 both
+#   use that name). The bench scrape config lists ~30 ports that are usually
+#   down: load these rules only against a Prometheus that scrapes the real
+#   cluster's nodes, or VlpdsNodeDown fires for every idle bench port.
 # - One cluster per Prometheus. With several, add a cluster label to the
 #   targets and to every `sum(...)` / `count(...)` below (`by (cluster)`).
 # - The lease alerts scale with each node's configured --lease-ttl-ms, which

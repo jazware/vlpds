@@ -242,7 +242,7 @@ S3 latency.
  },
  "mst": {
   "real": {
-   "did": "did:plc:aan2c377qd2ldzptjsjvbmoq",
+   "did": "did:plc:realzzzzzzzzzzzzzzzzzzzz",
    "node_index_alloc_bytes": 8484864,
    "node_index_build_s": 0.011,
    "records": 254627,

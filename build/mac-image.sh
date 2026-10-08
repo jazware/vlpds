@@ -14,7 +14,14 @@
 # (cargo features, e.g. profiling), CARGO_BUILD_JOBS, PUSH=0 (load only).
 set -euo pipefail
 IMAGE=${IMAGE:-ghcr.io/jazware/vlpds}
-. "$(dirname "$0")/../../../scripts/vcs.sh"
+vcs="$(dirname "$0")/../../../scripts/vcs.sh"
+if [ -f "$vcs" ]; then
+  . "$vcs"
+else
+  # the public repo: a git clone, without mono's scripts/
+  vcs_short() { git rev-parse --short=12 HEAD; }
+  vcs_delta_git_sha() { :; }
+fi
 cd "$(dirname "$0")/.."
 tag=${1:-$(vcs_short)}
 git_sha=$(vcs_delta_git_sha)
