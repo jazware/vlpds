@@ -365,7 +365,7 @@ fn rows(
 pub fn import_rows(
     did: &str,
     gen: u64,
-    rev: vlsync_atproto::tid::Tid,
+    rev: vlatproto::tid::Tid,
     records: Vec<ImportedRecord>,
     nodes: Vec<(Cid, Arc<[u8]>)>,
 ) -> (Vec<vlsync_store::segment::Mutation>, Vec<(Vec<u8>, Box<str>)>, Vec<String>) {

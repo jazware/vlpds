@@ -13,8 +13,8 @@ use crate::state;
 use slatedb::DbReadOps;
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
-use vlsync_atproto::cid::{Cid, CODEC_DAG_CBOR};
-use vlsync_atproto::mst::{Entry, LeafEncoder, MstError, Node, MAX_DEPTH};
+use vlatproto::cid::{Cid, CODEC_DAG_CBOR};
+use vlatproto::mst::{Entry, LeafEncoder, MstError, Node, MAX_DEPTH};
 
 type Result<T> = std::result::Result<T, MstError>;
 
@@ -613,7 +613,7 @@ async fn scan_nodes<R: DbReadOps + Sync + ?Sized>(
         let Ok(digest) = <[u8; 32]>::try_from(&kv.key[prefix.len()..]) else { continue };
         let b = &kv.value[..];
         // a node misplaced by a bad first key only changes what is let go
-        let h1 = split && vlsync_atproto::mst::first_key_height(b) == Some(1);
+        let h1 = split && vlatproto::mst::first_key_height(b) == Some(1);
         if h1 && out.h1_dropped {
             continue;
         }
@@ -837,7 +837,7 @@ mod tests {
         for (c, b) in &nodes {
             db.put(state::mst_node_key(did, 0, c), b).await.unwrap();
         }
-        let h1 = nodes.values().filter(|b| vlsync_atproto::mst::first_key_height(b) == Some(1)).count();
+        let h1 = nodes.values().filter(|b| vlatproto::mst::first_key_height(b) == Some(1)).count();
         assert!(h1 > nodes.len() / 2, "{h1} of {} nodes at height 1", nodes.len());
         let mem = MemStore { records: recs.iter().cloned().collect(), ..Default::default() };
         let opts = read_ahead_opts();

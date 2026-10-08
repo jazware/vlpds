@@ -80,9 +80,9 @@ fn admin_ok(app: &App, headers: &HeaderMap) -> bool {
         return false;
     };
     if let Some(t) = h.strip_prefix("Bearer ") {
-        return vlsync_atproto::xrpc::token_eq(&app.admin_token, t);
+        return vlatproto::xrpc::token_eq(&app.admin_token, t);
     }
-    h.strip_prefix("Basic ").is_some_and(|b| vlsync_atproto::xrpc::basic_admin_ok(b, &app.admin_token))
+    h.strip_prefix("Basic ").is_some_and(|b| vlatproto::xrpc::basic_admin_ok(b, &app.admin_token))
 }
 
 fn text(status: StatusCode, msg: impl Into<String>) -> Response {

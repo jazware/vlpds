@@ -59,7 +59,7 @@ fn node_id(app: &App) -> String {
 }
 
 fn now_ms() -> u64 {
-    vlsync_atproto::tid::now_micros() / 1000
+    vlatproto::tid::now_micros() / 1000
 }
 
 fn bad(message: impl Into<String>) -> XrpcError {
@@ -473,7 +473,7 @@ fn query_pairs(q: &AccountsQ) -> Vec<(&'static str, String)> {
 }
 
 fn row_rev(r: &J) -> u64 {
-    r["rev"].as_str().and_then(vlsync_atproto::tid::Tid::parse).map_or(0, |t| t.0)
+    r["rev"].as_str().and_then(vlatproto::tid::Tid::parse).map_or(0, |t| t.0)
 }
 
 async fn list_accounts(State(app): AppState, Auth(creds): Auth, Query(q): Query<AccountsQ>) -> XResult<Json<J>> {
@@ -879,17 +879,17 @@ struct RepoOpsQ {
 /// Events a listRepoOps call looks at before giving up on finding `limit`.
 const OPS_SCAN_BUDGET: usize = 2_000_000;
 
-fn cid_str(v: Option<&vlsync_atproto::cbor::ValueRef>) -> Option<String> {
+fn cid_str(v: Option<&vlatproto::cbor::ValueRef>) -> Option<String> {
     match v {
-        Some(vlsync_atproto::cbor::ValueRef::Link(c)) => Some(c.to_string()),
+        Some(vlatproto::cbor::ValueRef::Link(c)) => Some(c.to_string()),
         _ => None,
     }
 }
 
 /// The account's own events in the firehose ring, as the console lists them.
-fn decode_event(seq: i64, kind: vlsync_firehose::firehose::FrameKind, frame: &[u8]) -> Option<J> {
-    use vlsync_atproto::cbor::ValueRef;
-    use vlsync_firehose::firehose::FrameKind;
+fn decode_event(seq: i64, kind: vlatproto::frame::FrameKind, frame: &[u8]) -> Option<J> {
+    use vlatproto::cbor::ValueRef;
+    use vlatproto::frame::FrameKind;
     let (_, n) = ValueRef::decode_prefix(frame).ok()?;
     let body = ValueRef::decode(&frame[n..]).ok()?;
     let s = |k: &str| body.get(k).and_then(|v| v.as_str()).map(String::from);
@@ -947,7 +947,7 @@ async fn list_repo_ops(State(app): AppState, Auth(creds): Auth, Query(q): Query<
             for (seq, frame) in b.events.iter().rev() {
                 scanned += 1;
                 oldest = Some(*seq);
-                let m = vlsync_firehose::firehose::frame_meta(frame);
+                let m = vlatproto::frame::frame_meta(frame);
                 if m.did == Some(target) {
                     if let Some(e) = decode_event(*seq, m.kind, frame) {
                         out.push(e);

@@ -11,8 +11,8 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures::StreamExt;
 use serde::de::DeserializeOwned;
-use vlsync_atproto::cbor::JsonValue;
-use vlsync_atproto::syntax;
+use vlatproto::cbor::JsonValue;
+use vlatproto::syntax;
 
 const JSON_LIMIT: usize = 150 * 1024;
 const RECORD_JSON_LIMIT: usize = 1_000_000;

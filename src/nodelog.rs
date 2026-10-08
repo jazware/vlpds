@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use vlsync_atproto::events::Frame;
+use vlatproto::events::Frame;
 use vlsync_firehose::log::{check_header, segment_path, seq_floor, LogBatch, Watermark};
 use vlsync_store::segment::{self, LogObject, Mutation, SegmentBuilder};
 use vlsync_store::slots::ShardId;
@@ -429,7 +429,7 @@ impl SegmentFeed {
     fn durable(&self, ordinal: u64, put_secs: f64, stored_bytes: usize) {
         let mut r = self.ring.lock();
         if let Some(s) = r.iter_mut().rev().find(|s| s.ordinal == ordinal) {
-            s.durable_at = Some(vlsync_atproto::tid::now_micros() / 1000);
+            s.durable_at = Some(vlatproto::tid::now_micros() / 1000);
             s.put_ms = Some(put_secs * 1000.0);
             s.stored_bytes = stored_bytes as u64;
         }
@@ -477,7 +477,7 @@ impl NodeLog {
         inflight: usize,
         merger_tx: mpsc::UnboundedSender<LogBatch>,
     ) -> Arc<NodeLog> {
-        let wm = Arc::new(Watermark::new(cfg.writer, seq_floor(vlsync_atproto::tid::now_micros())));
+        let wm = Arc::new(Watermark::new(cfg.writer, seq_floor(vlatproto::tid::now_micros())));
         let (tx, rx) = mpsc::channel(64 * 1024);
         let (fin_tx, fin_rx) = mpsc::channel(4);
         let live = LiveRing::new(DEFAULT_LIVE_RING_BYTES);
@@ -824,7 +824,7 @@ async fn run_sequencer(
                 last_seq: last_seq.to_string(),
                 bytes: o.seg.len() as u64,
                 stored_bytes: 0,
-                sealed_at: vlsync_atproto::tid::now_micros() / 1000,
+                sealed_at: vlatproto::tid::now_micros() / 1000,
                 durable_at: None,
                 put_ms: None,
             });

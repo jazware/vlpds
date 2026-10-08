@@ -318,7 +318,7 @@ pub(super) async fn create_invites(
             return Err(invalid_request(format!("{d} is not a served handle domain")));
         }
     }
-    let now = vlsync_atproto::events::now_rfc3339();
+    let now = vlatproto::events::now_rfc3339();
     for code in codes {
         let inv = InviteCode {
             code: code.clone(),
@@ -403,7 +403,7 @@ pub(super) async fn release_invite_use(app: &App, claim: InviteClaim) {
 }
 
 pub(super) async fn record_invite_use(app: &App, claim: &InviteClaim, did: &str) -> XResult<()> {
-    let used_at = vlsync_atproto::events::now_rfc3339();
+    let used_at = vlatproto::events::now_rfc3339();
     let found = update_invite(app, &claim.code, |inv| {
         // a retried request mustn't list the account twice
         if inv.uses.iter().any(|u| u.used_by == did) {
@@ -472,7 +472,7 @@ pub(super) async fn set_subject_takedown(app: &App, did: &str, name: &str, val: 
 /// (`at://{authority}/space/{type}/{skey}/{did}/{collection}/{rkey}`)
 /// `space/{sid}/{collection}/{rkey}`.
 pub(super) fn record_takedown_name(uri: &str, did: &str) -> XResult<String> {
-    if let Some(u) = vlsync_atproto::syntax::parse_space_uri(uri) {
+    if let Some(u) = vlatproto::syntax::parse_space_uri(uri) {
         let (author, collection, rkey) = u.record.ok_or_else(|| invalid_request("not a space record uri"))?;
         if author != did {
             return Err(invalid_request("invalid at-uri"));
@@ -485,7 +485,7 @@ pub(super) fn record_takedown_name(uri: &str, did: &str) -> XResult<String> {
 
 /// The account a record subject's URI names: a space record's author.
 fn record_uri_did(uri: &str) -> Option<&str> {
-    if let Some(u) = vlsync_atproto::syntax::parse_space_uri(uri) {
+    if let Some(u) = vlatproto::syntax::parse_space_uri(uri) {
         return u.record.map(|(author, _, _)| author);
     }
     uri.strip_prefix("at://").and_then(|r| r.split('/').next()).filter(|d| d.starts_with("did:"))
@@ -870,7 +870,7 @@ fn parse_subject(s: &J) -> XResult<Subject> {
         "com.atproto.admin.defs#repoRef" => Ok(Subject::Repo(field("did")?)),
         "com.atproto.repo.strongRef" => {
             let uri = field("uri")?;
-            if let Some(u) = vlsync_atproto::syntax::parse_space_uri(&uri).filter(|u| u.record.is_none()) {
+            if let Some(u) = vlatproto::syntax::parse_space_uri(&uri).filter(|u| u.record.is_none()) {
                 let did = u.authority.to_string();
                 return Ok(Subject::Space { uri: format!("at://{did}/space/{}/{}", u.space_type, u.skey), did });
             }
@@ -1342,7 +1342,7 @@ const BULK_EXISTS_CONCURRENCY: usize = 64;
 async fn bulk_create(State(app): AppState, headers: HeaderMap, Json(inp): Json<BulkCreateIn>) -> XResult<Json<J>> {
     use futures::StreamExt;
     let tok = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "));
-    if !tok.is_some_and(|t| vlsync_atproto::xrpc::token_eq(&app.admin_token, t)) {
+    if !tok.is_some_and(|t| vlatproto::xrpc::token_eq(&app.admin_token, t)) {
         return Err(XrpcError::auth("admin token required"));
     }
     if !(app.config.dev_mode || app.config.allow_bulk_create) {
@@ -1405,7 +1405,7 @@ async fn bulk_create(State(app): AppState, headers: HeaderMap, Json(inp): Json<B
             signing_pubkey,
             // a request's accounts share one hash (Argon2id is ~20 ms each)
             password_hash: password_hash.clone(),
-            created_at: vlsync_atproto::events::now_rfc3339(),
+            created_at: vlatproto::events::now_rfc3339(),
             ..Default::default()
         };
         let mut recs = Vec::with_capacity(n as usize);
@@ -1463,7 +1463,7 @@ async fn bulk_password_hash(password: Option<String>) -> XResult<String> {
         None => return Ok(BULK_RANDOM_PASSWORD_HASH.clone()),
     };
     if let Some((p, h)) = LAST.lock().as_ref() {
-        if vlsync_atproto::xrpc::token_eq(p, &pw) {
+        if vlatproto::xrpc::token_eq(p, &pw) {
             return Ok(h.clone());
         }
     }
@@ -1533,12 +1533,8 @@ async fn rotate_plc_keys(
     let inp = body.map(|Json(b)| b).unwrap_or_default();
     let dry = inp.dry_run;
     let (parts, coverage) = scan_set(&app, &inp.shards);
-    let dids: Vec<String> = accounts_of(&parts)
-        .await?
-        .into_iter()
-        .map(|a| a.did)
-        .filter(|d| vlsync_atproto::plc::valid_plc_did(d))
-        .collect();
+    let dids: Vec<String> =
+        accounts_of(&parts).await?.into_iter().map(|a| a.did).filter(|d| vlatproto::plc::valid_plc_did(d)).collect();
     let accounts = dids.len();
     let results: Vec<(String, Result<crate::plc::KeyRotation, crate::plc::PlcError>)> = futures::stream::iter(dids)
         .map(|did| {
@@ -1640,12 +1636,8 @@ async fn ensure_recovery_key(
     let period = std::time::Duration::from_secs_f64(1.0 / per_second);
     let next = Arc::new(tokio::sync::Mutex::new(tokio::time::Instant::now()));
     let (parts, coverage) = scan_set(&app, &inp.shards);
-    let dids: Vec<String> = accounts_of(&parts)
-        .await?
-        .into_iter()
-        .map(|a| a.did)
-        .filter(|d| vlsync_atproto::plc::valid_plc_did(d))
-        .collect();
+    let dids: Vec<String> =
+        accounts_of(&parts).await?.into_iter().map(|a| a.did).filter(|d| vlatproto::plc::valid_plc_did(d)).collect();
     let accounts = dids.len();
     let results: Vec<(String, Result<crate::plc::RecoveryKeyChange, crate::plc::PlcError>)> =
         futures::stream::iter(dids)

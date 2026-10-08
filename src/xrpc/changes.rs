@@ -77,7 +77,7 @@ pub struct Changes {
 }
 
 pub fn now_ms() -> u64 {
-    vlsync_atproto::tid::now_micros() / 1000
+    vlatproto::tid::now_micros() / 1000
 }
 
 impl Changes {

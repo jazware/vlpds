@@ -692,7 +692,7 @@ mod tests {
                 let (atx, arx) = tokio::sync::oneshot::channel();
                 let e = nodelog::LogEntry {
                     shard: ShardId(3),
-                    frames: vec![vlsync_atproto::events::Frame {
+                    frames: vec![vlatproto::events::Frame {
                         prefix: format!("e{i}").into_bytes(),
                         suffix: Vec::new(),
                         derived_muts: 0,

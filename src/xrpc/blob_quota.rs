@@ -224,8 +224,7 @@ async fn sync_marker(app: &App, did: &str, was_over: bool, u: &Usage, max_bytes:
     }
     let path = marker_path(app, did);
     let r = if u.over {
-        let body =
-            json!({"did": did, "bytes": u.bytes, "limit": max_bytes, "at": vlsync_atproto::events::now_rfc3339()});
+        let body = json!({"did": did, "bytes": u.bytes, "limit": max_bytes, "at": vlatproto::events::now_rfc3339()});
         app.store.raw.put(&path, PutPayload::from(to_json_bytes(&body))).await.map(|_| ())
     } else {
         match app.store.raw.delete(&path).await {

@@ -188,7 +188,7 @@ impl Upload<'_> {
                 }
             }
         }
-        let cid = Cid { codec: vlsync_atproto::cid::CODEC_RAW, digest: hasher.finalize().into() };
+        let cid = Cid { codec: vlatproto::cid::CODEC_RAW, digest: hasher.finalize().into() };
         Ok((cid, size))
     }
 
@@ -520,9 +520,7 @@ async fn list_blobs(
 ) -> XResult<Json<J>> {
     let since = match q.since.as_deref() {
         Some(s) => Some(
-            vlsync_atproto::tid::Tid::parse(s)
-                .ok_or_else(|| XrpcError::bad("InvalidRequest", "since must be a TID"))?
-                .0,
+            vlatproto::tid::Tid::parse(s).ok_or_else(|| XrpcError::bad("InvalidRequest", "since must be a TID"))?.0,
         ),
         None => None,
     };

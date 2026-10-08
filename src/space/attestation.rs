@@ -9,7 +9,7 @@
 
 use super::token::{self, TokenType};
 use crate::xrpc::XResult;
-use vlsync_atproto::xrpc::XrpcError;
+use vlatproto::xrpc::XrpcError;
 
 fn invalid(m: impl Into<String>) -> XrpcError {
     XrpcError::bad("InvalidClientAttestation", m)
@@ -41,7 +41,7 @@ pub async fn verify(app: &crate::xrpc::App, attestation: &str, aud: &str, routin
     if !signed {
         return Err(bad());
     }
-    let now = vlsync_atproto::tid::now_micros() as i64 / 1_000_000;
+    let now = vlatproto::tid::now_micros() as i64 / 1_000_000;
     t.check(now, Some(aud), Some(&client_id)).map_err(|_| bad())?;
     // the signature first: a forged token never spends a jti
     let key = format!("space-attestation:{client_id}:{}", t.claims.jti);

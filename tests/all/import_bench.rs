@@ -16,14 +16,14 @@ use crate::common::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use vlsync_atproto::cbor::key_cmp;
+use vlatproto::cbor::key_cmp;
 
 fn env(k: &str) -> String {
     std::env::var(k).unwrap_or_else(|_| panic!("{k} unset"))
 }
 
 fn gen(dir: &str, n: usize) {
-    let mut tree = vlsync_atproto::mst::Tree::new();
+    let mut tree = vlatproto::mst::Tree::new();
     let mut blocks: Vec<(Cid, Vec<u8>)> = Vec::with_capacity(n + n / 3);
     for i in 0..n {
         let (coll, mut m) = if i % 2 == 0 {
@@ -80,14 +80,14 @@ fn gen(dir: &str, n: usize) {
     let root = Cid::dag_cbor(&commit);
     blocks.sort_by_key(|(c, _)| c.to_bytes());
     let mut cid = Vec::new();
-    vlsync_atproto::car::write_header(&mut cid, &root);
-    vlsync_atproto::car::write_block(&mut cid, &root, &commit);
+    vlatproto::car::write_header(&mut cid, &root);
+    vlatproto::car::write_block(&mut cid, &root, &commit);
     for (c, b) in &blocks {
-        vlsync_atproto::car::write_block(&mut cid, c, b);
+        vlatproto::car::write_block(&mut cid, c, b);
     }
     std::fs::write(format!("{dir}/{n}-cid.car"), &cid).unwrap();
     let map: std::collections::HashMap<Cid, Vec<u8>> = blocks.into_iter().collect();
-    let stream = vlsync_atproto::car_order::write_car((root, &commit), data, &map).unwrap();
+    let stream = vlatproto::car_order::write_car((root, &commit), data, &map).unwrap();
     std::fs::write(format!("{dir}/{n}-stream.car"), &stream).unwrap();
     println!("wrote {} and {} bytes", cid.len(), stream.len());
 }

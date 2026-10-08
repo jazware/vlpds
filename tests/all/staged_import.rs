@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use vlatproto::cbor::{key_cmp, Value};
 use vlpds::xrpc::staged_import as si;
-use vlsync_atproto::cbor::{key_cmp, Value};
 
 const CAR: &str = "application/vnd.ipld.car";
 /// Several of the parse's batches (4,096 records), likes of the same few
@@ -82,7 +82,7 @@ fn record(i: usize, tag: &str) -> (String, Vec<u8>) {
 
 /// A repo of `n` records in the streamable order, and its contents.
 fn repo_car(n: usize, tag: &str) -> (Vec<u8>, Contents) {
-    let mut tree = vlsync_atproto::mst::Tree::new();
+    let mut tree = vlatproto::mst::Tree::new();
     let mut blocks = Vec::new();
     let mut contents = Contents::new();
     for i in 0..n {
@@ -104,7 +104,7 @@ fn repo_car(n: usize, tag: &str) -> (Vec<u8>, Contents) {
     f.sort_by(|a, b| key_cmp(&a.0, &b.0));
     let commit = Value::Map(f).to_cbor();
     let map: std::collections::HashMap<Cid, Vec<u8>> = blocks.into_iter().collect();
-    (vlsync_atproto::car_order::write_car((Cid::dag_cbor(&commit), &commit), data, &map).unwrap(), contents)
+    (vlatproto::car_order::write_car((Cid::dag_cbor(&commit), &commit), data, &map).unwrap(), contents)
 }
 
 async fn import(s: &TestServer, a: &TestAccount, car: Vec<u8>) -> Resp {

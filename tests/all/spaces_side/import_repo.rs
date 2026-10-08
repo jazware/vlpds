@@ -230,13 +230,13 @@ struct Fixture {
     did: String,
     space: String,
     rev: String,
-    key: vlsync_atproto::crypto::Keypair,
+    key: vlatproto::crypto::Keypair,
 }
 
 fn fixture() -> Fixture {
     let j: J = serde_json::from_str(EXPORT_JSON).unwrap();
-    let key = vlsync_atproto::crypto::Keypair::from_bytes(&hex::decode(j["privateKeyHex"].as_str().unwrap()).unwrap())
-        .unwrap();
+    let key =
+        vlatproto::crypto::Keypair::from_bytes(&hex::decode(j["privateKeyHex"].as_str().unwrap()).unwrap()).unwrap();
     assert_eq!(key.did_key(), j["didKey"].as_str().unwrap(), "the fixture's key");
     Fixture {
         did: j["did"].as_str().unwrap().into(),
@@ -270,14 +270,14 @@ fn reference_export_verifies_and_reencodes() {
         })
         .collect();
     let mut sorted = want.clone();
-    sorted.sort_by(|a, b| vlsync_atproto::cbor::key_cmp(&a.0, &b.0));
+    sorted.sort_by(|a, b| vlatproto::cbor::key_cmp(&a.0, &b.0));
     let got: Vec<(String, String)> = v.index.iter().map(|(p, c)| (p.clone(), c.to_string())).collect();
     assert_eq!(got, sorted, "the index, in canonical (length-first) order");
     // the blob is named by a record, as a link
     let blob = f.j["blob"]["cid"].as_str().unwrap();
     assert!(v.records.iter().any(|(_, b)| Value::decode(b).unwrap().to_json().to_string().contains(blob)));
 
-    let (roots, blocks) = vlsync_atproto::car::read_car(EXPORT_CAR).unwrap();
+    let (roots, blocks) = vlatproto::car::read_car(EXPORT_CAR).unwrap();
     assert_eq!(commit_block(&v.commit), blocks[0].1, "the commit block re-encodes byte for byte");
     assert_eq!(index_block(&v.index), blocks[1].1, "the index block re-encodes byte for byte");
     let owned: Vec<(Cid, Vec<u8>)> = blocks.iter().map(|(c, b)| (*c, b.to_vec())).collect();
@@ -288,7 +288,7 @@ fn reference_export_verifies_and_reencodes() {
     let key = f.j["didKey"].as_str().unwrap();
     assert!(verify_repo_car(EXPORT_CAR, &f.space, "did:plc:someoneelse2345abcdefgh", key, true).is_err());
     assert!(verify_repo_car(EXPORT_CAR, &format!("{}x", f.space), &f.did, key, true).is_err());
-    let other = vlsync_atproto::crypto::Keypair::generate().did_key();
+    let other = vlatproto::crypto::Keypair::generate().did_key();
     assert!(verify_repo_car(EXPORT_CAR, &f.space, &f.did, &other, true).is_err());
 }
 
@@ -680,7 +680,7 @@ async fn refuses_a_tampered_car() {
     cases.push(("not a CAR", b"not a car at all".to_vec()));
     cases.push(("one root", {
         let all = built.car_with(|_| {});
-        let (_, bl) = vlsync_atproto::car::read_car(&all).unwrap();
+        let (_, bl) = vlatproto::car::read_car(&all).unwrap();
         let owned: Vec<(Cid, Vec<u8>)> = bl.iter().map(|(c, b)| (*c, b.to_vec())).collect();
         write_car(&[built.commit_cid], &owned)
     }));
@@ -706,7 +706,7 @@ async fn refuses_a_bad_signature_or_mac() {
     let key = account_key(s, &o.bob.did).await;
     let b = records(RepoBuilder::new(&o.space, &o.bob.did, &rev_ago(Duration::from_secs(60))), 3);
 
-    let wrong_key = b.build(&vlsync_atproto::crypto::Keypair::generate());
+    let wrong_key = b.build(&vlatproto::crypto::Keypair::generate());
     let mut bad_mac = b.build(&key);
     bad_mac.commit.mac[0] ^= 1;
     bad_mac.commit_block = commit_block(&bad_mac.commit);
@@ -850,8 +850,7 @@ async fn import_verifies_against_the_key_held_at_the_rev() {
     let h = two_hosts().await;
     let old_key = account_key(&h.a, &h.bob.did).await;
     let rev = rev_ago(Duration::from_secs(60));
-    let built =
-        |key: &vlsync_atproto::crypto::Keypair| records(RepoBuilder::new(&h.space, &h.bob.did, &rev), 2).build(key);
+    let built = |key: &vlatproto::crypto::Keypair| records(RepoBuilder::new(&h.space, &h.bob.did, &rev), 2).build(key);
     let b_did = h.b.pds_did().await;
     let sa = service_jwt(&h.bob, &b_did, "com.atproto.server.createAccount").await;
     let arrived = arrive(&h.b, &h.bob.did, sa).await;
@@ -859,7 +858,7 @@ async fn import_verifies_against_the_key_held_at_the_rev() {
     let moved = arrived.oauth(&h.b).await;
     assert_ne!(did_key(&h.b, &h.bob.did).await, old_key.did_key(), "the DID's key rotated");
 
-    let never = built(&vlsync_atproto::crypto::Keypair::generate());
+    let never = built(&vlatproto::crypto::Keypair::generate());
     let r = import_repo(&moved, &h.space, &never.car()).await;
     assert_eq!(r.status, 400, "a key the DID never had: {}", r.text());
     assert_eq!(r.json["error"], json!("InvalidCommit"), "{}", r.text());
@@ -889,7 +888,7 @@ async fn import_over_a_repo_replaces_it() {
     let r = import_repo(&o.bob, &o.space, &b.build(&key).car()).await;
     assert_eq!(r.status, 400, "a rev older than the repo's: {}", r.text());
 
-    let newer = vlsync_atproto::tid::Tid::from_parts(vlsync_atproto::tid::now_micros(), 0).to_string();
+    let newer = vlatproto::tid::Tid::from_parts(vlatproto::tid::now_micros(), 0).to_string();
     let mut b = RepoBuilder::new(&o.space, &o.bob.did, &newer);
     for i in 0..2 {
         b.records.insert(format!("{TEST_COLLECTION}/new{i}"), record_block(&json!({"$type": TEST_COLLECTION, "n": i})));

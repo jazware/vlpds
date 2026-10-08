@@ -1,5 +1,5 @@
 //! Partial, lazily loaded MSTs (DESIGN.md "Partial MSTs"): an
-//! [`mst::Tree`](vlsync_atproto::mst::Tree) whose unvisited subtrees stay unloaded
+//! [`mst::Tree`](vlatproto::mst::Tree) whose unvisited subtrees stay unloaded
 //! (`Entry::Child { node: None, cid }`). Nodes of height >= `persist_min`
 //! are persisted content-addressed and read by the CID their parent links
 //! to; lower subtrees are rebuilt from the records between the parent's
@@ -15,8 +15,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Bound;
 use std::sync::Arc;
-use vlsync_atproto::cid::Cid;
-use vlsync_atproto::mst::{
+use vlatproto::cid::Cid;
+use vlatproto::mst::{
     decode_node, decode_trusted_node, encode_node, height_for_key, Entry, LeafEncoder, MstError, Node, Tree, MAX_DEPTH,
 };
 
@@ -817,7 +817,7 @@ impl LazyTree {
     pub fn write_diff_blocks_with_refs(
         &mut self,
         out: &mut Vec<(Cid, Vec<u8>)>,
-        report: Option<&mut Vec<(Cid, vlsync_atproto::mst::NodeRef)>>,
+        report: Option<&mut Vec<(Cid, vlatproto::mst::NodeRef)>>,
     ) -> Result<(Cid, Persist)> {
         let start = out.len();
         let mut refs = Vec::new();
@@ -844,7 +844,7 @@ impl LazyTree {
         }
         // the empty tree's root isn't counted: a batch's first insert into an
         // empty tree leaves the root dirty under that cid
-        let empty = *vlsync_atproto::mst::EMPTY_ROOT;
+        let empty = *vlatproto::mst::EMPTY_ROOT;
         let mut kept = HashSet::new();
         let mut gone: HashMap<Cid, i32> = HashMap::new();
         for (c, k, h) in std::mem::take(&mut self.seen) {
@@ -1005,13 +1005,13 @@ pub fn persisted_blocks<'a>(root: &Cid, blocks: &[(Cid, &'a [u8])], persist_min:
     Ok(blocks.iter().filter(|(c, _)| keep.contains(c)).map(|(c, b)| (*c, *b)).collect())
 }
 
-/// The tree at `root` in the streamable CAR order ([`vlsync_atproto::car_order`]):
+/// The tree at `root` in the streamable CAR order ([`vlatproto::car_order`]):
 /// each node block, then its slots in order, a child by recursing and a
 /// record by its block, which [`Source::record_blocks`] gives (none from a
 /// source without them: node blocks alone, in `Tree::walk_blocks` order).
 /// Records come in key order, as a forward `R/` scan reads them, with one
 /// root-to-leaf path of nodes in memory. Not driven by
-/// [`car_order::Walk`](vlsync_atproto::car_order::Walk): that takes each node
+/// [`car_order::Walk`](vlatproto::car_order::Walk): that takes each node
 /// decoded, and leaves here are encoded straight from their records. A
 /// record the tree doesn't name still comes at its key's place.
 ///

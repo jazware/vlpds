@@ -4051,7 +4051,7 @@ rotation and rewrap, cache, KEK parsing, the dev-KEK rules) and
   racing writes; with KMS down, 503 `KeyUnavailable` with nothing written,
   while reads and getRepo work; writes resume after recovery.
 
-### Signing hardening (`vlsync-atproto/src/crypto.rs`)
+### Signing hardening (`vlatproto/src/crypto.rs`)
 With deterministic ECDSA, one faulty signature (Rowhammer, glitching, a bad
 DIMM) next to a correct one over the same message gives away the key, and
 commit signatures are public on the firehose. So, for every signature that

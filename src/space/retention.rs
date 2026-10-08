@@ -13,7 +13,7 @@ use crate::state::{self, SpaceId};
 use crate::xrpc::App;
 use std::sync::Arc;
 use std::time::Duration;
-use vlsync_atproto::tid::Tid;
+use vlatproto::tid::Tid;
 
 pub const DEFAULT_RETENTION: Duration = Duration::from_secs(7 * 24 * 3600);
 /// Between sweeps: a sweep reads every space head of the node's shards.
@@ -34,7 +34,7 @@ pub fn start(app: &Arc<App>) {
         loop {
             tokio::time::sleep(wait).await;
             let Some(app) = weak.upgrade() else { return };
-            let cutoff = window.map_or(0, |w| vlsync_atproto::tid::now_micros().saturating_sub(w.as_micros() as u64));
+            let cutoff = window.map_or(0, |w| vlatproto::tid::now_micros().saturating_sub(w.as_micros() as u64));
             match prune_before(&app, cutoff).await {
                 Ok(0) => {}
                 Ok(n) => tracing::info!(ops = n, "space oplog retention pruned ops"),

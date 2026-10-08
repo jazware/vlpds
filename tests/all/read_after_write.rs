@@ -578,7 +578,7 @@ async fn lagging_appview_is_answered_from_one_bounded_scan() {
     for i in 0..40 {
         posts.push(s.post(&a, &format!("lagging {i}")).await.uri);
     }
-    let since = vlsync_atproto::tid::Tid::parse(&stub.rev.lock()).unwrap().0;
+    let since = vlatproto::tid::Tid::parse(&stub.rev.lock()).unwrap().0;
     let p = s.app.partition(&a.did).ok().unwrap();
     let part = (p.id, p.epoch);
     vlpds::recent_writes::invalidate(&a.did);

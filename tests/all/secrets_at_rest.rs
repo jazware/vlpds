@@ -437,7 +437,7 @@ async fn plc_rotation_key_never_reaches_the_bucket() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let kms = mock_kms().await;
     let plc = vlpds::plc::mock::MockPlc::start().await;
-    let rot = vlsync_atproto::crypto::Keypair::generate();
+    let rot = vlatproto::crypto::Keypair::generate();
     let raw = rot.to_bytes().to_vec();
     // `vlpds --wrap-plc-rotation-key` with the node's KEK, into a file
     let ring = vlpds::secrets::Secrets::from_config(&gcp(&kms), false).unwrap();

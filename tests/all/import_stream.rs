@@ -1,4 +1,4 @@
-//! importRepo of a CAR in the streamable block order (vlsync-atproto/src/car_order.rs)
+//! importRepo of a CAR in the streamable block order (vlatproto/src/car_order.rs)
 //! takes the one-pass parse; any other order is parsed buffered. Both give
 //! the same repo, and bodies that break off or run over the cap are refused.
 //! The per-CAR cases (wrong CIDs, missing blocks, refusals matching the
@@ -23,7 +23,7 @@ async fn contents(s: &TestServer, did: &str) -> (Cid, Vec<(String, Cid)>, HashMa
 fn stream_order(car: &[u8]) -> Vec<u8> {
     let repo = Repo::from_car(car).unwrap();
     let commit = &repo.blocks[&repo.root];
-    vlsync_atproto::car_order::write_car((repo.root, commit), repo.commit().data, &repo.blocks).unwrap()
+    vlatproto::car_order::write_car((repo.root, commit), repo.commit().data, &repo.blocks).unwrap()
 }
 
 fn shuffled(car: &[u8]) -> Vec<u8> {
@@ -32,9 +32,9 @@ fn shuffled(car: &[u8]) -> Vec<u8> {
     // deterministic, and far from either order
     order.sort_by_key(|c| c.to_bytes().iter().rev().copied().collect::<Vec<u8>>());
     let mut out = Vec::new();
-    vlsync_atproto::car::write_header(&mut out, &repo.root);
+    vlatproto::car::write_header(&mut out, &repo.root);
     for c in order {
-        vlsync_atproto::car::write_block(&mut out, &c, &repo.blocks[&c]);
+        vlatproto::car::write_block(&mut out, &c, &repo.blocks[&c]);
     }
     out
 }

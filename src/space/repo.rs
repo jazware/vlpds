@@ -25,8 +25,8 @@ use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use vlsync_atproto::cid::Cid;
-use vlsync_atproto::tid::{self, Tid};
+use vlatproto::cid::Cid;
+use vlatproto::tid::{self, Tid};
 use vlsync_store::segment::Mutation;
 
 pub const MAX_WRITES: usize = 200;
@@ -250,7 +250,7 @@ impl PathRec {
     pub fn from_value(v: &[u8]) -> anyhow::Result<PathRec> {
         let (cid, bytes) = state::record_value_parts(v)?;
         let mut blobs = Vec::new();
-        vlsync_atproto::cbor::blob_refs(&vlsync_atproto::cbor::Value::decode(bytes)?, &mut blobs);
+        vlatproto::cbor::blob_refs(&vlatproto::cbor::Value::decode(bytes)?, &mut blobs);
         Ok(PathRec { cid, blobs })
     }
 
@@ -1271,7 +1271,7 @@ mod tests {
     fn path_rec_reads_blob_refs_from_the_stored_value() {
         let blob = Cid::raw(b"img");
         let rec = serde_json::json!({"$type": "com.example.post", "img": {"$type": "blob", "ref": {"$link": blob.to_string()}, "mimeType": "image/png", "size": 3}});
-        let v = vlsync_atproto::cbor::Value::from_json(&rec).unwrap();
+        let v = vlatproto::cbor::Value::from_json(&rec).unwrap();
         let mut bytes = Vec::new();
         v.encode(&mut bytes);
         let cid = Cid::dag_cbor(&bytes);

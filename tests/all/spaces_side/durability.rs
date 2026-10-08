@@ -63,7 +63,7 @@ fn b64(b: &[u8]) -> J {
 
 /// A space TID `n` µs past `base`.
 fn tid(base: u64, n: u64) -> String {
-    vlsync_atproto::tid::Tid::from_parts(base + n, 7).to_string()
+    vlatproto::tid::Tid::from_parts(base + n, 7).to_string()
 }
 
 /// `sc` after its node restarted behind the same front.
@@ -645,7 +645,7 @@ async fn inbound_notifies_survive_a_kill_after_their_200() {
     let writer = StubDid::spawn().await;
     let m = json!({"space": n.space, "did": writer.did, "read": false, "write": true});
     n.sc.post("com.atproto.simplespace.putMember", m).await.ok();
-    let base = vlsync_atproto::tid::now_micros();
+    let base = vlatproto::tid::now_micros();
     let revs: Vec<String> = (0..5).map(|i| tid(base, i * 1000)).collect();
     let hashes: Vec<Vec<u8>> = (0..5).map(|_| random_bytes(32)).collect();
 
@@ -754,10 +754,10 @@ async fn the_stub_did_resolves_and_records_notifies() {
     let s = TestServer::spawn().await;
     let stub = StubDid::spawn().await;
     let doc = s.app.did_resolver.resolve(&stub.did).await.expect("resolves");
-    let key = vlsync_atproto::did_resolver::signing_key_multibase(&doc).expect("#atproto key");
+    let key = vlatproto::did_resolver::signing_key_multibase(&doc).expect("#atproto key");
     assert!(stub.key.matches_public(&key), "{doc}");
-    let host = vlsync_atproto::did_resolver::service_endpoint(&doc, "atproto_space_host").expect("space host");
-    assert_eq!(vlsync_atproto::did_resolver::service_endpoint(&doc, "atproto_pds").as_deref(), Some(host.as_str()));
+    let host = vlatproto::did_resolver::service_endpoint(&doc, "atproto_space_host").expect("space host");
+    assert_eq!(vlatproto::did_resolver::service_endpoint(&doc, "atproto_pds").as_deref(), Some(host.as_str()));
     let http = reqwest::Client::new();
     for refuse in [true, false] {
         stub.refuse(refuse);

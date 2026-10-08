@@ -4,7 +4,7 @@
 
 use crate::state::{self, RepoBytes, RepoStats};
 use std::collections::HashSet;
-use vlsync_atproto::mst::{Entry, MstError, Node, Tree};
+use vlatproto::mst::{Entry, MstError, Node, Tree};
 
 /// (records, nodes with entries) of a fully loaded tree.
 pub fn count_tree(tree: &Tree) -> Result<(u64, u64), MstError> {
@@ -42,7 +42,7 @@ pub fn tree_bytes(tree: &Tree) -> Result<u64, MstError> {
                 Some(b) => b.len() as u64,
                 None => {
                     buf.clear();
-                    vlsync_atproto::mst::encode_node(n, buf)?;
+                    vlatproto::mst::encode_node(n, buf)?;
                     buf.len() as u64
                 }
             };

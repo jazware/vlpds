@@ -1524,15 +1524,15 @@ mod tests {
     #[ignore]
     async fn compression() {
         use std::collections::HashMap;
-        use vlsync_atproto::cid::Cid;
+        use vlatproto::cid::Cid;
         let path = std::env::var("VLPDS_BENCH_CAR").expect("VLPDS_BENCH_CAR=path/to/repo.car");
         let copies: usize = std::env::var("VLPDS_BENCH_COPIES").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
         let car = std::fs::read(path).unwrap();
-        let (roots, blocks) = vlsync_atproto::car::read_car(&car).unwrap();
+        let (roots, blocks) = vlatproto::car::read_car(&car).unwrap();
         let blocks: HashMap<Cid, Vec<u8>> = blocks.into_iter().map(|(c, b)| (c, b.to_vec())).collect();
-        let commit = vlsync_atproto::cbor::Value::decode(&blocks[&roots[0]]).unwrap();
-        let Some(vlsync_atproto::cbor::Value::Link(data)) = commit.get("data") else { panic!("no data in commit") };
-        let tree = vlsync_atproto::mst::Tree::load_from_blocks(&blocks, *data).unwrap();
+        let commit = vlatproto::cbor::Value::decode(&blocks[&roots[0]]).unwrap();
+        let Some(vlatproto::cbor::Value::Link(data)) = commit.get("data") else { panic!("no data in commit") };
+        let tree = vlatproto::mst::Tree::load_from_blocks(&blocks, *data).unwrap();
         let mut records = Vec::new();
         tree.walk(&mut |k, c| records.push((String::from_utf8(k.to_vec()).unwrap(), c)));
         let raw: usize = records.iter().map(|(_, c)| blocks[c].len()).sum();

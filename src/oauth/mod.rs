@@ -108,8 +108,8 @@ impl OAuthError {
     }
 }
 
-impl From<vlsync_atproto::xrpc::XrpcError> for OAuthError {
-    fn from(e: vlsync_atproto::xrpc::XrpcError) -> OAuthError {
+impl From<vlatproto::xrpc::XrpcError> for OAuthError {
+    fn from(e: vlatproto::xrpc::XrpcError) -> OAuthError {
         // transient 503s (shard moving, Argon2 shed, KMS down) stay
         // retryable: RFC 6749 temporarily_unavailable, not server_error
         if e.status == StatusCode::SERVICE_UNAVAILABLE {

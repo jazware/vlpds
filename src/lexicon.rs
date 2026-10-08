@@ -24,8 +24,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use unicode_segmentation::UnicodeSegmentation;
-use vlsync_atproto::cbor::{JsonValue, Value};
-use vlsync_atproto::syntax;
+use vlatproto::cbor::{JsonValue, Value};
+use vlatproto::syntax;
 
 static BUNDLE: LazyLock<Lexicons> = LazyLock::new(|| {
     let docs: HashMap<String, J> =
@@ -1009,7 +1009,7 @@ impl<'a> Validator<'a> {
                 Format::Nsid => (syntax::valid_nsid(s), "must be a valid nsid"),
                 // the syntax check first: it accepts nearly every parseable CID
                 Format::Cid => (
-                    crate::xrpc::extract::valid_cid_syntax(s) || vlsync_atproto::cid::Cid::parse(s).is_ok(),
+                    crate::xrpc::extract::valid_cid_syntax(s) || vlatproto::cid::Cid::parse(s).is_ok(),
                     "must be a cid string",
                 ),
                 Format::Language => (valid_language(s), "must be a well-formed BCP 47 language tag"),

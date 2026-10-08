@@ -1,4 +1,4 @@
-//! Signing hardening (vlsync-atproto/src/crypto.rs): with faults injected into an account's
+//! Signing hardening (vlatproto/src/crypto.rs): with faults injected into an account's
 //! signatures (a flipped signature bit, or a flipped bit of the scalar while
 //! signing), no faulty signature reaches the firehose or a client, the
 //! write retries once with a fresh nonce and otherwise fails cleanly (503
@@ -7,11 +7,11 @@
 use crate::common::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use vlsync_atproto::crypto::fault::{self, Fault};
-use vlsync_atproto::crypto::Purpose;
+use vlatproto::crypto::fault::{self, Fault};
+use vlatproto::crypto::Purpose;
 
 fn failures(p: Purpose) -> u64 {
-    vlsync_atproto::crypto::SIGNATURE_VERIFY_FAILURES.with_label_values(&[p.as_str()]).get()
+    vlatproto::crypto::SIGNATURE_VERIFY_FAILURES.with_label_values(&[p.as_str()]).get()
 }
 
 fn create(a: &TestAccount, rkey: &str) -> J {
@@ -24,7 +24,7 @@ fn create(a: &TestAccount, rkey: &str) -> J {
 async fn faulty_signatures_are_never_emitted_and_repeats_fail_stop() {
     let stops = Arc::new(AtomicUsize::new(0));
     let hook = stops.clone();
-    vlsync_atproto::crypto::set_fail_stop_hook(Some(Arc::new(move |reason| {
+    vlatproto::crypto::set_fail_stop_hook(Some(Arc::new(move |reason| {
         assert_eq!(reason, "signature_fault");
         hook.fetch_add(1, Ordering::SeqCst);
     })));
@@ -82,7 +82,7 @@ async fn faulty_signatures_are_never_emitted_and_repeats_fail_stop() {
     let tok = tok["token"].as_str().unwrap();
     let (input, sig) = tok.rsplit_once('.').unwrap();
     let sig = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, sig).unwrap();
-    assert!(vlsync_atproto::crypto::verify_k256(&key_id, input.as_bytes(), &sig).unwrap());
+    assert!(vlatproto::crypto::verify_k256(&key_id, input.as_bytes(), &sig).unwrap());
     fault::inject(&key_id, Fault::Signature, 2);
     let r = s.xrpc.get("com.atproto.server.getServiceAuth", &q, &a.auth()).await;
     r.err(503, "SignatureFault");
@@ -95,5 +95,5 @@ async fn faulty_signatures_are_never_emitted_and_repeats_fail_stop() {
     for p in ["commit", "service_auth", "oauth_token", "key_load"] {
         assert!(m.contains(&format!("vlpds_signature_verify_failures_total{{purpose=\"{p}\"}}")), "{p} not exported");
     }
-    vlsync_atproto::crypto::set_fail_stop_hook(None);
+    vlatproto::crypto::set_fail_stop_hook(None);
 }

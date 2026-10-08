@@ -1224,7 +1224,7 @@ async fn include_permission_set() {
     let acct = s.app.account(&publisher.did).await.ok().unwrap();
     let rec = vlpds::oauth::lexicon::verify_record_proof(&car, &publisher.did, &acct.signing_pubkey, &path).unwrap();
     assert_eq!(rec["id"], nsid);
-    let other = vlsync_atproto::crypto::Keypair::generate();
+    let other = vlatproto::crypto::Keypair::generate();
     assert!(vlpds::oauth::lexicon::verify_record_proof(&car, &publisher.did, &other.public_multibase(), &path).is_err());
 
     let key = DpopKey::new();

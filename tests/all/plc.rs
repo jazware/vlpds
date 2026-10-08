@@ -7,9 +7,9 @@
 
 use crate::common::*;
 use std::sync::Arc;
+use vlatproto::crypto::Keypair;
 use vlpds::plc::mock::MockPlc;
 use vlpds::plc::{PlcConfig, RotationKey};
-use vlsync_atproto::crypto::Keypair;
 
 /// A PDS registering DIDs with `plc` under rotation key `key`.
 async fn pds(plc: &MockPlc, key: &Arc<Keypair>, service_did: &str, recovery: Option<String>) -> TestServer {

@@ -39,7 +39,7 @@ async fn populate(nodes: &[TestServer], shards: u32, n: u64) -> std::collections
         for chunk in dids.chunks(5000) {
             let mut wb = slatedb::WriteBatch::new();
             for (did, i) in chunk {
-                let rev = vlsync_atproto::tid::Tid(1_000_000 + *i);
+                let rev = vlatproto::tid::Tid(1_000_000 + *i);
                 let head = state::Head { commit, data, rev, commit_block: bytes::Bytes::new() };
                 wb.put(state::head_key(did), head.encode());
                 let acct = state::Account {

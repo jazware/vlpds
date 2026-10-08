@@ -233,8 +233,8 @@ pub fn entries() -> Caps {
 }
 
 /// A DID resolver whose document cache is the `did_docs` cache here.
-pub fn did_resolver(plc_url: &str, dev_mode: bool) -> vlsync_atproto::did_resolver::DidResolver {
-    let r = vlsync_atproto::did_resolver::DidResolver::with_cache_cap(plc_url, dev_mode, || cap(Cache::DidDocs));
+pub fn did_resolver(plc_url: &str, dev_mode: bool) -> vlatproto::did_resolver::DidResolver {
+    let r = vlatproto::did_resolver::DidResolver::with_cache_cap(plc_url, dev_mode, || cap(Cache::DidDocs));
     track(Cache::DidDocs, r.doc_cache());
     r
 }

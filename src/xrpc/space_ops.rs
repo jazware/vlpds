@@ -13,7 +13,7 @@ use super::space::{space_takedown_name, takedown_name, Space};
 use super::*;
 use crate::space::rows::{AppAccess, HeadRow, MemberRow, Policy, SeqRow, SpaceRow, WriterRow};
 use std::collections::HashMap;
-use vlsync_atproto::tid::Tid;
+use vlatproto::tid::Tid;
 
 pub fn routes() -> Router<Arc<App>> {
     Router::new()
@@ -583,7 +583,7 @@ async fn remove_registration_row(app: &App, space: &Space, service: String) -> X
 fn node_status(sp: &crate::space::Spaces) -> J {
     use crate::space::revocations as rv;
     let r = &sp.revocations;
-    let now = vlsync_atproto::tid::now_micros() as i64 / 1_000_000;
+    let now = vlatproto::tid::now_micros() as i64 / 1_000_000;
     let (blocked_spaces, blocked_authorities) = r.blocks(now);
     json!({
         "outbox": {"rows": sp.outbox.len(), "max": crate::space::outbox::MAX_ROWS},

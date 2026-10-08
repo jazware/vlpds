@@ -549,7 +549,7 @@ static LABELLED_COUNTERS: &[(&LazyLock<IntCounterVec>, &[&str])] = &[
     (&BLOB_QUARANTINE, &["quarantined", "restored", "purged"]),
     (&REPORTS, &["ok", "failed"]),
     (&HANDLE_RESOLUTIONS, &["dns", "http", "not_found"]),
-    (&vlsync_atproto::events::IDENTITY_EVENTS, &["identity", "account"]),
+    (&vlatproto::events::IDENTITY_EVENTS, &["identity", "account"]),
 ];
 
 /// Only nodes that run retention, so `VlpdsRetentionNotRunning` stays quiet
@@ -808,7 +808,7 @@ pub fn observe_forward(status: u16, start: std::time::Instant) {
 /// The whole /metrics text: vlpds's series and every vlsync one.
 pub fn render() -> String {
     init_counters();
-    vlsync_atproto::crypto::touch_metrics();
+    vlatproto::crypto::touch_metrics();
     crate::caches::refresh_metrics();
     vlsync_store::metrics::render()
 }

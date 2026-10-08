@@ -18,12 +18,12 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
-use vlsync_atproto::car;
-use vlsync_atproto::cid::Cid;
-use vlsync_atproto::crypto::Keypair;
-use vlsync_atproto::events::{self, RepoOp};
-use vlsync_atproto::mst::Tree;
-use vlsync_atproto::tid::{self, Tid};
+use vlatproto::car;
+use vlatproto::cid::Cid;
+use vlatproto::crypto::Keypair;
+use vlatproto::events::{self, RepoOp};
+use vlatproto::mst::Tree;
+use vlatproto::tid::{self, Tid};
 use vlsync_store::segment::Mutation;
 
 /// Spec limits for a single commit.
@@ -45,7 +45,7 @@ pub enum WriteError {
     /// Signing key couldn't be unwrapped; nothing was applied.
     KeyUnavailable(String),
     /// The commit signature failed verification twice (suspected hardware
-    /// fault, vlsync-atproto/src/crypto.rs); nothing was applied or emitted.
+    /// fault, vlatproto/src/crypto.rs); nothing was applied or emitted.
     SignatureFault(String),
 }
 
@@ -364,7 +364,7 @@ pub enum WorkerMsg {
     /// unchanged), and the blob refs and backlinks if it read them.
     Fetched {
         did: Arc<str>,
-        res: Result<Box<FetchedState>, vlsync_atproto::mst::MstError>,
+        res: Result<Box<FetchedState>, vlatproto::mst::MstError>,
     },
     /// A new [`CacheLimits::bytes`] (src/memory.rs resizes the repo cache).
     SetCacheBytes(usize),
@@ -397,7 +397,7 @@ pub struct DurableView {
     /// SlateDB snapshot taken with the view (`App::repo_view`).
     pub tree: Tree,
     /// Shared with the worker, which advances it per commit.
-    pub nodes: vlsync_atproto::mst::SharedNodeIndex,
+    pub nodes: vlatproto::mst::SharedNodeIndex,
 }
 
 pub type ViewCell = Arc<parking_lot::RwLock<Arc<DurableView>>>;
@@ -433,7 +433,7 @@ pub struct RepoState {
     /// durable one.
     pub stats: state::RepoStats,
     pub view: ViewCell,
-    pub nodes: vlsync_atproto::mst::SharedNodeIndex,
+    pub nodes: vlatproto::mst::SharedNodeIndex,
     /// Approximate heap charged to the worker's cache ([`repo_bytes`]).
     pub charge: usize,
     /// Re-walked only where the tree changed (`Worker::settle`).
@@ -544,7 +544,7 @@ impl From<usize> for CacheLimits {
     }
 }
 
-fn new_view(head: &Head, gen: u64, mst: &LazyTree, nodes: &vlsync_atproto::mst::SharedNodeIndex) -> ViewCell {
+fn new_view(head: &Head, gen: u64, mst: &LazyTree, nodes: &vlatproto::mst::SharedNodeIndex) -> ViewCell {
     Arc::new(parking_lot::RwLock::new(Arc::new(DurableView {
         head: head.clone(),
         gen,
@@ -929,7 +929,7 @@ impl Worker {
     fn fetched(
         &mut self,
         did: Arc<str>,
-        res: Result<Box<FetchedState>, vlsync_atproto::mst::MstError>,
+        res: Result<Box<FetchedState>, vlatproto::mst::MstError>,
         order: &mut Vec<Arc<str>>,
         groups: &mut HashMap<Arc<str>, Vec<Queued>>,
     ) {
@@ -1146,7 +1146,7 @@ impl Worker {
         let (rt, me, d) = (self.rt.clone(), self.me.clone(), did.clone());
         self.loading.insert(did, reqs);
         self.rt.spawn_blocking(move || {
-            let store_err = |e: anyhow::Error| vlsync_atproto::mst::MstError::Store(e.to_string());
+            let store_err = |e: anyhow::Error| vlatproto::mst::MstError::Store(e.to_string());
             let res = mst.as_mut().map_or(Ok(()), |m| need.load(m, &*db, &d, gen, &rt)).and_then(|_| {
                 let blobs = match need.blobs {
                     true => Some(rt.block_on(load_blob_refs(&*db, &d, gen)).map_err(store_err)?),
@@ -1352,7 +1352,7 @@ impl Worker {
                 crate::totals::Counted::of(&account, &head),
             ),
         };
-        let nodes = vlsync_atproto::mst::SharedNodeIndex::default();
+        let nodes = vlatproto::mst::SharedNodeIndex::default();
         let mst = LazyTree::loaded(tree, 1);
         let view = new_view(&head, gen, &mst, &nodes);
         let st = RepoState {
@@ -1564,7 +1564,7 @@ impl Need {
         did: &str,
         gen: u64,
         rt: &tokio::runtime::Handle,
-    ) -> Result<(), vlsync_atproto::mst::MstError> {
+    ) -> Result<(), vlatproto::mst::MstError> {
         let fallbacks = mst.stats.fallbacks;
         if self.all && !mst.fully_loaded() {
             // one forward scan of the records serves every unloaded leaf
@@ -1575,7 +1575,7 @@ impl Need {
         let probes: Vec<&[u8]> = self.probes.iter().map(|k| &k[..]).collect();
         mst.fetch(&keys, &probes, &DbSource::new(db, did, gen, rt))?;
         match mst.stats.fallbacks > fallbacks {
-            true => Err(vlsync_atproto::mst::MstError::Invalid("persisted MST nodes missing")),
+            true => Err(vlatproto::mst::MstError::Invalid("persisted MST nodes missing")),
             false => Ok(()),
         }
     }
@@ -1632,7 +1632,7 @@ fn lazy_needs(st: &mut RepoState, reqs: Vec<Queued>) -> Result<Vec<Queued>, Defe
             Err((reqs, Some(Box::new(need))))
         }
         Ok(()) => Ok(reqs),
-        Err(vlsync_atproto::mst::MstError::NotLoaded) => Err((reqs, Some(Box::new(need)))),
+        Err(vlatproto::mst::MstError::NotLoaded) => Err((reqs, Some(Box::new(need)))),
         Err(e) => {
             tracing::error!(did = %st.did, "lazy MST walk failed: {e}");
             Err((reqs, None))
@@ -1807,21 +1807,21 @@ pub fn spawn_preload(
 }
 
 /// The signed commit block, verified before anything can sequence it
-/// (vlsync-atproto/src/crypto.rs). Err: the signature failed twice (suspected hardware
+/// (vlatproto/src/crypto.rs). Err: the signature failed twice (suspected hardware
 /// fault): nothing may be emitted for this commit.
 pub fn sign_commit(
     did: &str,
     rev: &str,
     data: &Cid,
     key: &Keypair,
-) -> Result<(Cid, Bytes), vlsync_atproto::crypto::SignatureFault> {
+) -> Result<(Cid, Bytes), vlatproto::crypto::SignatureFault> {
     let unsigned = events::encode_commit(did, rev, data, None);
-    let sig = key.sign_verified(vlsync_atproto::crypto::Purpose::Commit, &unsigned)?;
+    let sig = key.sign_verified(vlatproto::crypto::Purpose::Commit, &unsigned)?;
     let signed = events::encode_commit(did, rev, data, Some(&sig));
     Ok((Cid::dag_cbor(&signed), Bytes::from(signed)))
 }
 
-fn signature_fault(e: &vlsync_atproto::crypto::SignatureFault) -> WriteError {
+fn signature_fault(e: &vlatproto::crypto::SignatureFault) -> WriteError {
     WriteError::SignatureFault(e.to_string())
 }
 
@@ -1872,7 +1872,7 @@ async fn load_repo_with(partition: Arc<Partition>, did: Arc<str>, opts: LoadOpts
         // the (possibly long-cached) scalar must still derive the account's
         // public key; if not, treat the key as unavailable
         Ok(k) if !k.matches_public(&acct.signing_pubkey) => {
-            vlsync_atproto::crypto::record_fault(vlsync_atproto::crypto::Purpose::KeyLoad);
+            vlatproto::crypto::record_fault(vlatproto::crypto::Purpose::KeyLoad);
             secrets.forget(&did);
             None
         }
@@ -1946,8 +1946,8 @@ async fn open_lazy(
         let err = match opened {
             Ok(t) if t.stats.node_reads == 0 && t.tree.root.height >= 1 => "missing",
             Ok(t) => return Ok((t, false)),
-            Err(vlsync_atproto::mst::MstError::Store(e)) => anyhow::bail!("lazy MST open: {e}"),
-            Err(vlsync_atproto::mst::MstError::Invalid("persisted MST nodes missing")) => "missing_node",
+            Err(vlatproto::mst::MstError::Store(e)) => anyhow::bail!("lazy MST open: {e}"),
+            Err(vlatproto::mst::MstError::Invalid("persisted MST nodes missing")) => "missing_node",
             Err(e) => {
                 tracing::warn!(%did, "lazy MST open failed ({e}): rebuilding from records");
                 "invalid"
@@ -2031,7 +2031,7 @@ fn finish_load(
 ) -> anyhow::Result<RepoState> {
     let root = mst.tree.root_cid()?;
     anyhow::ensure!(root == head.data, "rebuilt MST root {root} != head data {}", head.data);
-    let nodes = vlsync_atproto::mst::SharedNodeIndex::default();
+    let nodes = vlatproto::mst::SharedNodeIndex::default();
     let view = new_view(&head, account.repo_gen, &mst, &nodes);
     Ok(RepoState {
         did,
@@ -2308,7 +2308,7 @@ fn process_with(st: &mut RepoState, reqs: Vec<Queued>, clock_id: u64, src: &dyn 
     // after a signature fault the requests not reached yet weren't applied
     // either: answer them retryably rather than dropping them
     if let Err(e) = &r {
-        if let Some(f) = e.downcast_ref::<vlsync_atproto::crypto::SignatureFault>() {
+        if let Some(f) = e.downcast_ref::<vlatproto::crypto::SignatureFault>() {
             for q in rest {
                 q.fail(signature_fault(f));
             }
@@ -3083,7 +3083,7 @@ fn flush(st: &mut RepoState, batch: Batch, clock_id: u64, src: &dyn Source) -> a
         part: (st.partition.id, st.partition.epoch),
         since: since_rev.0,
         rev: rev.0,
-        prev_nonempty: prev_data != *vlsync_atproto::mst::EMPTY_ROOT,
+        prev_nonempty: prev_data != *vlatproto::mst::EMPTY_ROOT,
         ops: recent,
     };
     let entry = LogEntry {
@@ -3614,7 +3614,7 @@ fn key_step(
                 part: (st.partition.id, st.partition.epoch),
                 since: since.0,
                 rev: rev.0,
-                prev_nonempty: st.head.data != *vlsync_atproto::mst::EMPTY_ROOT,
+                prev_nonempty: st.head.data != *vlatproto::mst::EMPTY_ROOT,
                 ops: Some(Vec::new()),
             });
             st.head = head;
@@ -4256,7 +4256,7 @@ mod tests {
                             _ => serde_json::json!(format!("did:plc:{next:024}")),
                         };
                         let v = serde_json::json!({"$type": coll, "subject": subject, "createdAt": "2026-10-01T00:00:00.000Z"});
-                        (coll, Bytes::from(vlsync_atproto::cbor::Value::from_json(&v).unwrap().to_cbor()))
+                        (coll, Bytes::from(vlatproto::cbor::Value::from_json(&v).unwrap().to_cbor()))
                     }
                 };
                 let (reply, _rx) = oneshot::channel();

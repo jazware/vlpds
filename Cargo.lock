@@ -4034,7 +4034,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slate-metrics"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=0fc77d93a5e1099628729eb3cd3ee894006685bb#0fc77d93a5e1099628729eb3cd3ee894006685bb"
+source = "git+https://github.com/jazware/vlsync?rev=a11a68921fdc41c5609469ee1b995c1b1786daac#a11a68921fdc41c5609469ee1b995c1b1786daac"
 dependencies = [
  "parking_lot",
  "prometheus",
@@ -4844,6 +4844,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "vlatproto"
+version = "0.1.0"
+source = "git+https://github.com/jazware/vlatproto?rev=186c75bfd8b10e800f08586cbb69804e709d6ce1#186c75bfd8b10e800f08586cbb69804e709d6ce1"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.23.1",
+ "bs58",
+ "chrono",
+ "futures",
+ "hex",
+ "parking_lot",
+ "prometheus",
+ "rand 0.8.8",
+ "reqwest",
+ "rustls",
+ "secp256k1",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+ "tokio",
+ "tower",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
 name = "vlpds"
 version = "1.0.0"
 dependencies = [
@@ -4908,7 +4936,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-segmentation",
- "vlsync-atproto",
+ "vlatproto",
  "vlsync-firehose",
  "vlsync-slatedb",
  "vlsync-store",
@@ -4918,38 +4946,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "vlsync-atproto"
-version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=0fc77d93a5e1099628729eb3cd3ee894006685bb#0fc77d93a5e1099628729eb3cd3ee894006685bb"
-dependencies = [
- "anyhow",
- "axum",
- "base64 0.23.1",
- "bs58",
- "chrono",
- "futures",
- "hex",
- "parking_lot",
- "prometheus",
- "rand 0.8.8",
- "reqwest",
- "rustls",
- "secp256k1",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.21",
- "tokio",
- "tower",
- "tracing",
- "vlsync-store",
- "zeroize",
-]
-
-[[package]]
 name = "vlsync-firehose"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=0fc77d93a5e1099628729eb3cd3ee894006685bb#0fc77d93a5e1099628729eb3cd3ee894006685bb"
+source = "git+https://github.com/jazware/vlsync?rev=a11a68921fdc41c5609469ee1b995c1b1786daac#a11a68921fdc41c5609469ee1b995c1b1786daac"
 dependencies = [
  "anyhow",
  "axum",
@@ -4966,14 +4965,14 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
- "vlsync-atproto",
+ "vlatproto",
  "vlsync-store",
 ]
 
 [[package]]
 name = "vlsync-slatedb"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=0fc77d93a5e1099628729eb3cd3ee894006685bb#0fc77d93a5e1099628729eb3cd3ee894006685bb"
+source = "git+https://github.com/jazware/vlsync?rev=a11a68921fdc41c5609469ee1b995c1b1786daac#a11a68921fdc41c5609469ee1b995c1b1786daac"
 dependencies = [
  "slatedb",
  "slatedb-common",
@@ -4982,7 +4981,7 @@ dependencies = [
 [[package]]
 name = "vlsync-store"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=0fc77d93a5e1099628729eb3cd3ee894006685bb#0fc77d93a5e1099628729eb3cd3ee894006685bb"
+source = "git+https://github.com/jazware/vlsync?rev=a11a68921fdc41c5609469ee1b995c1b1786daac#a11a68921fdc41c5609469ee1b995c1b1786daac"
 dependencies = [
  "anyhow",
  "async-trait",

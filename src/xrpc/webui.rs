@@ -435,7 +435,7 @@ async fn cluster_status(State(app): AppState, Auth(creds): Auth) -> XResult<Json
             "sources": sources,
         },
         "fencedLogs": {},
-        "time": vlsync_atproto::tid::now_micros() / 1000,
+        "time": vlatproto::tid::now_micros() / 1000,
     });
     let Some(c) = &app.cluster else {
         return Ok(Json(out));

@@ -50,7 +50,7 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, LazyLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-use vlsync_atproto::xrpc::XrpcError;
+use vlatproto::xrpc::XrpcError;
 
 const MINUTE: u64 = 60_000;
 const HOUR: u64 = 60 * MINUTE;
@@ -1147,12 +1147,12 @@ impl Limiter {
             }
         }
         if let (Some(k), Some(v)) = (&self.bypass_key, hdr("x-ratelimit-bypass")) {
-            if vlsync_atproto::xrpc::token_eq(k, v) {
+            if vlatproto::xrpc::token_eq(k, v) {
                 return true;
             }
         }
         if let Some(b) = hdr("authorization").and_then(|v| v.strip_prefix("Basic ")) {
-            if vlsync_atproto::xrpc::basic_admin_ok(b, &self.cfg.admin_token) {
+            if vlatproto::xrpc::basic_admin_ok(b, &self.cfg.admin_token) {
                 return true;
             }
         }

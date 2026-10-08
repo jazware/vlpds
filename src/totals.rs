@@ -40,7 +40,7 @@
 use crate::state::{self, Account, Head};
 use bytes::{BufMut, Bytes};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use vlsync_atproto::tid::Tid;
+use vlatproto::tid::Tid;
 use vlsync_store::segment::Mutation;
 
 pub const STATUSES: [&str; 5] = ["active", "deactivated", "takendown", "suspended", "other"];
@@ -76,7 +76,7 @@ pub fn day_of(rev: Tid) -> u32 {
 }
 
 pub fn today() -> u32 {
-    (vlsync_atproto::tid::now_micros() / DAY_MICROS) as u32
+    (vlatproto::tid::now_micros() / DAY_MICROS) as u32
 }
 
 fn cutoff(today: u32) -> u32 {

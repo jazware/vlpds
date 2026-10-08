@@ -551,7 +551,7 @@ async fn validate_authorization_request(
         Some(h) => {
             let h = h.to_lowercase();
             let h = h.strip_prefix('@').unwrap_or(&h).to_string();
-            if !is_atproto_did(&h) && !vlsync_atproto::syntax::valid_handle(&h) {
+            if !is_atproto_did(&h) && !vlatproto::syntax::valid_handle(&h) {
                 return Err(OAuthError::invalid_request(&format!("Invalid login_hint \"{h}\"")));
             }
             Some(h)
@@ -2033,7 +2033,7 @@ async fn issue_tokens(
         "cnf": {"jkt": s.dpop_jkt},
         "sid": s.id,
     });
-    // signed and verified (vlsync-atproto/src/crypto.rs) before the session row names the
+    // signed and verified (vlatproto/src/crypto.rs) before the session row names the
     // new token: a signature fault (503) never stores a token id that no
     // client received
     let access = keys(app).server.sign("at+jwt", &claims).map_err(|e| unavailable(&e.to_string()))?;

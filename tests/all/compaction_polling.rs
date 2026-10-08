@@ -111,7 +111,7 @@ pub(crate) async fn unpaced_ingest(db: &slatedb::Db, records: u64) -> Ingest {
             let mut val = cid.to_vec();
             val.extend_from_slice(&record);
             wb.put(vlpds::state::record_key(did, 0, &path), val);
-            let c = vlsync_atproto::cid::Cid::dag_cbor(&cid);
+            let c = vlatproto::cid::Cid::dag_cbor(&cid);
             wb.put(vlpds::state::record_cid_key(did, 0, &c, &path), b"");
         }
         let t = Instant::now();

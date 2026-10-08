@@ -168,7 +168,7 @@ const RESCAN_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 const RESCAN_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn now_secs() -> i64 {
-    vlsync_atproto::tid::now_micros() as i64 / 1_000_000
+    vlatproto::tid::now_micros() as i64 / 1_000_000
 }
 
 impl Spaces {
@@ -452,7 +452,7 @@ impl Spaces {
         use crate::state::{self, SpaceId};
         let opts = slatedb::config::ScanOptions::default();
         let mut scan = state::FamilyScan::new(db, state::SPACE_NOTIFY_FAMILY, None, &opts).await?;
-        let now = vlsync_atproto::tid::now_micros();
+        let now = vlatproto::tid::now_micros();
         let mut spaces: Vec<(String, SpaceId)> = Vec::new();
         while let Some(kv) = scan.next().await? {
             let Some((did, sid)) = rows::did_sid_head(&kv.key) else { continue };
@@ -653,7 +653,7 @@ mod tests {
 
     #[test]
     fn did_key_algs() {
-        let k256 = vlsync_atproto::crypto::Keypair::generate().did_key();
+        let k256 = vlatproto::crypto::Keypair::generate().did_key();
         assert_eq!(did_key_alg(&k256), Some("ES256K"));
         let p256 = vectors::VECTORS["httpsig"][0]["keyDid"].as_str().unwrap();
         assert_eq!(did_key_alg(p256), Some("ES256"));
@@ -662,7 +662,7 @@ mod tests {
         assert!(verify_did_key("did:plc:abc", b"x", &[0; 64], false).is_err());
         assert!(verify_did_key(&k256, b"x", &[0; 70], false).is_err());
         // a hybrid-encoded point (0x06/0x07 prefix) of a real key
-        let key = vlsync_atproto::crypto::Keypair::generate();
+        let key = vlatproto::crypto::Keypair::generate();
         let sig = key.sign(b"x");
         let pk = secp256k1::PublicKey::from_slice(&key.public_key_sec1()).unwrap().serialize_uncompressed();
         let mut hybrid = vec![0xe7, 0x01, 6 | (pk[64] & 1)];

@@ -238,13 +238,13 @@ async fn at_identifiers_as_repo_param() {
 fn tids_parse() {
     let mut bad = Diffs::new("TIDs");
     for t in fixture_lines("interop/syntax/tid_syntax_valid.txt") {
-        match vlsync_atproto::tid::Tid::parse(&t) {
+        match vlatproto::tid::Tid::parse(&t) {
             Some(tid) if tid.to_string() == t => {}
             other => bad.push(format!("valid TID {t} -> {other:?}")),
         }
     }
     for t in fixture_lines("interop/syntax/tid_syntax_invalid.txt") {
-        if let Some(tid) = vlsync_atproto::tid::Tid::parse(&t) {
+        if let Some(tid) = vlatproto::tid::Tid::parse(&t) {
             bad.push(format!("invalid TID {} parsed as {tid:?}", short(&t)));
         }
         if is_tid(&t) {

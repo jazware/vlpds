@@ -260,10 +260,10 @@ pub(super) async fn audit(
     case_id: Option<&str>,
     detail: Option<J>,
 ) -> XResult<AuditEntry> {
-    let id = format!("{:016x}-{}", vlsync_atproto::tid::now_micros(), hex::encode(rand::random::<[u8; 4]>()));
+    let id = format!("{:016x}-{}", vlatproto::tid::now_micros(), hex::encode(rand::random::<[u8; 4]>()));
     let e = AuditEntry {
         id: id.clone(),
-        at: vlsync_atproto::events::now_rfc3339(),
+        at: vlatproto::events::now_rfc3339(),
         actor: who.actor.clone(),
         auth: who.auth.map(str::to_string),
         ip: who.ip.clone(),
@@ -321,7 +321,7 @@ pub(super) async fn apply(app: &App, s: &SubjectRef, act: &Action, who: &Who) ->
     let r = act.r#ref.clone().or_else(|| act.case_id.clone().map(|c| format!("case:{c}")));
     match s.kind.as_str() {
         "account" => {
-            let r = act.applied.then(|| r.clone().unwrap_or_else(vlsync_atproto::events::now_rfc3339));
+            let r = act.applied.then(|| r.clone().unwrap_or_else(vlatproto::events::now_rfc3339));
             super::admin::takedown_account(app, &s.did, r).await?;
         }
         "record" | "space" => {
@@ -552,7 +552,7 @@ async fn edit_case(app: &App, id: &str, f: impl Fn(&mut Case) -> XResult<()>) ->
     for _ in 0..CASE_CAS_RETRIES {
         let (mut c, etag) = get_obj::<Case>(app, &p).await?.ok_or_else(|| case_not_found(id))?;
         f(&mut c)?;
-        c.updated_at = vlsync_atproto::events::now_rfc3339();
+        c.updated_at = vlatproto::events::now_rfc3339();
         match put_obj(app, &p, &c, crate::cluster::if_match(etag)).await {
             Ok(()) => return Ok(c),
             Err(object_store::Error::Precondition { .. }) | Err(object_store::Error::AlreadyExists { .. }) => continue,
@@ -722,7 +722,7 @@ fn not_here(m: impl Into<String>) -> XrpcError {
 /// any node); the console then reads it with getSubject.
 async fn resolve_subject(State(app): AppState, Auth(creds): Auth, Query(q): Query<ResolveQ>) -> XResult<Json<J>> {
     require_admin(&creds)?;
-    if let Some(u) = vlsync_atproto::syntax::parse_space_uri(q.q.trim()) {
+    if let Some(u) = vlatproto::syntax::parse_space_uri(q.q.trim()) {
         let space = format!("at://{}/space/{}/{}", u.authority, u.space_type, u.skey);
         let (did, kind, uri) = match u.record {
             Some((author, c, r)) => (author, "record", format!("{space}/{author}/{c}/{r}")),
@@ -825,7 +825,7 @@ async fn get_subject(State(app): AppState, Auth(creds): Auth, Query(q): Query<Su
         },
         "quota": super::blob_quota::view(&app, &q.did).await?,
     });
-    if let Some(u) = q.uri.as_deref().and_then(vlsync_atproto::syntax::parse_space_uri) {
+    if let Some(u) = q.uri.as_deref().and_then(vlatproto::syntax::parse_space_uri) {
         let uri = q.uri.as_deref().unwrap_or_default();
         let space = super::space::Space::parse(&format!("at://{}/space/{}/{}", u.authority, u.space_type, u.skey))?;
         let p = app.partition(&q.did)?;
@@ -1004,8 +1004,7 @@ struct AuditQ {
 /// or a registration removal names.
 fn entry_space(e: &AuditEntry) -> Option<String> {
     let of = |u: &str| {
-        vlsync_atproto::syntax::parse_space_uri(u)
-            .map(|s| format!("at://{}/space/{}/{}", s.authority, s.space_type, s.skey))
+        vlatproto::syntax::parse_space_uri(u).map(|s| format!("at://{}/space/{}/{}", s.authority, s.space_type, s.skey))
     };
     e.subject
         .as_ref()
@@ -1133,7 +1132,7 @@ async fn create_case(
     }
     inp.subjects.iter().try_for_each(check_subject)?;
     let who = Who::of(&creds, inp.actor.as_deref(), ip);
-    let now = vlsync_atproto::events::now_rfc3339();
+    let now = vlatproto::events::now_rfc3339();
     let mut notes = Vec::new();
     if let Some(n) =
         inp.note.as_deref().map(|n| bounded_text("note", n, MAX_NOTE)).transpose()?.filter(|n| !n.is_empty())
@@ -1199,7 +1198,7 @@ async fn update_case(
         inp.source.as_deref().map(|s| bounded_text("source", s, MAX_REASON)).transpose()?.filter(|s| !s.is_empty());
     let note = inp.note.as_deref().map(|n| bounded_text("note", n, MAX_NOTE)).transpose()?.filter(|n| !n.is_empty());
     let who = Who::of(&creds, inp.actor.as_deref(), ip);
-    let at = vlsync_atproto::events::now_rfc3339();
+    let at = vlatproto::events::now_rfc3339();
     let mut changes = Vec::new();
     if let Some(s) = &inp.status {
         changes.push(format!("status → {s}"));

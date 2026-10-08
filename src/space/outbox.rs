@@ -32,7 +32,7 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
-use vlsync_atproto::tid::Tid;
+use vlatproto::tid::Tid;
 
 pub const RETRY_BASE: Duration = Duration::from_secs(60);
 pub const RETRY_MAX: Duration = Duration::from_secs(3600);
@@ -667,7 +667,7 @@ mod tests {
     #[test]
     fn a_failing_authority_holds_up_no_one_else() {
         let o = Outbox::default();
-        let now = || vlsync_atproto::tid::Tid::from_parts(vlsync_atproto::tid::now_micros(), 0);
+        let now = || vlatproto::tid::Tid::from_parts(vlatproto::tid::now_micros(), 0);
         let sid = |i: usize| {
             let mut s = [0; 16];
             s[..8].copy_from_slice(&(i as u64).to_be_bytes());
@@ -713,7 +713,7 @@ mod tests {
             "did:a",
             sid,
             "at://s",
-            vlsync_atproto::tid::Tid::from_parts(vlsync_atproto::tid::now_micros(), 0),
+            vlatproto::tid::Tid::from_parts(vlatproto::tid::now_micros(), 0),
             [0; 32],
             true,
         );
@@ -726,7 +726,7 @@ mod tests {
             "did:a",
             sid,
             "at://s",
-            vlsync_atproto::tid::Tid::from_parts(vlsync_atproto::tid::now_micros() + 1, 0),
+            vlatproto::tid::Tid::from_parts(vlatproto::tid::now_micros() + 1, 0),
             [0; 32],
             true,
         );
@@ -759,7 +759,7 @@ mod tests {
     fn waiting_rows_leave_the_age_gauge() {
         let o = Outbox::default();
         let sid = [3; 16];
-        o.enqueue("did:w", sid, "at://s", Tid::from_parts(vlsync_atproto::tid::now_micros(), 0), [0; 32], true);
+        o.enqueue("did:w", sid, "at://s", Tid::from_parts(vlatproto::tid::now_micros(), 0), [0; 32], true);
         let s = send(&o);
         assert!(oldest(&o).is_some());
         o.finish(&s[0], &Outcome::Wait);

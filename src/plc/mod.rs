@@ -8,9 +8,9 @@ use serde_json::{json, Map, Value as J};
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
-use vlsync_atproto::cid::Cid;
-use vlsync_atproto::crypto::Keypair;
-use vlsync_atproto::plc::{valid_plc_did, OpType};
+use vlatproto::cid::Cid;
+use vlatproto::crypto::Keypair;
+use vlatproto::plc::{valid_plc_did, OpType};
 
 #[doc(hidden)]
 pub mod mock;
@@ -84,22 +84,22 @@ pub enum PlcError {
     #[error("Did is tombstoned")]
     Tombstoned,
     #[error(transparent)]
-    Signature(#[from] vlsync_atproto::crypto::SignatureFault),
+    Signature(#[from] vlatproto::crypto::SignatureFault),
 }
 
 fn invalid(m: impl Into<String>) -> PlcError {
     PlcError::Invalid(m.into())
 }
 
-impl From<PlcError> for vlsync_atproto::xrpc::XrpcError {
+impl From<PlcError> for vlatproto::xrpc::XrpcError {
     /// A directory that refuses or fails is a 500, as in the reference (its
     /// `PlcClientError` is not an XRPC error).
-    fn from(e: PlcError) -> vlsync_atproto::xrpc::XrpcError {
+    fn from(e: PlcError) -> vlatproto::xrpc::XrpcError {
         match e {
-            PlcError::Invalid(m) => vlsync_atproto::xrpc::XrpcError::bad("InvalidRequest", m),
-            PlcError::Tombstoned => vlsync_atproto::xrpc::XrpcError::bad("InvalidRequest", "Did is tombstoned"),
+            PlcError::Invalid(m) => vlatproto::xrpc::XrpcError::bad("InvalidRequest", m),
+            PlcError::Tombstoned => vlatproto::xrpc::XrpcError::bad("InvalidRequest", "Did is tombstoned"),
             PlcError::Signature(f) => f.into(),
-            e => vlsync_atproto::xrpc::XrpcError::internal(e.to_string()),
+            e => vlatproto::xrpc::XrpcError::internal(e.to_string()),
         }
     }
 }
@@ -112,7 +112,7 @@ pub fn dag_cbor(v: &J) -> Result<Vec<u8>, PlcError> {
 }
 
 fn encode(v: &J, out: &mut Vec<u8>, depth: usize) -> Result<(), PlcError> {
-    use vlsync_atproto::cbor::*;
+    use vlatproto::cbor::*;
     if depth > 16 {
         return Err(invalid("operation nested too deeply"));
     }
@@ -152,12 +152,12 @@ pub fn op_cid(op: &J) -> Result<Cid, PlcError> {
 /// `didForCreateOp`.
 pub fn did_for_genesis(op: &J) -> Result<String, PlcError> {
     let h = Sha256::digest(dag_cbor(op)?);
-    Ok(format!("did:plc:{}", &vlsync_atproto::cid::base32_encode(&h)[..24]))
+    Ok(format!("did:plc:{}", &vlatproto::cid::base32_encode(&h)[..24]))
 }
 
-/// [`vlsync_atproto::plc::op_type`], refused as `Invalid operation`.
+/// [`vlatproto::plc::op_type`], refused as `Invalid operation`.
 pub fn op_type(op: &J, signed: bool) -> Result<OpType, PlcError> {
-    vlsync_atproto::plc::op_type(op, signed).ok_or_else(|| invalid("Invalid operation"))
+    vlatproto::plc::op_type(op, signed).ok_or_else(|| invalid("Invalid operation"))
 }
 
 /// `normalizeOp`: a legacy `create` as the equivalent `plc_operation`.
@@ -236,7 +236,7 @@ pub fn sign(unsigned: J, key: &Keypair) -> Result<J, PlcError> {
         return Err(invalid("operation is already signed"));
     }
     let bytes = dag_cbor(&J::Object(m.clone()))?;
-    let sig = key.sign_verified(vlsync_atproto::crypto::Purpose::PlcOperation, &bytes)?;
+    let sig = key.sign_verified(vlatproto::crypto::Purpose::PlcOperation, &bytes)?;
     m.insert("sig".into(), J::String(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig)));
     Ok(J::Object(m))
 }
@@ -492,7 +492,7 @@ pub struct PlcClient {
 
 impl PlcClient {
     pub fn new(url: &str) -> PlcClient {
-        PlcClient { url: url.trim_end_matches('/').to_string(), http: vlsync_atproto::http::public().clone() }
+        PlcClient { url: url.trim_end_matches('/').to_string(), http: vlatproto::http::public().clone() }
     }
 
     fn did_url(&self, did: &str, suffix: &str) -> Result<String, PlcError> {

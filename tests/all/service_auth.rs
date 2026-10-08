@@ -67,7 +67,7 @@ async fn issues_verifiable_token_for_bare_did_aud() {
     verify_jwt(&j, &key).expect("service auth JWT must verify against the account's atproto key");
 
     // ...and not against an unrelated key
-    let other = vlsync_atproto::crypto::Keypair::generate();
+    let other = vlatproto::crypto::Keypair::generate();
     assert!(
         verify_jwt(&j, &k256::ecdsa::VerifyingKey::from_sec1_bytes(&other.public_key_sec1()).unwrap()).is_err(),
         "JWT verified with an unrelated key"

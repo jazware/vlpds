@@ -84,7 +84,7 @@ async fn email_factor_disable_shares_the_email_update_limit() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn plc_operation_signature_requests_are_limited() {
     let plc = vlpds::plc::mock::MockPlc::start().await;
-    let rot = Arc::new(vlsync_atproto::crypto::Keypair::generate());
+    let rot = Arc::new(vlatproto::crypto::Keypair::generate());
     let url = plc.url.clone();
     let s = TestServer::spawn_with(move |c| {
         use_plc(c, url, rot);

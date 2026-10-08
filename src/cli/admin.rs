@@ -693,7 +693,7 @@ async fn account(c: &Client, cmd: AccountCmd, opts: &Opts, out: &mut dyn Write) 
         }
         AccountCmd::Takedown { did, reference } => {
             check_did(&did)?;
-            let reference = reference.unwrap_or_else(|| (vlsync_atproto::tid::now_micros() / 1_000_000).to_string());
+            let reference = reference.unwrap_or_else(|| (vlatproto::tid::now_micros() / 1_000_000).to_string());
             let body = json!({
                 "subject": {"$type": "com.atproto.admin.defs#repoRef", "did": did},
                 "takedown": {"applied": true, "ref": reference},

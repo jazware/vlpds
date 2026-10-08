@@ -199,7 +199,7 @@ fn req_space(v: &J) -> XResult<Space> {
 fn req_did<'a>(v: &'a J, k: &str) -> XResult<&'a str> {
     v.get(k)
         .and_then(|s| s.as_str())
-        .filter(|d| vlsync_atproto::syntax::valid_did(d))
+        .filter(|d| vlatproto::syntax::valid_did(d))
         .ok_or_else(|| XrpcError::bad("InvalidRequest", format!("{k} must be a DID")))
 }
 
@@ -213,12 +213,12 @@ async fn create_space(State(app): AppState, Auth(creds): Auth, Json(inp): Json<J
     spaces(&app)?;
     let did = creds.user_did()?.to_string();
     let space_type = inp.get("spaceType").and_then(|t| t.as_str()).unwrap_or("");
-    if !vlsync_atproto::syntax::valid_nsid(space_type) {
+    if !vlatproto::syntax::valid_nsid(space_type) {
         return Err(XrpcError::bad("InvalidRequest", "spaceType must be an NSID"));
     }
     let skey = match inp.get("skey") {
         None | Some(J::Null) => app.tids.next().to_string(),
-        Some(J::String(s)) if vlsync_atproto::syntax::valid_rkey(s) => s.clone(),
+        Some(J::String(s)) if vlatproto::syntax::valid_rkey(s) => s.clone(),
         Some(_) => return Err(XrpcError::bad("InvalidRequest", "skey must be a valid record key")),
     };
     let space = Space::parse(&format!("at://{did}/space/{space_type}/{skey}"))?;
@@ -231,7 +231,7 @@ async fn create_space(State(app): AppState, Auth(creds): Auth, Json(inp): Json<J
         read_policy,
         write_policy,
         app_access,
-        created_at: vlsync_atproto::events::now_rfc3339(),
+        created_at: vlatproto::events::now_rfc3339(),
         deleted_at: None,
     };
     let existing = space_row_opt(&app, &space).await?;
@@ -309,8 +309,7 @@ async fn delete_space(State(app): AppState, Auth(creds): Auth, Json(inp): Json<J
     let did = assert_owner(&creds, &space, SpaceAccess::Manage("delete"))?;
     assert_space_host(&app, &space).await?;
     let ack =
-        submit_space(&app, &did, &space, SpaceOp::DeleteSpace { deleted_at: vlsync_atproto::events::now_rfc3339() })
-            .await?;
+        submit_space(&app, &did, &space, SpaceOp::DeleteSpace { deleted_at: vlatproto::events::now_rfc3339() }).await?;
     if let SpaceAck::Deleted { already: false } = ack {
         match crate::space::host::registrations(&app, &did, &space.sid).await {
             Ok((regs, _)) if !regs.is_empty() => {

@@ -57,10 +57,9 @@ COPY rust-toolchain.toml ./
 # installs the pinned toolchain if the base image's differs, plus the target
 RUN case "$TARGETARCH" in amd64) t=x86_64-unknown-linux-gnu ;; arm64) t=aarch64-unknown-linux-gnu ;; esac \
     && rustup show active-toolchain && rustup target add "$t" && echo "$t" > /rust-target
+# vlsync and vlatproto are git dependencies, fetched by cargo (in the
+# monorepo, build/context.sh adds them under deps/ and a COPY after this line)
 COPY Cargo.toml Cargo.lock ./
-# the shared vlsync crates (build/context.sh adds the monorepo's)
-COPY vlsync/Cargo.toml ./vlsync/
-COPY vlsync/crates ./vlsync/crates
 COPY src ./src
 COPY lexicons ./lexicons
 # embedded by `vlpds dashboards` (src/cli/dashboards.rs)

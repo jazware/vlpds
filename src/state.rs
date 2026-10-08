@@ -48,8 +48,8 @@
 
 use bytes::{BufMut, Bytes};
 use sha2::{Digest, Sha256};
-use vlsync_atproto::cid::{Cid, CID_BYTES_LEN};
-use vlsync_atproto::tid::Tid;
+use vlatproto::cid::{Cid, CID_BYTES_LEN};
+use vlatproto::tid::Tid;
 use vlsync_store::keys::{key_body, key_slot, slot_family, slot_prefix, Gen, SLOT_PREFIX_LEN, SLOT_TAG};
 
 /// Remembers the last DID per thread: a commit builds ~10 keys of one
@@ -120,7 +120,7 @@ pub fn collection_family(collection: &str) -> Vec<u8> {
     [b"C/", collection.as_bytes(), b"\0"].concat()
 }
 
-pub fn blob_ref_key(did: &str, gen: u64, blob: &vlsync_atproto::cid::Cid, path: &str) -> Vec<u8> {
+pub fn blob_ref_key(did: &str, gen: u64, blob: &vlatproto::cid::Cid, path: &str) -> Vec<u8> {
     keyed(
         did,
         BLOB_REF_FAMILY,
@@ -802,7 +802,7 @@ pub fn did_hash(did: &str) -> u64 {
 /// Deterministic, so load generators can address bulk account `i` without a lookup.
 pub fn bulk_did(i: u64) -> String {
     let h = Sha256::digest(format!("vlpds-bulk:{i}").as_bytes());
-    format!("did:plc:{}", &vlsync_atproto::cid::base32_encode(&h)[..24])
+    format!("did:plc:{}", &vlatproto::cid::base32_encode(&h)[..24])
 }
 
 pub fn bulk_handle(i: u64) -> String {

@@ -94,7 +94,7 @@ impl Mfa {
 
 /// `xxxx-xxxx-xxxx-xxxx`, base32: 80 bits.
 fn new_code() -> String {
-    let s = vlsync_atproto::cid::base32_encode(&rand::random::<[u8; 10]>());
+    let s = vlatproto::cid::base32_encode(&rand::random::<[u8; 10]>());
     format!("{}-{}-{}-{}", &s[..4], &s[4..8], &s[8..12], &s[12..16])
 }
 

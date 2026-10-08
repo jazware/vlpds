@@ -26,9 +26,9 @@ use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use vlatproto::cid::Cid;
+use vlatproto::mst::{Entry, Node, Tree};
 use vlpds::mst_lazy::{self, export_blocks, heap_bytes, LazyTree, LoadStats, MemStore};
-use vlsync_atproto::cid::Cid;
-use vlsync_atproto::mst::{Entry, Node, Tree};
 
 #[derive(Clone, Debug)]
 enum Op {
@@ -363,10 +363,10 @@ fn real_repo() -> Option<(Cid, Vec<(Vec<u8>, Cid)>)> {
         eprintln!("skipping: no repo CAR at {path} (set VLPDS_REPO_CAR)");
         return None;
     };
-    let (roots, blocks) = vlsync_atproto::car::read_car(&car).unwrap();
+    let (roots, blocks) = vlatproto::car::read_car(&car).unwrap();
     let blocks: HashMap<Cid, Vec<u8>> = blocks.into_iter().map(|(c, b)| (c, b.to_vec())).collect();
-    let commit = vlsync_atproto::cbor::Value::decode(&blocks[&roots[0]]).unwrap();
-    let Some(vlsync_atproto::cbor::Value::Link(data)) = commit.get("data") else { panic!("commit without data") };
+    let commit = vlatproto::cbor::Value::decode(&blocks[&roots[0]]).unwrap();
+    let Some(vlatproto::cbor::Value::Link(data)) = commit.get("data") else { panic!("commit without data") };
     let tree = Tree::load_from_blocks(&blocks, *data).unwrap();
     let mut recs = Vec::new();
     tree.walk(&mut |k, c| recs.push((k.to_vec(), c)));
@@ -706,7 +706,7 @@ async fn lazy_node(prefetch: usize) -> TestServer {
 /// with the node's own key, at its own clock).
 fn commit_blocks(f: &Frame) -> Vec<(Cid, Vec<u8>)> {
     let Some(Value::Bytes(car)) = f.body.get("blocks") else { panic!("#commit without blocks") };
-    let (roots, blocks) = vlsync_atproto::car::read_car(car).unwrap();
+    let (roots, blocks) = vlatproto::car::read_car(car).unwrap();
     blocks.into_iter().filter(|(c, _)| *c != roots[0]).map(|(c, b)| (c, b.to_vec())).collect()
 }
 
@@ -943,7 +943,7 @@ impl RefRepo {
         want.extend(asked.iter().map(|c| ("cids", c.to_string())));
         let g = get("com.atproto.sync.getBlocks", want).await;
         assert_eq!(g.status, 200, "{}", g.text());
-        let (_, blocks) = vlsync_atproto::car::read_car(&g.body).unwrap();
+        let (_, blocks) = vlatproto::car::read_car(&g.body).unwrap();
         let got: HashMap<Cid, Vec<u8>> = blocks.into_iter().map(|(c, b)| (c, b.to_vec())).collect();
         let expected: HashMap<Cid, Vec<u8>> =
             nodes.iter().cloned().chain(recs.iter().take(5).map(|r| (r.1, record_bytes[&r.1].clone()))).collect();
@@ -966,7 +966,7 @@ impl RefRepo {
         // migration counts: the commit, the nodes (not an empty root), a block per record
         let m = s.xrpc.get("com.atproto.server.checkAccountStatus", &[], &a.auth()).await.ok();
         let non_empty =
-            nodes.iter().filter(|(c, b)| !vlsync_atproto::mst::decode_node(b, *c).unwrap().entries.is_empty()).count();
+            nodes.iter().filter(|(c, b)| !vlatproto::mst::decode_node(b, *c).unwrap().entries.is_empty()).count();
         assert_eq!(m["repoBlocks"], json!(1 + non_empty + recs.len()), "{did}: checkAccountStatus");
     }
 }
@@ -977,10 +977,10 @@ pub(crate) enum Slot {
 }
 
 /// A loaded tree in the streamable CAR order after the commit, as
-/// `vlsync_atproto::car_order` defines it: each node, then its slots as it lists
+/// `vlatproto::car_order` defines it: each node, then its slots as it lists
 /// them, a child recursively and a record (key, CID) in place.
 pub(crate) fn streamable(t: &Tree) -> Vec<Slot> {
-    use vlsync_atproto::car_order::{Next, Walk};
+    use vlatproto::car_order::{Next, Walk};
     let mut nodes = HashMap::new();
     t.walk_blocks(&mut |c, b| {
         nodes.insert(c, b.to_vec());
@@ -992,7 +992,7 @@ pub(crate) fn streamable(t: &Tree) -> Vec<Slot> {
         match walk.next() {
             Next::Node(c) => {
                 let b = nodes[&c].clone();
-                walk.enter(vlsync_atproto::mst::decode_node(&b, c).unwrap()).unwrap();
+                walk.enter(vlatproto::mst::decode_node(&b, c).unwrap()).unwrap();
                 out.push(Slot::Node(c, b));
             }
             Next::Record { key, cid } => out.push(Slot::Record(key.to_vec(), cid)),
@@ -1003,7 +1003,7 @@ pub(crate) fn streamable(t: &Tree) -> Vec<Slot> {
 
 /// CAR blocks after the first (the commit), in order.
 pub(crate) fn car_tail(body: &[u8]) -> Vec<(Cid, Vec<u8>)> {
-    let (_, blocks) = vlsync_atproto::car::read_car(body).unwrap();
+    let (_, blocks) = vlatproto::car::read_car(body).unwrap();
     blocks.into_iter().skip(1).map(|(c, b)| (c, b.to_vec())).collect()
 }
 
@@ -1015,7 +1015,7 @@ async fn stored_nodes(s: &TestServer, did: &str) -> HashMap<Cid, Vec<u8>> {
     let mut out = HashMap::new();
     while let Some(kv) = it.next().await.unwrap() {
         let digest: [u8; 32] = kv.key[prefix.len()..].try_into().unwrap();
-        let c = Cid { codec: vlsync_atproto::cid::CODEC_DAG_CBOR, digest };
+        let c = Cid { codec: vlatproto::cid::CODEC_DAG_CBOR, digest };
         out.insert(c, kv.value.to_vec());
     }
     out
@@ -1604,7 +1604,7 @@ async fn bench_readers() {
             recs.push(c);
         });
         let (mut interior, mut leaves) = (Vec::new(), Vec::new());
-        tree.walk_blocks(&mut |c, b| match vlsync_atproto::mst::decode_node(b, c).unwrap().height {
+        tree.walk_blocks(&mut |c, b| match vlatproto::mst::decode_node(b, c).unwrap().height {
             0 => leaves.push(c),
             _ => interior.push(c),
         })

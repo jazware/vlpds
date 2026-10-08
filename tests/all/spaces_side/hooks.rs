@@ -366,7 +366,7 @@ pub struct Notified {
 
 pub struct StubDid {
     pub did: String,
-    pub key: Arc<vlsync_atproto::crypto::Keypair>,
+    pub key: Arc<vlatproto::crypto::Keypair>,
     refuse: Arc<AtomicBool>,
     seen: Arc<Mutex<Vec<Notified>>>,
 }
@@ -388,7 +388,7 @@ impl StubDid {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
         let (did, base) = (format!("did:web:127.0.0.1%3A{}", addr.port()), format!("http://{addr}"));
-        let key = Arc::new(vlsync_atproto::crypto::Keypair::generate());
+        let key = Arc::new(vlatproto::crypto::Keypair::generate());
         let doc = json!({
             "@context": ["https://www.w3.org/ns/did/v1", "https://w3id.org/security/multikey/v1"],
             "id": did,

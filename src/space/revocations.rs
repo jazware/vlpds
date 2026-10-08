@@ -411,7 +411,7 @@ impl Revocations {
 
     /// Loaded, and read within [`STALE_AFTER`].
     pub fn fresh(&self) -> bool {
-        let age = vlsync_atproto::tid::now_micros().saturating_sub(self.last_ok.load(Ordering::Acquire));
+        let age = vlatproto::tid::now_micros().saturating_sub(self.last_ok.load(Ordering::Acquire));
         self.loaded() && age < STALE_AFTER.as_micros() as u64
     }
 
@@ -430,7 +430,7 @@ impl Revocations {
     }
 
     fn read_ok(&self) {
-        self.last_ok.store(vlsync_atproto::tid::now_micros(), Ordering::Release);
+        self.last_ok.store(vlatproto::tid::now_micros(), Ordering::Release);
     }
 
     /// Whether `space`'s credentials are refused here.

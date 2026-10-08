@@ -169,7 +169,7 @@ async fn request_crawl_reports_each_relay() {
 async fn publish_identity_and_key_rotation() {
     use vlpds::plc::mock::MockPlc;
     let plc = MockPlc::start().await;
-    let rot = Arc::new(vlsync_atproto::crypto::Keypair::generate());
+    let rot = Arc::new(vlatproto::crypto::Keypair::generate());
     let s = TestServer::spawn_plc(&plc.url, rot.clone()).await;
     let a = s.create_account("pid").await;
     let b = s.create_account("pid").await;
@@ -196,7 +196,7 @@ async fn publish_identity_and_key_rotation() {
     assert!(out.contains("FAILED") && out.contains(&format!("published identity evt for {}", a.did)), "{out}");
 
     // rotate-keys: the PLC document's atproto key back to the one held here
-    let other = vlsync_atproto::crypto::Keypair::generate().did_key();
+    let other = vlatproto::crypto::Keypair::generate().did_key();
     let direct = vlpds::plc::Plc::new(&plc.url, rot.clone(), None);
     assert!(direct.update_signing_key(&a.did, &other).await.unwrap(), "diverged");
     let out = ok(admin_cli(&s.url, &["rotate-keys", &a.did]).await);

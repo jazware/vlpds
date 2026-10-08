@@ -13,7 +13,7 @@ use axum::extract::Request;
 use axum::http::{Method, Uri};
 use std::borrow::Cow;
 use std::time::Duration;
-use vlsync_atproto::did_resolver;
+use vlatproto::did_resolver;
 
 /// Private-state name of the stored preferences (JSON array).
 const PREFS_KEY: &str = "prefs:app.bsky";
@@ -797,7 +797,7 @@ async fn send(
             let rb = if target.trusted {
                 crate::http::proxy().request(f.method, &url)
             } else {
-                vlsync_atproto::http::guarded(app.config.dev_mode).request(f.method, &url).map_err(|e| {
+                vlatproto::http::guarded(app.config.dev_mode).request(f.method, &url).map_err(|e| {
                     tracing::warn!(endpoint = %target.url, "proxy target refused: {e}");
                     upstream_failure("Upstream service unreachable")
                 })?
@@ -1168,7 +1168,7 @@ fn mod_service_prefs_did(app: &App, headers: &HeaderMap, uri: &Uri) -> XResult<S
     let did = reqwest::Url::parse(&format!("http://x/?{}", uri.query().unwrap_or("")))
         .ok()
         .and_then(|u| u.query_pairs().find(|(k, _)| k == "did").map(|(_, v)| v.into_owned()))
-        .filter(|d| vlsync_atproto::syntax::valid_did(d))
+        .filter(|d| vlatproto::syntax::valid_did(d))
         .ok_or_else(|| XrpcError::bad("InvalidRequest", "Invalid or missing did parameter"))?;
     Ok(did)
 }

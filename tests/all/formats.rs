@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use vlsync_atproto::cid::Cid;
+use vlatproto::cid::Cid;
 use vlsync_store::segment::{self, LogObject, Mutation, SegmentBuilder};
 use vlsync_store::slots::ShardId;
 use vlsync_store::version;
@@ -58,22 +58,22 @@ const SECRET: &[u8] = b"level-1 wrapped secret fixture";
 fn commit_car(rec_block: &[u8]) -> (Cid, Cid, Vec<u8>, Vec<u8>) {
     let rec = Cid::dag_cbor(rec_block);
     let mut commit_block = Vec::new();
-    vlsync_atproto::cbor::Value::Map(vec![
-        ("did".into(), vlsync_atproto::cbor::Value::Text(DID.into())),
-        ("data".into(), vlsync_atproto::cbor::Value::Link(rec)),
+    vlatproto::cbor::Value::Map(vec![
+        ("did".into(), vlatproto::cbor::Value::Text(DID.into())),
+        ("data".into(), vlatproto::cbor::Value::Link(rec)),
     ])
     .encode(&mut commit_block);
     let commit = Cid::dag_cbor(&commit_block);
     let mut car = Vec::new();
-    vlsync_atproto::car::write_header(&mut car, &commit);
-    vlsync_atproto::car::write_block(&mut car, &commit, &commit_block);
-    vlsync_atproto::car::write_block(&mut car, &rec, rec_block);
+    vlatproto::car::write_header(&mut car, &commit);
+    vlatproto::car::write_block(&mut car, &commit, &commit_block);
+    vlatproto::car::write_block(&mut car, &rec, rec_block);
     (rec, commit, commit_block, car)
 }
 
 /// A finished #commit frame of `ops` at `seq`.
-fn finish_commit(rev: &str, commit: Cid, car: &[u8], ops: &[vlsync_atproto::events::RepoOp], seq: i64) -> Vec<u8> {
-    let frame = vlsync_atproto::events::commit_frame(&vlsync_atproto::events::CommitFrame {
+fn finish_commit(rev: &str, commit: Cid, car: &[u8], ops: &[vlatproto::events::RepoOp], seq: i64) -> Vec<u8> {
+    let frame = vlatproto::events::commit_frame(&vlatproto::events::CommitFrame {
         repo: DID,
         rev,
         since: None,
@@ -89,10 +89,10 @@ fn finish_commit(rev: &str, commit: Cid, car: &[u8], ops: &[vlsync_atproto::even
 }
 
 /// A #commit frame (one update) and the record/commit blocks it carries.
-fn commit_frame() -> (Vec<u8>, Cid, Vec<u8>, vlsync_atproto::tid::Tid) {
+fn commit_frame() -> (Vec<u8>, Cid, Vec<u8>, vlatproto::tid::Tid) {
     let (rec, commit, commit_block, car) = commit_car(b"\xa1aa\x01");
-    let rev = vlsync_atproto::tid::Tid::parse("3l3qo2vutsw2b").unwrap();
-    let ops = [vlsync_atproto::events::RepoOp {
+    let rev = vlatproto::tid::Tid::parse("3l3qo2vutsw2b").unwrap();
+    let ops = [vlatproto::events::RepoOp {
         action: "update",
         path: "app.bsky.feed.post/1",
         cid: Some(rec),
@@ -129,14 +129,14 @@ fn segment_plain() -> Vec<u8> {
 /// A like record (it has a backlink: src/backlinks.rs).
 fn like_record() -> Vec<u8> {
     let v = serde_json::json!({"$type": "app.bsky.feed.like", "subject": {"uri": "at://did:plc:subject000000000000000000/app.bsky.feed.post/3l3qo2vutsw2a", "cid": Cid::dag_cbor(b"\xa0").to_string()}, "createdAt": TIME});
-    vlsync_atproto::cbor::Value::from_json(&v).unwrap().to_cbor()
+    vlatproto::cbor::Value::from_json(&v).unwrap().to_cbor()
 }
 
 /// A segment of one #commit creating a like: its derived muts include the
 /// backlink put (`bl/`, `vlpds::derived::derive_commit_muts`).
 fn segment_like() -> Vec<u8> {
     let (rec, commit, _, car) = commit_car(&like_record());
-    let ops = [vlsync_atproto::events::RepoOp {
+    let ops = [vlatproto::events::RepoOp {
         action: "create",
         path: "app.bsky.feed.like/3l3qo2vutsw2b",
         cid: Some(rec),
@@ -273,7 +273,7 @@ fn space_head() -> vlpds::space::rows::HeadRow {
     hash.add(&vlpds::space::commit::element("com.example.post", "1", &Cid::dag_cbor(b"\xa1aa\x01").to_string()));
     vlpds::space::rows::HeadRow {
         uri: SPACE.into(),
-        rev: vlsync_atproto::tid::Tid(0x1234_5678_9abc),
+        rev: vlatproto::tid::Tid(0x1234_5678_9abc),
         hash,
         records: 1,
         created: 1_790_000_000_000_000,
@@ -327,18 +327,14 @@ fn space_ops_decode(b: &[u8]) -> Vec<vlpds::space::rows::OpRow> {
 }
 
 fn space_outbox() -> vlpds::space::rows::OutboxRow {
-    vlpds::space::rows::OutboxRow {
-        uri: SPACE.into(),
-        repo_rev: vlsync_atproto::tid::Tid(0x1234_5678_9abc),
-        hash: [7; 32],
-    }
+    vlpds::space::rows::OutboxRow { uri: SPACE.into(), repo_rev: vlatproto::tid::Tid(0x1234_5678_9abc), hash: [7; 32] }
 }
 
 fn space_writer() -> vlpds::space::rows::WriterRow {
     vlpds::space::rows::WriterRow {
-        repo_rev: vlsync_atproto::tid::Tid(0x1234_5678_9abc),
+        repo_rev: vlatproto::tid::Tid(0x1234_5678_9abc),
         hash: [7; 32],
-        space_rev: vlsync_atproto::tid::Tid(0x1234_5678_9abd),
+        space_rev: vlatproto::tid::Tid(0x1234_5678_9abd),
     }
 }
 
@@ -478,7 +474,7 @@ fn writer_claim() -> Vec<u8> {
 }
 
 fn frames() -> Vec<(&'static str, Vec<u8>)> {
-    use vlsync_atproto::events;
+    use vlatproto::events;
     let fin = |f: events::Frame, seq: i64| {
         let mut b = Vec::new();
         f.finish(seq, &mut b);
@@ -486,8 +482,8 @@ fn frames() -> Vec<(&'static str, Vec<u8>)> {
     };
     let mut car = Vec::new();
     let c = Cid::dag_cbor(b"\xa0");
-    vlsync_atproto::car::write_header(&mut car, &c);
-    vlsync_atproto::car::write_block(&mut car, &c, b"\xa0");
+    vlatproto::car::write_header(&mut car, &c);
+    vlatproto::car::write_block(&mut car, &c, b"\xa0");
     vec![
         ("firehose/commit.frame", commit_frame().0),
         ("firehose/identity.frame", fin(events::identity_frame(DID, "fixture.test", TIME), 1003 << 8)),
@@ -798,7 +794,7 @@ async fn writers_reproduce_the_max_level_fixtures() {
 }
 
 fn cbor_reencode(name: &str, b: &[u8]) {
-    use vlsync_atproto::cbor::Value;
+    use vlatproto::cbor::Value;
     let (h, n) = Value::decode_prefix(b).unwrap_or_else(|e| panic!("{name}: {e:?}"));
     let body = Value::decode(&b[n..]).unwrap_or_else(|e| panic!("{name}: {e:?}"));
     let mut out = Vec::new();

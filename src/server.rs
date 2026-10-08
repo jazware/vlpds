@@ -596,7 +596,7 @@ pub async fn build(cfg: Config) -> anyhow::Result<Arc<xrpc::App>> {
         workers,
         partitions: table,
         firehose,
-        tids: vlsync_atproto::tid::TidClock::new(),
+        tids: vlatproto::tid::TidClock::new(),
         public_url: cfg.public_url.clone(),
         handle_domains: Arc::new(crate::handle_domains::HandleDomains::new(&cfg.handle_domain)),
         write_permits: Arc::new(tokio::sync::Semaphore::new(cfg.max_inflight_writes)),
@@ -638,7 +638,7 @@ pub fn spawn_reporters(app: &Arc<xrpc::App>) {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         loop {
             tick.tick().await;
-            let now = vlsync_firehose::log::seq_floor(vlsync_atproto::tid::now_micros());
+            let now = vlsync_firehose::log::seq_floor(vlatproto::tid::now_micros());
             // one node log: report its watermark lag once
             if let Some(p) = parts.owned().first() {
                 let lag_us = (now - p.wm.get()).max(0) >> 8;
@@ -1197,7 +1197,7 @@ mod tests {
             internal_token: internal.into(),
             kek: crate::secrets::KekConfig { local: Some(crate::secrets::KekBytes::random()), ..Default::default() },
             plc: crate::plc::PlcConfig {
-                rotation_key: Some(crate::plc::RotationKey::Key(Arc::new(vlsync_atproto::crypto::Keypair::generate()))),
+                rotation_key: Some(crate::plc::RotationKey::Key(Arc::new(vlatproto::crypto::Keypair::generate()))),
                 ..Default::default()
             },
             ..Config::default()

@@ -19,7 +19,7 @@ async fn assert_all_served(s: &TestServer, did: &str, repo: &Repo) -> (Vec<Cid>,
     for chunk in all.chunks(50) {
         let r = s.get_blocks(did, chunk).await;
         assert_eq!(r.status, 200, "{}", r.text());
-        let (_, blocks) = vlsync_atproto::car::read_car(&r.body).unwrap();
+        let (_, blocks) = vlatproto::car::read_car(&r.body).unwrap();
         assert_eq!(blocks.len(), chunk.len());
         for (c, b) in blocks {
             assert_eq!(Some(b), repo.blocks.get(&c).map(|v| &v[..]), "{c}");

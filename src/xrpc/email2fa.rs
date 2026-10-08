@@ -202,7 +202,7 @@ pub(super) async fn enable(app: &App, did: &str) -> XResult<()> {
                 "A confirmed email address is required to enable email-based two-factor authentication",
             ));
         }
-        super::server::set_extra(a, FLAG, json!(vlsync_atproto::events::now_rfc3339()));
+        super::server::set_extra(a, FLAG, json!(vlatproto::events::now_rfc3339()));
         Ok(true)
     })
     .await?;

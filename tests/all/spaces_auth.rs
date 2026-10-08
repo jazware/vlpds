@@ -30,7 +30,7 @@ fn rec(text: &str) -> J {
 }
 
 fn now() -> i64 {
-    vlsync_atproto::tid::now_micros() as i64 / 1_000_000
+    vlatproto::tid::now_micros() as i64 / 1_000_000
 }
 
 async fn spawn() -> TestServer {
@@ -67,7 +67,7 @@ async fn eventually<T>(within: Duration, mut f: impl FnMut() -> Option<T>) -> Op
 /// `status` and records each.
 struct Stub {
     did: String,
-    key: vlsync_atproto::crypto::Keypair,
+    key: vlatproto::crypto::Keypair,
     notifies: Arc<Mutex<Vec<J>>>,
     status: Arc<Mutex<u16>>,
 }
@@ -77,7 +77,7 @@ impl Stub {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
         let (base, did) = (format!("http://{addr}"), format!("did:web:127.0.0.1%3A{}", addr.port()));
-        let key = vlsync_atproto::crypto::Keypair::generate();
+        let key = vlatproto::crypto::Keypair::generate();
         let doc = json!({
             "id": did,
             "verificationMethod": [{

@@ -12,8 +12,8 @@ use k256::ecdsa::VerifyingKey;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use vlatproto::crypto::Keypair;
 use vlpds::plc::mock::MockPlc;
-use vlsync_atproto::crypto::Keypair;
 
 async fn plc_pds(plc: &MockPlc) -> TestServer {
     TestServer::spawn_plc(&plc.url, Arc::new(Keypair::generate())).await

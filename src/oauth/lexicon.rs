@@ -18,8 +18,8 @@ use serde_json::Value as J;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
-use vlsync_atproto::cbor::Value;
-use vlsync_atproto::cid::Cid;
+use vlatproto::cbor::Value;
+use vlatproto::cid::Cid;
 
 const REFRESH: Duration = Duration::from_secs(300);
 /// After a failed background re-resolution.
@@ -61,7 +61,7 @@ pub fn apply_authority_overrides(entries: &[String], dev_mode: bool) -> anyhow::
         let authority = authority.trim().to_ascii_lowercase();
         let did = did.trim();
         anyhow::ensure!(
-            vlsync_atproto::syntax::valid_handle(&authority),
+            vlatproto::syntax::valid_handle(&authority),
             "--lexicon-authority-override {e:?}: {authority:?} isn't a domain"
         );
         anyhow::ensure!(
@@ -206,10 +206,9 @@ async fn fetch_record(app: &App, did: &str, nsid: &str) -> Result<J, String> {
         return check_record_type(rec.to_json());
     }
     let doc = app.did_resolver.resolve(did).await.map_err(|e| e.to_string())?;
-    let pds = vlsync_atproto::did_resolver::service_endpoint(&doc, "atproto_pds")
+    let pds = vlatproto::did_resolver::service_endpoint(&doc, "atproto_pds")
         .ok_or("No atproto PDS service endpoint in DID document")?;
-    let key =
-        vlsync_atproto::did_resolver::signing_key_multibase(&doc).ok_or("No atproto signing key in DID document")?;
+    let key = vlatproto::did_resolver::signing_key_multibase(&doc).ok_or("No atproto signing key in DID document")?;
     let url = format!(
         "{}/xrpc/com.atproto.sync.getRecord?did={}&collection={}&rkey={}",
         pds.trim_end_matches('/'),
@@ -230,7 +229,7 @@ fn check_record_type(rec: J) -> Result<J, String> {
 
 async fn fetch_bytes(url: &str, dev_mode: bool) -> Result<Vec<u8>, String> {
     use futures::StreamExt;
-    let resp = vlsync_atproto::http::guarded(dev_mode)
+    let resp = vlatproto::http::guarded(dev_mode)
         .get(url)?
         .header("accept", "application/vnd.ipld.car")
         .timeout(Duration::from_secs(10))
@@ -255,7 +254,7 @@ async fn fetch_bytes(url: &str, dev_mode: bool) -> Result<Vec<u8>, String> {
 /// Every block hashes to its CID, the root commit is `did`'s and signed by
 /// `key_multibase`, and its MST maps `rpath` to the included record.
 pub fn verify_record_proof(car: &[u8], did: &str, key_multibase: &str, rpath: &str) -> Result<J, String> {
-    let (roots, blocks) = vlsync_atproto::car::read_car(car).map_err(|e| e.to_string())?;
+    let (roots, blocks) = vlatproto::car::read_car(car).map_err(|e| e.to_string())?;
     let root = *roots.first().ok_or("CAR has no root")?;
     let mut map: HashMap<Cid, Vec<u8>> = HashMap::new();
     for (c, data) in blocks {
@@ -283,8 +282,8 @@ pub fn verify_record_proof(car: &[u8], did: &str, key_multibase: &str, rpath: &s
     };
     // only the nodes on rpath's path: the proof needs nothing else, and
     // the rest of an attacker's block set is never decoded
-    let tree = vlsync_atproto::mst::Tree::load_path_from_blocks(&map, *data, rpath.as_bytes())
-        .map_err(|e| format!("{e:?}"))?;
+    let tree =
+        vlatproto::mst::Tree::load_path_from_blocks(&map, *data, rpath.as_bytes()).map_err(|e| format!("{e:?}"))?;
     let rcid = tree.get(rpath.as_bytes()).map_err(|e| format!("{e:?}"))?.ok_or("Record not found in proof")?;
     let rec = Value::decode(map.get(&rcid).ok_or("record block missing")?).map_err(|e| e.to_string())?;
     check_record_type(rec.to_json())
@@ -307,9 +306,9 @@ fn verify_multikey(multibase: &str, msg: &[u8], sig: &[u8], allow_high_s: bool) 
         .map_err(|e| e.to_string())?;
     match raw.as_slice() {
         [0xe7, 0x01, key @ ..] => if allow_high_s {
-            vlsync_atproto::crypto::verify_k256_malleable(key, msg, sig)
+            vlatproto::crypto::verify_k256_malleable(key, msg, sig)
         } else {
-            vlsync_atproto::crypto::verify_k256(key, msg, sig)
+            vlatproto::crypto::verify_k256(key, msg, sig)
         }
         .map_err(|e| e.to_string()),
         [0x80, 0x24, key @ ..] => {
@@ -498,7 +497,7 @@ mod tests {
         assert!(high.normalize_s() != high, "high-S form");
         for (key, low, high) in [(p256_key, low.to_bytes().to_vec(), high.to_bytes().to_vec()), {
             // K-256
-            let kp = vlsync_atproto::crypto::Keypair::generate();
+            let kp = vlatproto::crypto::Keypair::generate();
             let low = kp.sign(msg);
             let s = k256::ecdsa::Signature::from_slice(&low).unwrap();
             let high = k256::ecdsa::Signature::from_scalars(s.r(), -*s.s()).unwrap();

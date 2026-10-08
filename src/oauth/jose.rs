@@ -133,11 +133,11 @@ impl ServerKey {
     }
 
     /// Hedged and verified before it is returned, as commit signatures are
-    /// (vlsync-atproto/src/crypto.rs). Err: failed twice.
-    pub fn sign(&self, typ: &str, payload: &J) -> Result<String, vlsync_atproto::crypto::SignatureFault> {
+    /// (vlatproto/src/crypto.rs). Err: failed twice.
+    pub fn sign(&self, typ: &str, payload: &J) -> Result<String, vlatproto::crypto::SignatureFault> {
         use p256::ecdsa::signature::RandomizedSigner;
         use p256::elliptic_curve::{common::getrandom::SysRng, rand_core::UnwrapErr};
-        use vlsync_atproto::crypto::{fault, record_fault, Purpose, SignatureFault};
+        use vlatproto::crypto::{fault, record_fault, Purpose, SignatureFault};
         let header = json!({"alg": "ES256", "typ": typ, "kid": self.kid});
         let input =
             format!("{}.{}", b64u(serde_json::to_vec(&header).unwrap()), b64u(serde_json::to_vec(payload).unwrap()));
@@ -424,13 +424,13 @@ mod tests {
     /// re-signed, two fail.
     #[test]
     fn server_key_faults_are_caught() {
-        use vlsync_atproto::crypto::fault::{inject, Fault};
+        use vlatproto::crypto::fault::{inject, Fault};
         // the three faults below reach the fail-stop count, which would end
-        // this test binary (vlsync-atproto only skips the exit in its own tests)
-        vlsync_atproto::crypto::set_fail_stop_hook(Some(std::sync::Arc::new(|_| {})));
+        // this test binary (vlatproto only skips the exit in its own tests)
+        vlatproto::crypto::set_fail_stop_hook(Some(std::sync::Arc::new(|_| {})));
         let a = ServerKey::derive("fault-test");
         let id = a.sk.verifying_key().to_sec1_point(true);
-        let failures = || vlsync_atproto::crypto::SIGNATURE_VERIFY_FAILURES.with_label_values(&["oauth_token"]).get();
+        let failures = || vlatproto::crypto::SIGNATURE_VERIFY_FAILURES.with_label_values(&["oauth_token"]).get();
         let before = failures();
         inject(id.as_bytes(), Fault::Signature, 1);
         let t = a.sign("at+jwt", &json!({"sub": "x"})).unwrap();

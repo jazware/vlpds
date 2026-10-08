@@ -569,7 +569,7 @@ async fn cursors_inside_the_window_through_restarts_and_reshards() {
         tokio::spawn(async move {
             let (mut probes, mut events) = (0usize, 0usize);
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                let now = vlsync_atproto::tid::now_micros();
+                let now = vlatproto::tid::now_micros();
                 let cursor = vlsync_firehose::log::seq_floor(now - AGE.as_micros() as u64);
                 let target = vlsync_firehose::log::seq_floor(now);
                 let mut sub =
@@ -591,7 +591,7 @@ async fn cursors_inside_the_window_through_restarts_and_reshards() {
                 for f in &frames {
                     if f.kind() == "#info" {
                         let floor = vlsync_firehose::log::retained_floor(&app.store).await.unwrap();
-                        let age = Duration::from_micros(vlsync_atproto::tid::now_micros() - (cursor >> 8) as u64);
+                        let age = Duration::from_micros(vlatproto::tid::now_micros() - (cursor >> 8) as u64);
                         panic!("OutdatedCursor for a cursor {AGE:?} old at connect, {age:?} now (window {WINDOW:?}); floor - cursor = {:?}", Duration::from_micros(((floor - cursor).max(0) >> 8) as u64));
                     }
                     let Some(seq) = f.seq() else { continue };

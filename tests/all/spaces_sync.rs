@@ -13,8 +13,8 @@ use base64::Engine;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use vlatproto::cbor::Value;
 use vlpds::space::{commit, lthash::LtHash};
-use vlsync_atproto::cbor::Value;
 
 const TYPE: &str = "com.example.group";
 const COLL: &str = "com.example.post";
@@ -111,7 +111,7 @@ where
 struct Car {
     commit: commit::SignedCommit,
     paths: Vec<String>,
-    index_root: vlsync_atproto::cid::Cid,
+    index_root: vlatproto::cid::Cid,
     blocks: usize,
 }
 
@@ -120,13 +120,13 @@ struct Car {
 /// canonical order and folds to the commit's hash, and each record block
 /// follows the index (`values`) or none do.
 fn verify_car(car: &[u8], space: &str, author: &str, key: &str, values: bool) -> Car {
-    let (roots, blocks) = vlsync_atproto::car::read_car(car).unwrap();
+    let (roots, blocks) = vlatproto::car::read_car(car).unwrap();
     assert_eq!(roots.len(), 2, "two roots");
     assert_eq!((blocks[0].0, blocks[1].0), (roots[0], roots[1]), "commit, then index");
     let sc = signed_commit(&Value::decode(blocks[0].1).unwrap().to_json());
     let ctx = commit::CommitCtx { space, author, rev: &sc.rev };
     assert!(commit::verify(&sc, &ctx, key), "the commit verifies");
-    let entries: Vec<(String, vlsync_atproto::cid::Cid)> = match Value::decode(blocks[1].1).unwrap() {
+    let entries: Vec<(String, vlatproto::cid::Cid)> = match Value::decode(blocks[1].1).unwrap() {
         Value::Map(m) => m
             .into_iter()
             .map(|(k, v)| match v {
@@ -138,7 +138,7 @@ fn verify_car(car: &[u8], space: &str, author: &str, key: &str, values: bool) ->
     };
     let paths: Vec<String> = entries.iter().map(|e| e.0.clone()).collect();
     let mut sorted = paths.clone();
-    sorted.sort_by(|a, b| vlsync_atproto::cbor::key_cmp(a, b));
+    sorted.sort_by(|a, b| vlatproto::cbor::key_cmp(a, b));
     assert_eq!(paths, sorted, "index in length-first canonical order");
     let mut set = LtHash::default();
     for (p, cid) in &entries {
@@ -150,7 +150,7 @@ fn verify_car(car: &[u8], space: &str, author: &str, key: &str, values: bool) ->
         assert_eq!(blocks.len(), 2 + entries.len());
         for ((_, cid), (bc, data)) in entries.iter().zip(&blocks[2..]) {
             assert_eq!(cid, bc, "blocks follow the index");
-            assert!(vlsync_atproto::car::block_matches(bc, data));
+            assert!(vlatproto::car::block_matches(bc, data));
         }
     } else {
         assert_eq!(blocks.len(), 2, "index only");
@@ -482,7 +482,7 @@ async fn a_pruned_oplog_sends_syncers_to_get_repo() {
     // the syncer falls behind; the window passes over its ops and more
     owner.create_record(&space, COLL, Some("c"), rec("c")).await.ok();
     owner.delete_record(&space, COLL, "a").await.ok();
-    let pruned = vlpds::space::retention::prune_before(&s.app, vlsync_atproto::tid::now_micros() + 1).await.unwrap();
+    let pruned = vlpds::space::retention::prune_before(&s.app, vlatproto::tid::now_micros() + 1).await.unwrap();
     assert!(pruned >= 4, "{pruned}");
     owner.create_record(&space, COLL, Some("d"), rec("d")).await.ok();
 
@@ -582,14 +582,9 @@ async fn one_slow_syncer_holds_up_nobody() {
     let p = s.app.partition(&owner.did).ok().unwrap();
     let sid = vlpds::state::space_id(&space);
     let nkey = vlpds::state::space_notify_key(&owner.did, &sid, &expired.service());
-    vlpds::xrpc::space::set_registration_expiry(
-        &s.app,
-        &space,
-        &expired.service(),
-        vlsync_atproto::tid::now_micros() - 1,
-    )
-    .await
-    .unwrap();
+    vlpds::xrpc::space::set_registration_expiry(&s.app, &space, &expired.service(), vlatproto::tid::now_micros() - 1)
+        .await
+        .unwrap();
 
     // the slow one is stuck on the first write while 50 more land
     let mut acks = Vec::new();
@@ -659,7 +654,7 @@ async fn owned_by(node: &TestServer, nodes: &[&TestServer], name: &str, scope: &
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_notify_crosses_to_the_authoritys_node() {
     let plc = vlpds::plc::mock::MockPlc::start().await;
-    let rotation = Arc::new(vlsync_atproto::crypto::Keypair::generate());
+    let rotation = Arc::new(vlatproto::crypto::Keypair::generate());
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let cfg = |c: &mut vlpds::server::Config| {
         use_plc(c, plc.url.clone(), rotation.clone());
@@ -708,7 +703,7 @@ async fn a_notify_crosses_to_the_authoritys_node() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_notify_to_an_authority_elsewhere_asks_the_owner_once() {
     let plc = vlpds::plc::mock::MockPlc::start().await;
-    let rotation = Arc::new(vlsync_atproto::crypto::Keypair::generate());
+    let rotation = Arc::new(vlatproto::crypto::Keypair::generate());
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let cfg = |c: &mut vlpds::server::Config| {
         use_plc(c, plc.url.clone(), rotation.clone());
@@ -777,20 +772,20 @@ async fn a_renewal_outlives_a_prune_that_read_it_expired() {
     register().await;
     let p = s.app.partition(&owner.did).ok().unwrap();
     let key = vlpds::state::space_notify_key(&owner.did, &vlpds::state::space_id(&space), &sy.service());
-    vlpds::xrpc::space::set_registration_expiry(&s.app, &space, &sy.service(), vlsync_atproto::tid::now_micros() - 1)
+    vlpds::xrpc::space::set_registration_expiry(&s.app, &space, &sy.service(), vlatproto::tid::now_micros() - 1)
         .await
         .unwrap();
     // a prune reads it expired, then the syncer renews before the delete
-    let read_at = vlsync_atproto::tid::now_micros();
+    let read_at = vlatproto::tid::now_micros();
     register().await;
     vlpds::xrpc::space::unregister_if_expired(&s.app, &space, &sy.service(), read_at).await.unwrap();
     let row = vlpds::space::rows::NotifyRow::decode(&p.db.get(&key).await.unwrap().expect("renewed")).unwrap();
     assert!(row.expires > read_at, "the renewal was deleted");
     // one that's still expired goes
-    vlpds::xrpc::space::set_registration_expiry(&s.app, &space, &sy.service(), vlsync_atproto::tid::now_micros() - 1)
+    vlpds::xrpc::space::set_registration_expiry(&s.app, &space, &sy.service(), vlatproto::tid::now_micros() - 1)
         .await
         .unwrap();
-    vlpds::xrpc::space::unregister_if_expired(&s.app, &space, &sy.service(), vlsync_atproto::tid::now_micros())
+    vlpds::xrpc::space::unregister_if_expired(&s.app, &space, &sy.service(), vlatproto::tid::now_micros())
         .await
         .unwrap();
     assert!(p.db.get(&key).await.unwrap().is_none());

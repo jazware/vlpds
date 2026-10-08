@@ -15,7 +15,7 @@ use base64::Engine;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
-use vlsync_atproto::tid::Tid;
+use vlatproto::tid::Tid;
 
 const TYPE: &str = "com.example.group";
 const COLL: &str = "com.example.post";
@@ -601,7 +601,7 @@ async fn pair(plc: &vlpds::plc::mock::MockPlc) -> (TestServer, TestServer) {
     let spawn = || {
         let url = plc.url.clone();
         TestServer::spawn_with(move |c| {
-            use_plc(c, url, Arc::new(vlsync_atproto::crypto::Keypair::generate()));
+            use_plc(c, url, Arc::new(vlatproto::crypto::Keypair::generate()));
             c.spaces = true;
         })
     };
@@ -727,7 +727,7 @@ async fn notify_write_from_another_vlpds() {
     notify(&b, &a, &member.did, &aud, dup).await.ok();
     notify(&b, &a, &member.did, &owner.did, body(&member.did, &rev1)).await.ok();
     assert_eq!(repos().await[0]["spaceRev"], json!(space_rev2));
-    let future = rev_at(vlsync_atproto::tid::now_micros() + 10 * 60 * 1_000_000);
+    let future = rev_at(vlatproto::tid::now_micros() + 10 * 60 * 1_000_000);
     notify(&b, &a, &member.did, &aud, body(&member.did, &future)).await.err(400, "FutureRev");
     // a writer claimed by someone else's service auth
     notify(&b, &a, &member.did, &aud, body(&stranger.did, &rev2)).await.err_status(403);
@@ -736,7 +736,7 @@ async fn notify_write_from_another_vlpds() {
         .await
         .err_status(403);
     // not a member, and a member without write
-    let now = rev_at(vlsync_atproto::tid::now_micros());
+    let now = rev_at(vlatproto::tid::now_micros());
     notify(&b, &a, &stranger.did, &aud, body(&stranger.did, &now)).await.err_status(403);
     notify(&b, &a, &reader.did, &aud, body(&reader.did, &now)).await.err_status(403);
     // a space B doesn't govern
@@ -811,7 +811,7 @@ async fn notify_write_from_another_vlpds() {
         )
         .await
         .ok();
-    vlpds::xrpc::space::set_registration_expiry(&b.app, &space, &service, vlsync_atproto::tid::now_micros() - 1)
+    vlpds::xrpc::space::set_registration_expiry(&b.app, &space, &service, vlatproto::tid::now_micros() - 1)
         .await
         .unwrap();
     member.create_record(&space, COLL, Some("4"), rec("four")).await.ok();
@@ -886,7 +886,7 @@ async fn get_repo_car() {
     };
     let (status, ctype, car) = get(false).await;
     assert_eq!((status, ctype.as_str()), (200, "application/vnd.ipld.car"));
-    let (roots, blocks) = vlsync_atproto::car::read_car(&car).unwrap();
+    let (roots, blocks) = vlatproto::car::read_car(&car).unwrap();
     assert_eq!(roots.len(), 2);
     assert_eq!(blocks[0].0, roots[0]);
     assert_eq!(blocks[1].0, roots[1]);
@@ -902,7 +902,7 @@ async fn get_repo_car() {
     for (i, p) in paths.iter().enumerate() {
         let (coll, rkey) = p.split_once('/').unwrap();
         let cid = blocks[2 + i].0;
-        assert!(vlsync_atproto::car::block_matches(&cid, blocks[2 + i].1));
+        assert!(vlatproto::car::block_matches(&cid, blocks[2 + i].1));
         set.add(&commit::element(coll, rkey, &cid.to_string()));
     }
     let bytes = |k: &str| {
@@ -919,7 +919,7 @@ async fn get_repo_car() {
     };
     assert!(commit::matches(&set, &sc), "the index folds to the commit's hash");
     let (_, _, idx_only) = get(true).await;
-    let (roots2, blocks2) = vlsync_atproto::car::read_car(&idx_only).unwrap();
+    let (roots2, blocks2) = vlatproto::car::read_car(&idx_only).unwrap();
     assert_eq!((roots2.len(), blocks2.len()), (2, 2));
     assert_eq!(roots2[1], roots[1], "the same index");
     let r = owner

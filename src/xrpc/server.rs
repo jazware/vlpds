@@ -120,11 +120,11 @@ pub(super) fn public_host(app: &App) -> &str {
 }
 
 pub(super) fn now_secs() -> u64 {
-    vlsync_atproto::tid::now_micros() / 1_000_000
+    vlatproto::tid::now_micros() / 1_000_000
 }
 
 pub(super) fn now_ms() -> u64 {
-    vlsync_atproto::tid::now_micros() / 1000
+    vlatproto::tid::now_micros() / 1000
 }
 
 fn err(status: StatusCode, error: &str, message: impl Into<String>) -> XrpcError {
@@ -157,7 +157,7 @@ fn random_hex(n: usize) -> String {
 
 /// TS getRandomToken(): `xxxxx-xxxxx` in base32.
 pub(super) fn random_token() -> String {
-    let s = vlsync_atproto::cid::base32_encode(&rand::random::<[u8; 8]>());
+    let s = vlatproto::cid::base32_encode(&rand::random::<[u8; 8]>());
     format!("{}-{}", &s[..5], &s[5..10])
 }
 
@@ -420,7 +420,7 @@ fn family_micros(jti: &str) -> Option<u64> {
 }
 
 fn new_family_id() -> String {
-    format!("{:016x}{}", vlsync_atproto::tid::now_micros(), random_hex(8))
+    format!("{:016x}{}", vlatproto::tid::now_micros(), random_hex(8))
 }
 
 async fn load_sets(app: &App, did: &str, local: Option<(vlsync_store::slots::ShardId, u64)>) -> XResult<Ctl> {
@@ -693,7 +693,7 @@ pub(super) fn deliver(app: &App, permit: MailPermit, to: &str, email: crate::mai
         purpose: email.purpose().to_string(),
         did: permit.1,
         token: Some(email.token()).filter(|t| !t.is_empty()).map(String::from),
-        sent_at: vlsync_atproto::events::now_rfc3339(),
+        sent_at: vlatproto::events::now_rfc3339(),
     };
     send_mail(app, mail, app.config.mailer.as_ref());
 }
@@ -708,7 +708,7 @@ pub(super) fn deliver_moderation(app: &App, did: &str, to: &str, subject: &str, 
         purpose: "admin".into(),
         did: Some(did.to_string()),
         token: None,
-        sent_at: vlsync_atproto::events::now_rfc3339(),
+        sent_at: vlatproto::events::now_rfc3339(),
     };
     let m = app.config.moderation_mailer.as_ref().or(app.config.mailer.as_ref());
     send_mail(app, mail, m);
@@ -764,8 +764,7 @@ pub(super) async fn create_email_token(app: &App, did: &str, purpose: &str) -> X
 
 pub(super) async fn assert_email_token(app: &App, did: &str, purpose: &str, token: &str) -> XResult<()> {
     let rec: Option<EmailToken> = get_json(app, did, &format!("etok/{purpose}")).await?;
-    let Some(rec) = rec.filter(|r| vlsync_atproto::xrpc::token_eq(&r.token_hash, &email_token_digest(app, token)))
-    else {
+    let Some(rec) = rec.filter(|r| vlatproto::xrpc::token_eq(&r.token_hash, &email_token_digest(app, token))) else {
         return Err(invalid_token("Token is invalid"));
     };
     if now_ms().saturating_sub(rec.requested_at) > EMAIL_TOKEN_TTL_MS {
@@ -934,10 +933,10 @@ async fn try_release_handle(app: &App, handle: &str, did: &str) -> XResult<()> {
 
 pub(super) fn normalize_handle(h: &str) -> XResult<String> {
     let h = h.trim().to_ascii_lowercase();
-    if !vlsync_atproto::syntax::valid_handle(&h) {
+    if !vlatproto::syntax::valid_handle(&h) {
         return Err(XrpcError::bad("InvalidHandle", "Input/handle must be a valid handle"));
     }
-    if vlsync_atproto::syntax::disallowed_handle_tld(&h) {
+    if vlatproto::syntax::disallowed_handle_tld(&h) {
         return Err(XrpcError::bad("InvalidHandle", "Handle TLD is invalid or disallowed"));
     }
     Ok(h)
@@ -1115,7 +1114,7 @@ async fn revoke_families(app: &App, did: &str, families: &[String]) -> XResult<(
 /// row gone, and a login racing it fails ([`auth_epoch`]).
 pub(super) async fn revoke_all_sessions(app: &App, did: &str) -> XResult<()> {
     use super::cas::Op;
-    let before = vlsync_atproto::tid::now_micros();
+    let before = vlatproto::tid::now_micros();
     let exp = now_secs() + REVOKE_ALL_TTL;
     let ops = vec![
         Op::put(
@@ -1597,7 +1596,7 @@ async fn create_account_checked(
         handle: handle.clone(),
         wrapped_signing_key,
         signing_pubkey,
-        created_at: vlsync_atproto::events::now_rfc3339(),
+        created_at: vlatproto::events::now_rfc3339(),
         email: Some(email.clone()),
         ..Default::default()
     };
@@ -1614,7 +1613,7 @@ async fn create_account_checked(
         // deactivated until the migration completes (activateAccount); the
         // worker sequences no events for an account created inactive
         set_extra(&mut acct, EXTERNAL_DID, json!(true));
-        set_extra(&mut acct, "deactivatedAt", json!(vlsync_atproto::events::now_rfc3339()));
+        set_extra(&mut acct, "deactivatedAt", json!(vlatproto::events::now_rfc3339()));
         recompute_status(&mut acct);
     }
     let created = create_repo(app, &did, &handle, key, &acct).await;
@@ -2168,9 +2167,9 @@ async fn create_app_password(
     if app.get_private(&did, &format!("apppass/{name}")).await?.is_some() {
         return Err(invalid_request("could not create app-specific password"));
     }
-    let s = vlsync_atproto::cid::base32_encode(&rand::random::<[u8; 10]>());
+    let s = vlatproto::cid::base32_encode(&rand::random::<[u8; 10]>());
     let password = format!("{}-{}-{}-{}", &s[0..4], &s[4..8], &s[8..12], &s[12..16]);
-    let created_at = vlsync_atproto::events::now_rfc3339();
+    let created_at = vlatproto::events::now_rfc3339();
     let h = app_password_hash(&did, &password);
     let mut meta = json!({"name": name, "createdAt": created_at, "privileged": privileged, "hash": h});
     let mut out = json!({"name": name, "password": password, "createdAt": created_at, "privileged": privileged});
@@ -2275,7 +2274,7 @@ pub(super) async fn set_deactivated(
     update_account(app, did, !deactivated, true, move |a| {
         if deactivated {
             if a.extra.get("deactivatedAt").is_none_or(|v| v.is_null()) {
-                set_extra(a, "deactivatedAt", json!(vlsync_atproto::events::now_rfc3339()));
+                set_extra(a, "deactivatedAt", json!(vlatproto::events::now_rfc3339()));
             }
             set_extra(a, "deleteAfter", delete_after.map(J::String).unwrap_or(J::Null));
         } else {
@@ -2402,11 +2401,11 @@ async fn assert_valid_did_doc(app: &App, a: &Account) -> XResult<()> {
     }
     app.did_resolver.invalidate(&a.did);
     let doc = app.did_resolver.resolve(&a.did).await.map_err(|_| invalid_request("Could not resolve DID"))?;
-    let pds = vlsync_atproto::did_resolver::service_endpoint(&doc, "atproto_pds");
+    let pds = vlatproto::did_resolver::service_endpoint(&doc, "atproto_pds");
     if pds.as_deref().map(|p| p.trim_end_matches('/')) != Some(app.public_url.trim_end_matches('/')) {
         return Err(invalid_request(WRONG_PDS));
     }
-    if vlsync_atproto::did_resolver::signing_key_multibase(&doc).as_deref() != Some(a.signing_pubkey.as_str()) {
+    if vlatproto::did_resolver::signing_key_multibase(&doc).as_deref() != Some(a.signing_pubkey.as_str()) {
         return Err(invalid_request(WRONG_SIGNING_KEY));
     }
     Ok(())
@@ -2671,7 +2670,7 @@ async fn reserve_signing_key(State(app): AppState, body: Option<Json<ReserveSign
     let key = Keypair::generate();
     let did_key = key.did_key();
     let routing = reserved_routing(&did_key);
-    let now = vlsync_atproto::events::now_rfc3339();
+    let now = vlatproto::events::now_rfc3339();
     let wrapped = app.secrets.wrap(crate::secrets::Purpose::ReservedKey, &did_key, &key.to_bytes()).await?;
     let rec = json!({"key": wrapped, "did": did, "createdAt": now});
     app.put_private(&routing, vec![pmut(&routing, "k", Some(to_json_bytes(&rec)))]).await?;
@@ -2769,7 +2768,7 @@ async fn confirm_email(
     delete_email_tokens(&app, &did, &["confirm_email"]).await?;
     update_account(&app, &did, false, false, move |a| {
         a.email_confirmed = true;
-        set_extra(a, "emailConfirmedAt", json!(vlsync_atproto::events::now_rfc3339()));
+        set_extra(a, "emailConfirmedAt", json!(vlatproto::events::now_rfc3339()));
         Ok(())
     })
     .await?;
@@ -3114,7 +3113,7 @@ async fn create_earned_invites(
     let _g = e.lock(&format!("invites-earned:{did}")).await;
     let codes = super::admin::account_invites(app, did).await?;
     let created_at = rfc3339_ms(&acct.created_at).unwrap_or(0);
-    let now = (vlsync_atproto::tid::now_micros() / 1000) as i64;
+    let now = (vlatproto::tid::now_micros() / 1000) as i64;
     let interval_ms = i64::try_from(interval.as_millis()).unwrap_or(i64::MAX);
     let (n, total) = codes_to_create(now, created_at, &codes, app.config.invite_epoch_ms, interval_ms);
     if n <= 0 {
@@ -3268,7 +3267,7 @@ pub(super) fn is_atproto_did(s: &str) -> bool {
         return id.len() == 24 && id.bytes().all(|b| matches!(b, b'a'..=b'z' | b'2'..=b'7'));
     }
     if let Some(host) = s.strip_prefix("did:web:") {
-        return vlsync_atproto::syntax::valid_did(s)
+        return vlatproto::syntax::valid_did(s)
             && !host.contains(':')
             && (!host.contains("%3A") || host.starts_with("localhost%3A"));
     }
@@ -3422,7 +3421,7 @@ async fn confirm_totp(State(app): AppState, Auth(creds): Auth, Json(inp): Json<C
             st.secret = Some(pending);
             st.pending = None;
             st.last_step = step;
-            st.enabled_at = Some(vlsync_atproto::events::now_rfc3339());
+            st.enabled_at = Some(vlatproto::events::now_rfc3339());
             // the first strong factor brings the shared recovery codes; a
             // passkey may have already
             let codes = if m.recovery.is_empty() { m.issue(&did, crate::totp::now_secs()) } else { Vec::new() };

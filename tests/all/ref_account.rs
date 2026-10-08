@@ -230,7 +230,7 @@ async fn ref_preferences_on_deactivated_account() {
 async fn ref_plc_operation_signature_mail() {
     use vlpds::plc::mock::MockPlc;
     let plc = MockPlc::start().await;
-    let s = TestServer::spawn_plc(&plc.url, Arc::new(vlsync_atproto::crypto::Keypair::generate())).await;
+    let s = TestServer::spawn_plc(&plc.url, Arc::new(vlatproto::crypto::Keypair::generate())).await;
     let a = s.create_account("plcmail").await;
     s.xrpc.post_empty("com.atproto.identity.requestPlcOperationSignature", &a.auth()).await.ok();
     let mail = latest_mail(&s, &a.email).await;

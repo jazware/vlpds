@@ -132,7 +132,7 @@ impl Jwt {
         typ: &str,
         jti: Option<&str>,
     ) -> String {
-        let now = vlsync_atproto::tid::now_micros() / 1_000_000;
+        let now = vlatproto::tid::now_micros() / 1_000_000;
         let header = B64.encode(format!(r#"{{"alg":"HS256","typ":"{typ}"}}"#));
         let claims = Claims {
             scope: scope.into(),
@@ -167,7 +167,7 @@ impl Jwt {
 
     /// Expiry, scope and revocation are the caller's to check.
     pub fn verify_signature_cached(&self, token: &str) -> Option<Arc<Claims>> {
-        let now = vlsync_atproto::tid::now_micros() / 1_000_000;
+        let now = vlatproto::tid::now_micros() / 1_000_000;
         if let Some(c) = self.verified.get(token, now) {
             return Some(c);
         }
@@ -180,13 +180,13 @@ impl Jwt {
 /// ES256K service-auth JWT. `aud` may carry a #fragment. Err: signing failed
 /// verification twice and nothing was issued.
 pub fn service_auth_jwt(
-    key: &vlsync_atproto::crypto::Keypair,
+    key: &vlatproto::crypto::Keypair,
     iss: &str,
     aud: &str,
     lxm: Option<&str>,
     ttl_secs: u64,
-) -> Result<String, vlsync_atproto::crypto::SignatureFault> {
-    let now = vlsync_atproto::tid::now_micros() / 1_000_000;
+) -> Result<String, vlatproto::crypto::SignatureFault> {
+    let now = vlatproto::tid::now_micros() / 1_000_000;
     let header = B64.encode(r#"{"typ":"JWT","alg":"ES256K"}"#);
     let mut claims = serde_json::json!({
         "iat": now,
@@ -200,7 +200,7 @@ pub fn service_auth_jwt(
     }
     let payload = B64.encode(serde_json::to_vec(&claims).unwrap());
     let signing_input = format!("{header}.{payload}");
-    let sig = key.sign_verified(vlsync_atproto::crypto::Purpose::ServiceAuth, signing_input.as_bytes())?;
+    let sig = key.sign_verified(vlatproto::crypto::Purpose::ServiceAuth, signing_input.as_bytes())?;
     Ok(format!("{signing_input}.{}", B64.encode(sig)))
 }
 

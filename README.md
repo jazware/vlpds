@@ -89,9 +89,9 @@ If you're running a server, you'll also want [ops/RUNBOOK.md](ops/RUNBOOK.md) an
 [ops/alerts.yml](ops/alerts.yml). [tests/STATUS.md](tests/STATUS.md) describes the test suite, and
 [bench/](bench) has the load, HA and soak harnesses behind the numbers.
 
-The object-store client, the log segment format, the atproto data model and crypto, and the
-firehose live in [`vlsync`](https://github.com/jazware/vlsync), crates vlpds shares with vlRelay and delta. This crate is
-the PDS on top of them.
+The object-store client, the log segment format and the firehose live in
+[`vlsync`](https://github.com/jazware/vlsync), crates vlpds shares with vlRelay and delta, and the atproto data model and
+crypto in [`vlatproto`](https://github.com/jazware/vlatproto). This crate is the PDS on top of them.
 
 ## Status
 

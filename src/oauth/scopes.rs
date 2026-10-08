@@ -316,7 +316,7 @@ pub fn is_nsid(s: &str) -> bool {
 /// Hostname-level did:web only, with a port only for localhost.
 pub fn is_atproto_did(s: &str) -> bool {
     if s.starts_with("did:plc:") {
-        return vlsync_atproto::plc::valid_plc_did(s);
+        return vlatproto::plc::valid_plc_did(s);
     }
     if let Some(host) = s.strip_prefix("did:web:") {
         if host.is_empty() || host.contains(':') || host.len() > 253 {
@@ -402,10 +402,10 @@ fn v_space_type(v: &str) -> bool {
     v == "*" || is_nsid(v)
 }
 fn v_space_authority(v: &str) -> bool {
-    v == "*" || v == "self" || vlsync_atproto::syntax::valid_did(v)
+    v == "*" || v == "self" || vlatproto::syntax::valid_did(v)
 }
 fn v_space_key(v: &str) -> bool {
-    v == "*" || vlsync_atproto::syntax::valid_rkey(v)
+    v == "*" || vlatproto::syntax::valid_rkey(v)
 }
 fn v_space_action(v: &str) -> bool {
     SPACE_ACTIONS.contains(&v)
@@ -1420,7 +1420,7 @@ mod tests {
         assert!(compiled(serde_json::json!({"type": "permission", "resource": "space"})).is_empty());
     }
 
-    /// `is_atproto_did` delegates did:plc to `vlsync_atproto::plc::valid_plc_did`; both must
+    /// `is_atproto_did` delegates did:plc to `vlatproto::plc::valid_plc_did`; both must
     /// accept exactly the old inline rule (24 base32-lowercase chars).
     #[test]
     fn plc_dids_match_old_rule() {
@@ -1442,7 +1442,7 @@ mod tests {
         cases.push(format!("did:PLC:{base}"));
         for c in &cases {
             assert_eq!(is_atproto_did(c), old(c), "{c:?}");
-            assert_eq!(vlsync_atproto::plc::valid_plc_did(c), old(c), "{c:?}");
+            assert_eq!(vlatproto::plc::valid_plc_did(c), old(c), "{c:?}");
         }
     }
 }

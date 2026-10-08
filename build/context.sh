@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The Dockerfile's build context from the committed tree, in DIR: this
-# package at the root and the vlsync crates it builds from in vlsync/ (the
-# public repo's layout). In the monorepo those crates live beside this
-# package, so they're added and the manifest's path dependencies are pointed
-# into DIR.
+# package at the root. In the public repo that's all (Cargo.toml takes vlsync
+# and vlatproto as git dependencies). In the monorepo they sit beside this
+# package as path dependencies, so they're added under deps/, the manifest's
+# paths are pointed there and the context's Dockerfile copies deps/.
 #
 #   build/context.sh DIR
 set -euo pipefail
@@ -21,10 +21,13 @@ top=$(vcs_root)
 prefix=$(vcs_prefix)
 # from the top: in a subdirectory, an archive narrows the tree to it again
 vcs_archive -C "$top" "HEAD:$prefix" | tar -x -C "$out"
-if [ ! -d vlsync ] && [ -d "$parent/vlsync" ]; then
-  mkdir -p "$out/vlsync"
-  vcs_archive -C "$top" "HEAD:$(dirname "$prefix")/vlsync" | tar -x -C "$out/vlsync"
-  sed -i.orig "s#path = \"$parent/vlsync/#path = \"vlsync/#" "$out/Cargo.toml"
-  rm "$out/Cargo.toml.orig"
+if grep -q "path = \"$parent/vlsync/" "$out/Cargo.toml"; then
+  for dep in vlsync vlatproto; do
+    mkdir -p "$out/deps/$dep"
+    vcs_archive -C "$top" "HEAD:$(dirname "$prefix")/$dep" | tar -x -C "$out/deps/$dep"
+  done
+  perl -pi -e "s#path = \"\Q$parent\E/(vlsync/|vlatproto\")#path = \"deps/\$1#" "$out/Cargo.toml"
+  perl -pi -e 's#^COPY Cargo.toml Cargo.lock ./$#$&\nCOPY deps ./deps#' "$out/Dockerfile"
+  grep -q '^COPY deps ./deps$' "$out/Dockerfile" || { echo "context: no COPY of deps/ in the Dockerfile" >&2; exit 1; }
 fi
-[ -f "$out/Dockerfile" ] && [ -f "$out/vlsync/Cargo.toml" ] || { echo "context: incomplete build context in $out" >&2; exit 1; }
+[ -f "$out/Dockerfile" ] && ! grep -q "path = \"$parent/" "$out/Cargo.toml" || { echo "context: incomplete build context in $out" >&2; exit 1; }

@@ -4,14 +4,14 @@
 //! refused at every entry point: XRPC params, swap CIDs, `$link`s and blob
 //! refs in record JSON, tag-42 links in imported records, and CAR blocks.
 use crate::common::*;
-use vlsync_atproto::cbor;
-use vlsync_atproto::cid::base32_encode;
+use vlatproto::cbor;
+use vlatproto::cid::base32_encode;
 
 /// A CIDv1 string ("b" + base32) of `version`, `codec`, a multihash of
 /// `code` and `digest_len` declared bytes.
 fn cid_str(version: u8, codec: u8, code: u8, digest_len: usize) -> String {
     let mut b = vec![version, codec, code];
-    vlsync_atproto::car::write_varint(&mut b, digest_len as u64);
+    vlatproto::car::write_varint(&mut b, digest_len as u64);
     b.extend(std::iter::repeat_n(7u8, digest_len));
     format!("b{}", base32_encode(&b))
 }
@@ -148,7 +148,7 @@ fn car_with(did: &str, link: &[u8], extra: Option<&[u8]>) -> Vec<u8> {
     cbor::write_text(&mut rec, "$type");
     cbor::write_text(&mut rec, "com.example.links");
     let rc = Cid::dag_cbor(&rec);
-    let mut tree = vlsync_atproto::mst::Tree::new();
+    let mut tree = vlatproto::mst::Tree::new();
     tree.insert_no_proof(b"com.example.links/x", rc).unwrap();
     let mut blocks = vec![(rc, rec)];
     let data = tree.write_diff_blocks(&mut blocks).unwrap();
@@ -164,14 +164,14 @@ fn car_with(did: &str, link: &[u8], extra: Option<&[u8]>) -> Vec<u8> {
     let commit = Value::Map(fields).to_cbor();
     let root = Cid::dag_cbor(&commit);
     let mut car = Vec::new();
-    vlsync_atproto::car::write_header(&mut car, &root);
-    vlsync_atproto::car::write_block(&mut car, &root, &commit);
+    vlatproto::car::write_header(&mut car, &root);
+    vlatproto::car::write_block(&mut car, &root, &commit);
     for (c, b) in &blocks {
-        vlsync_atproto::car::write_block(&mut car, c, b);
+        vlatproto::car::write_block(&mut car, c, b);
     }
     if let Some(prefix) = extra {
         // a block whose CID prefix is `prefix` (say, a 64 KB multihash)
-        vlsync_atproto::car::write_varint(&mut car, prefix.len() as u64 + 4);
+        vlatproto::car::write_varint(&mut car, prefix.len() as u64 + 4);
         car.extend_from_slice(prefix);
         car.extend_from_slice(b"data");
     }
@@ -193,7 +193,7 @@ async fn odd_cids_refused_in_imported_cars() {
     };
     let huge_mh = {
         let mut b = vec![0x01, 0x71, 0x12];
-        vlsync_atproto::car::write_varint(&mut b, 64 << 10);
+        vlatproto::car::write_varint(&mut b, 64 << 10);
         b.extend(std::iter::repeat_n(0u8, 64 << 10));
         b
     };

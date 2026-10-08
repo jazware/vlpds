@@ -136,7 +136,7 @@ fn sample() -> Sample {
         }
     }
     Sample {
-        t_ms: vlsync_atproto::tid::now_micros() / 1000,
+        t_ms: vlatproto::tid::now_micros() / 1000,
         commits: s.commits.load(Ordering::Relaxed),
         ops: s.ops.load(Ordering::Relaxed),
         http: http + http_5xx,
@@ -307,7 +307,7 @@ pub fn report(since_ms: u64) -> Report {
     };
     let mut samples: Vec<Sample> = SAMPLES.lock().iter().cloned().collect();
     // a fresh sample, so a first call (or one between ticks) is current
-    if samples.last().is_none_or(|s| s.t_ms + 250 < vlsync_atproto::tid::now_micros() / 1000) {
+    if samples.last().is_none_or(|s| s.t_ms + 250 < vlatproto::tid::now_micros() / 1000) {
         samples.push(sample());
     }
     let series = samples.windows(2).filter(|w| w[1].t_ms > since_ms).map(|w| point(&w[0], &w[1], &bd)).collect();

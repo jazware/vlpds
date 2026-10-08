@@ -6,8 +6,8 @@
 //! `$bytes` / blob / legacy-blob shapes).
 use crate::common::*;
 use rand::{Rng, SeedableRng};
+use vlatproto::cbor::{JsonValue, RecordRefs};
 use vlpds::lexicon;
-use vlsync_atproto::cbor::{JsonValue, RecordRefs};
 
 /// The value-tree walks the record path used before `RecordRefs`.
 fn old_refs(v: &Value, out: &mut RecordRefs) {

@@ -45,7 +45,7 @@ fn check_input(input: &J) -> XResult<&str> {
         return Err(bad("Input/ageRestricted must be a boolean"));
     }
     let service_did = input["serviceDid"].as_str().unwrap_or_default();
-    if !vlsync_atproto::syntax::valid_did(service_did) {
+    if !vlatproto::syntax::valid_did(service_did) {
         return Err(bad("Input/serviceDid must be a valid did"));
     }
     Ok(service_did)

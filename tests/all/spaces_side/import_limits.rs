@@ -213,7 +213,7 @@ async fn oversize_blocks_are_refused() {
     let pc = Cid::dag_cbor(&pb);
     let car = built.car_with(|bl| bl[0] = (pc, pb.clone()));
     let car = {
-        let (_, bl) = vlsync_atproto::car::read_car(&car).unwrap();
+        let (_, bl) = vlatproto::car::read_car(&car).unwrap();
         let owned: Vec<(Cid, Vec<u8>)> = bl.iter().map(|(c, b)| (*c, b.to_vec())).collect();
         write_car(&[pc, built.index_cid], &owned)
     };

@@ -35,7 +35,7 @@ use crate::oauth::scopes::SpaceAccess;
 use crate::space::commit::{self, CommitCtx, SignedCommit};
 use crate::space::lthash::LtHash;
 use crate::space::repo::{SpaceAck, SpaceError, SpaceOp};
-use vlsync_atproto::tid::Tid;
+use vlatproto::tid::Tid;
 
 pub fn routes() -> Router<Arc<App>> {
     Router::new().route("/xrpc/vlpds.space.importRepo", post(import_repo))
@@ -133,7 +133,7 @@ impl CarReader {
             return Ok(None);
         }
         let (len, n) = loop {
-            if let Some(v) = vlsync_atproto::car::read_varint(&self.buf[self.pos..]) {
+            if let Some(v) = vlatproto::car::read_varint(&self.buf[self.pos..]) {
                 break v;
             }
             let have = self.buf.len() - self.pos;
@@ -161,7 +161,7 @@ impl CarReader {
         if s.len() > max {
             return Err(invalid(format!("invalid CAR: the {what} is over {max} bytes")));
         }
-        if !vlsync_atproto::car::block_matches(&cid, &s) {
+        if !vlatproto::car::block_matches(&cid, &s) {
             return Err(invalid(format!("invalid CAR: block {cid} does not match its CID")));
         }
         Ok(Some((cid, s)))
@@ -169,7 +169,7 @@ impl CarReader {
 }
 
 fn decode_commit(b: &[u8]) -> XResult<SignedCommit> {
-    use vlsync_atproto::cbor::ValueRef;
+    use vlatproto::cbor::ValueRef;
     let v = ValueRef::decode(b).map_err(|e| invalid(format!("invalid commit block: {e}")))?;
     let bytes = |k: &str| match v.get(k) {
         Some(ValueRef::Bytes(b)) => Ok(b.to_vec()),
@@ -191,7 +191,7 @@ fn decode_commit(b: &[u8]) -> XResult<SignedCommit> {
 /// generic decode would hold ~40 bytes per byte of a block of tiny items.
 fn decode_index(b: &[u8], max: u64) -> XResult<Vec<(String, Cid)>> {
     let bad_block = || invalid("invalid index block: a canonical map of paths to CIDs");
-    let mut c = vlsync_atproto::cbor::Cursor::new(b);
+    let mut c = vlatproto::cbor::Cursor::new(b);
     let n = c.head(5).ok_or_else(|| invalid("the index block must be a map"))?;
     if n > max {
         return Err(invalid(format!("Space repo record limit reached: at most {max} records")));
@@ -218,7 +218,7 @@ fn record_blobs(path: &str, bytes: &[u8]) -> XResult<Vec<Cid>> {
     if bytes.len() > MAX_RECORD {
         return Err(invalid(format!("record at '{path}' too large ({} bytes)", bytes.len())));
     }
-    vlsync_atproto::cbor::scan_blob_refs(bytes).map_err(|_| invalid(format!("Could not parse record at '{path}'")))
+    vlatproto::cbor::scan_blob_refs(bytes).map_err(|_| invalid(format!("Could not parse record at '{path}'")))
 }
 
 /// An authority hears of an import as of any write and refuses a
@@ -334,7 +334,7 @@ async fn past_keys(app: &App, did: &str, at: u64) -> XResult<Vec<String>> {
 async fn current_key(app: &App, did: &str) -> XResult<String> {
     app.did_resolver.invalidate(did);
     let doc = app.did_resolver.resolve(did).await.map_err(|e| invalid(format!("Could not resolve {did}: {e:?}")))?;
-    let mb = vlsync_atproto::did_resolver::signing_key_multibase(&doc)
+    let mb = vlatproto::did_resolver::signing_key_multibase(&doc)
         .ok_or_else(|| invalid(format!("{did} has no #atproto signing key")))?;
     Ok(format!("did:key:{mb}"))
 }
@@ -407,7 +407,7 @@ async fn import(app: &Arc<App>, creds: &Credentials, q: &ImportQ, headers: &Head
     let body = super::import_stream::TimedBody::new(body, app.config.import_body_idle, app.config.import_body_deadline);
     let mut car = CarReader::new(body, max);
     let header = car.section(MAX_HEADER, "header").await?.ok_or_else(|| invalid("invalid CAR: empty"))?;
-    let roots = vlsync_atproto::car::read_header(&header).map_err(|e| invalid(format!("invalid CAR: {e}")))?;
+    let roots = vlatproto::car::read_header(&header).map_err(|e| invalid(format!("invalid CAR: {e}")))?;
     let [commit_cid, index_cid] = roots[..] else {
         return Err(invalid("expected two roots: the signed commit and the index"));
     };
@@ -435,7 +435,7 @@ async fn import(app: &Arc<App>, creds: &Credentials, q: &ImportQ, headers: &Head
     }
     // every later write's rev follows it, and an authority refuses a
     // notify this far ahead (FutureRev), so the account would go unheard
-    if rev.micros() > vlsync_atproto::tid::now_micros() + super::space::FUTURE_REV.as_micros() as u64 {
+    if rev.micros() > vlatproto::tid::now_micros() + super::space::FUTURE_REV.as_micros() as u64 {
         return Err(bad("FutureRev", "The commit's rev is in the future"));
     }
     // an equal rev is let through here only to be checked for the same
@@ -623,30 +623,30 @@ mod tests {
     #[test]
     fn decode_index_checks_the_count_first() {
         let mut b = Vec::new();
-        vlsync_atproto::cbor::write_map_head(&mut b, 1 << 40);
+        vlatproto::cbor::write_map_head(&mut b, 1 << 40);
         let Err(e) = decode_index(&b, 100) else { panic!("over the count") };
         assert!(e.message.contains("limit"), "{}", e.message);
         let cid = Cid::dag_cbor(b"r");
         let mut b = Vec::new();
-        vlsync_atproto::cbor::write_map_head(&mut b, 2);
+        vlatproto::cbor::write_map_head(&mut b, 2);
         for p in ["a.b.c/x", "a.b.c/y"] {
-            vlsync_atproto::cbor::write_text(&mut b, p);
-            vlsync_atproto::cbor::write_cid(&mut b, &cid);
+            vlatproto::cbor::write_text(&mut b, p);
+            vlatproto::cbor::write_cid(&mut b, &cid);
         }
         assert_eq!(decode_index(&b, 100).ok().map(|i| i.len()), Some(2));
         // out of order, trailing bytes, a non-link value
         let mut swapped = Vec::new();
-        vlsync_atproto::cbor::write_map_head(&mut swapped, 2);
+        vlatproto::cbor::write_map_head(&mut swapped, 2);
         for p in ["a.b.c/y", "a.b.c/x"] {
-            vlsync_atproto::cbor::write_text(&mut swapped, p);
-            vlsync_atproto::cbor::write_cid(&mut swapped, &cid);
+            vlatproto::cbor::write_text(&mut swapped, p);
+            vlatproto::cbor::write_cid(&mut swapped, &cid);
         }
         assert!(decode_index(&swapped, 100).is_err());
         assert!(decode_index(&[&b[..], &[0]].concat(), 100).is_err());
         let mut v = Vec::new();
-        vlsync_atproto::cbor::write_map_head(&mut v, 1);
-        vlsync_atproto::cbor::write_text(&mut v, "a.b.c/x");
-        vlsync_atproto::cbor::write_int(&mut v, 1);
+        vlatproto::cbor::write_map_head(&mut v, 1);
+        vlatproto::cbor::write_text(&mut v, "a.b.c/x");
+        vlatproto::cbor::write_int(&mut v, 1);
         assert!(decode_index(&v, 100).is_err());
     }
 }

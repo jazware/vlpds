@@ -1,6 +1,6 @@
 use super::extract::RecordBody;
 use super::*;
-use vlsync_atproto::cbor::{JsonValue, RecordRefs};
+use vlatproto::cbor::{JsonValue, RecordRefs};
 
 pub fn routes() -> Router<Arc<App>> {
     Router::new()
@@ -25,10 +25,10 @@ pub const DEFAULT_MAX_IMPORT_BYTES: usize = 1 << 30;
 const MAX_IMPORT_RECORD_BYTES: usize = 2 << 20;
 
 pub(super) fn check_path(collection: &str, rkey: Option<&str>) -> XResult<()> {
-    if !vlsync_atproto::syntax::valid_nsid(collection) {
+    if !vlatproto::syntax::valid_nsid(collection) {
         return Err(XrpcError::bad("InvalidRequest", format!("Invalid collection: {collection} is not a valid NSID")));
     }
-    if let Some(r) = rkey.filter(|r| !vlsync_atproto::syntax::valid_rkey(r)) {
+    if let Some(r) = rkey.filter(|r| !vlatproto::syntax::valid_rkey(r)) {
         return Err(XrpcError::bad("InvalidRequest", format!("Invalid record key: {r}")));
     }
     Ok(())
@@ -592,7 +592,7 @@ fn write_record_json(out: &mut Vec<u8>, uri: &str, cid: &Cid, bytes: &[u8]) -> X
     out.extend_from_slice(b",\"cid\":\"");
     cid.write_string(out);
     out.extend_from_slice(b"\",\"value\":");
-    vlsync_atproto::cbor::write_json(bytes, out).map_err(XrpcError::from_err)?;
+    vlatproto::cbor::write_json(bytes, out).map_err(XrpcError::from_err)?;
     out.push(b'}');
     Ok(())
 }
@@ -777,13 +777,13 @@ pub(super) fn imported_record_blobs(path: &str, bytes: &[u8]) -> XResult<Vec<Cid
 
 /// The import of a CAR in any block order. Record bytes are sliced from
 /// `body`, not copied.
-pub fn parse_import(body: &Bytes) -> XResult<(Vec<ImportedRecord>, vlsync_atproto::mst::Tree)> {
+pub fn parse_import(body: &Bytes) -> XResult<(Vec<ImportedRecord>, vlatproto::mst::Tree)> {
     let bad = |m: String| XrpcError::bad("InvalidRequest", m);
     let (roots, blocks) = car::read_car(body).map_err(|e| bad(format!("invalid CAR: {e}")))?;
     if roots.len() != 1 {
         return Err(bad("expected one root".into()));
     }
-    if roots[0].codec != vlsync_atproto::cid::CODEC_DAG_CBOR {
+    if roots[0].codec != vlatproto::cid::CODEC_DAG_CBOR {
         return Err(bad("commit CID is not dag-cbor".into()));
     }
     let mut map: std::collections::HashMap<Cid, &[u8]> = std::collections::HashMap::with_capacity(blocks.len());
@@ -802,8 +802,8 @@ pub fn parse_import(body: &Bytes) -> XResult<(Vec<ImportedRecord>, vlsync_atprot
     let Some(Value::Link(data)) = commit.get("data") else {
         return Err(bad("commit has no data root".into()));
     };
-    let tree = vlsync_atproto::mst::Tree::load_from_blocks(&map, *data)
-        .map_err(|e| bad(format!("could not load MST: {e}")))?;
+    let tree =
+        vlatproto::mst::Tree::load_from_blocks(&map, *data).map_err(|e| bad(format!("could not load MST: {e}")))?;
     let mut entries: Vec<(String, Cid)> = Vec::new();
     let mut key_err = None;
     tree.walk(&mut |k, c| match std::str::from_utf8(k) {
@@ -817,7 +817,7 @@ pub fn parse_import(body: &Bytes) -> XResult<(Vec<ImportedRecord>, vlsync_atprot
     // walk() skips subtrees missing from the CAR: rebuilding from the walked
     // entries reproduces `data` only if the tree was complete. The rebuilt
     // tree is the one the worker writes.
-    let mut check = vlsync_atproto::mst::Tree::new();
+    let mut check = vlatproto::mst::Tree::new();
     for (path, cid) in &entries {
         check.insert_no_proof(path.as_bytes(), *cid).map_err(|e| bad(format!("invalid record path {path}: {e}")))?;
     }
@@ -826,11 +826,11 @@ pub fn parse_import(body: &Bytes) -> XResult<(Vec<ImportedRecord>, vlsync_atprot
     }
     let mut out = Vec::with_capacity(entries.len());
     for (path, cid) in entries {
-        if !vlsync_atproto::syntax::valid_record_path(&path) {
+        if !vlatproto::syntax::valid_record_path(&path) {
             return Err(bad(format!("invalid record path {path}")));
         }
         // the root check holds for any leaf CID; records are dag-cbor only
-        if cid.codec != vlsync_atproto::cid::CODEC_DAG_CBOR {
+        if cid.codec != vlatproto::cid::CODEC_DAG_CBOR {
             return Err(bad(format!("record CID at {path} is not dag-cbor: {cid}")));
         }
         let bytes = *map.get(&cid).ok_or_else(|| bad(format!("missing record block {cid} at {path}")))?;

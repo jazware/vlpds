@@ -47,7 +47,7 @@ async fn spawn_upstream() -> (Upstream, String) {
 /// Registers a did:plc whose `#bsky_notif` and `#atproto_labeler` services
 /// point at `endpoint`.
 async fn service_did(plc: &MockPlc, endpoint: &str) -> String {
-    let key = vlsync_atproto::crypto::Keypair::generate();
+    let key = vlatproto::crypto::Keypair::generate();
     let op = json!({
         "type": "plc_operation",
         "rotationKeys": [key.did_key()],
@@ -146,7 +146,7 @@ async fn ref_with_ssrf_protection_disabled_calls_are_sent() {
 
 /// Registers a did:plc with these `(service id, endpoint)` services.
 async fn did_with_services(plc: &MockPlc, services: &[(String, String)]) -> String {
-    let key = vlsync_atproto::crypto::Keypair::generate();
+    let key = vlatproto::crypto::Keypair::generate();
     let services: serde_json::Map<String, J> =
         services.iter().map(|(id, ep)| (id.clone(), json!({"type": "SomeService", "endpoint": ep}))).collect();
     let op = json!({

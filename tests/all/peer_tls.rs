@@ -207,7 +207,7 @@ fn no_client_cert() -> reqwest::Client {
     for c in rustls::pki_types::CertificateDer::pem_slice_iter(test_ca().cert_pem.as_bytes()) {
         roots.add(c.unwrap()).unwrap();
     }
-    let mut cfg = rustls::ClientConfig::builder_with_provider(vlsync_atproto::http::tls_provider())
+    let mut cfg = rustls::ClientConfig::builder_with_provider(vlatproto::http::tls_provider())
         .with_protocol_versions(&[&rustls::version::TLS13])
         .unwrap()
         .with_root_certificates(roots)

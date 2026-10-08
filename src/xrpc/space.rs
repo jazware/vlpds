@@ -22,8 +22,8 @@ use crate::space::token::{self, TokenType};
 use crate::space::Spaces;
 use crate::state::SpaceId;
 use base64::Engine;
-use vlsync_atproto::cbor::JsonValue;
-use vlsync_atproto::tid::Tid;
+use vlatproto::cbor::JsonValue;
+use vlatproto::tid::Tid;
 
 pub fn routes() -> Router<Arc<App>> {
     Router::new()
@@ -75,7 +75,7 @@ pub(super) struct Space {
 
 impl Space {
     pub fn parse(s: &str) -> XResult<Space> {
-        let u = vlsync_atproto::syntax::parse_space_uri(s)
+        let u = vlatproto::syntax::parse_space_uri(s)
             .filter(|u| u.record.is_none())
             .ok_or_else(|| XrpcError::bad("InvalidRequest", format!("Not a space uri: {s}")))?;
         let uri = format!("at://{}/space/{}/{}", u.authority, u.space_type, u.skey);
@@ -748,7 +748,7 @@ async fn get_record(State(app): AppState, SpaceAuth(creds): SpaceAuth, Query(q):
     out.extend_from_slice(b",\"cid\":\"");
     cid.write_string(&mut out);
     out.extend_from_slice(b"\",\"value\":");
-    vlsync_atproto::cbor::write_json(bytes, &mut out).map_err(XrpcError::from_err)?;
+    vlatproto::cbor::write_json(bytes, &mut out).map_err(XrpcError::from_err)?;
     out.push(b'}');
     Ok(json_bytes(out))
 }
@@ -846,7 +846,7 @@ async fn list_records(
             out.push(b'"');
             if !q.exclude_values.unwrap_or(false) {
                 out.extend_from_slice(b",\"value\":");
-                vlsync_atproto::cbor::write_json(bytes, &mut out).map_err(XrpcError::from_err)?;
+                vlatproto::cbor::write_json(bytes, &mut out).map_err(XrpcError::from_err)?;
             }
             out.push(b'}');
             n += 1;
@@ -1144,7 +1144,7 @@ async fn list_repo_ops(
                     if c == cid {
                         ops.pop();
                         ops.extend_from_slice(b",\"value\":");
-                        vlsync_atproto::cbor::write_json(bytes, &mut ops).map_err(XrpcError::from_err)?;
+                        vlatproto::cbor::write_json(bytes, &mut ops).map_err(XrpcError::from_err)?;
                         ops.push(b'}');
                     }
                 }
@@ -1193,7 +1193,7 @@ async fn get_delegation_token(State(app): AppState, Auth(creds): Auth, Query(q):
     }
     let aud = token::space_host_aud(&space.authority);
     let mint = token::Mint { iss: &did, sub: &space.uri, aud: Some(&aud), ..Default::default() };
-    let now = vlsync_atproto::tid::now_micros() as i64 / 1_000_000;
+    let now = vlatproto::tid::now_micros() as i64 / 1_000_000;
     let tok = token::encode(TokenType::Delegation, &mint, "ES256K", now, &token::new_jti(), |b| {
         Ok::<_, std::convert::Infallible>(key.sign(b))
     })
@@ -1285,7 +1285,7 @@ async fn issue_credential(app: &App, headers: &HeaderMap, inp: CredentialIn) -> 
         return Err(XrpcError::bad("NotAuthorized", "Space has been taken down"));
     }
     let mint = token::Mint { iss: &space.authority, sub: &space.uri, key_id: Some(&d.key_id), ..Default::default() };
-    let now = vlsync_atproto::tid::now_micros() as i64 / 1_000_000;
+    let now = vlatproto::tid::now_micros() as i64 / 1_000_000;
     let cred = token::encode(TokenType::Credential, &mint, "ES256K", now, &token::new_jti(), |b| {
         Ok::<_, std::convert::Infallible>(key.sign(b))
     })
@@ -1308,10 +1308,10 @@ struct ListSpacesQ {
 /// a wildcard grant.
 async fn list_spaces(State(app): AppState, Auth(creds): Auth, Query(q): Query<ListSpacesQ>) -> XResult<Json<J>> {
     spaces(&app)?;
-    if q.space_type.as_deref().is_some_and(|t| !vlsync_atproto::syntax::valid_nsid(t)) {
+    if q.space_type.as_deref().is_some_and(|t| !vlatproto::syntax::valid_nsid(t)) {
         return Err(XrpcError::bad("InvalidRequest", "spaceType must be an NSID"));
     }
-    if q.did.as_deref().is_some_and(|d| !vlsync_atproto::syntax::valid_did(d)) {
+    if q.did.as_deref().is_some_and(|d| !vlatproto::syntax::valid_did(d)) {
         return Err(XrpcError::bad("InvalidRequest", "did must be a DID"));
     }
     let limit = super::extract::limit_param(q.limit, 50, 1, 100)?;
@@ -1378,7 +1378,7 @@ async fn list_space_uris(
         if uris.last().is_some_and(|l| l == uri) || q.cursor.as_deref().is_some_and(|c| uri <= c) {
             continue;
         }
-        let Some(u) = vlsync_atproto::syntax::parse_space_uri(uri) else { continue };
+        let Some(u) = vlatproto::syntax::parse_space_uri(uri) else { continue };
         if let Some(t) = q.space_type.as_deref().filter(|t| *t != u.space_type) {
             let want = [&base[..], format!("at://{}/space/{t}/", u.authority).as_bytes()].concat();
             let next = match want[..] > kv.key[..] {
@@ -1450,12 +1450,12 @@ async fn notify_credential_revoked(
     }
     // unsure (its shard's owner unreachable) counts as hosted: refusing
     // would drop a revocation that may be ours
-    let hosted = vlsync_atproto::syntax::valid_did(&auth.aud)
+    let hosted = vlatproto::syntax::valid_did(&auth.aud)
         && !matches!(super::internal::account_anywhere(&app, &auth.aud).await, Err(e) if e.error == "AccountNotFound");
     if !hosted {
         return Err(forbidden("Revocation audience does not match a repo hosted here"));
     }
-    let now = vlsync_atproto::tid::now_micros() as i64 / 1_000_000;
+    let now = vlatproto::tid::now_micros() as i64 / 1_000_000;
     let mut new: Vec<String> =
         inp.credentials.into_iter().filter(|j| !sp.revocations.is_revoked(&space.uri, j, now)).collect();
     new.sort();
@@ -1477,7 +1477,7 @@ async fn notify_credential_revoked(
     // anyone with a DID can spend an account's bucket, so an exhausted one
     // is a revocation not stored: the space is blocked, never left open
     if let Err(e) = crate::ratelimit::check(&[&crate::ratelimit::SPACE_REVOKE_AUD], &auth.aud, new.len() as u32) {
-        let now = vlsync_atproto::tid::now_micros() as i64 / 1_000_000;
+        let now = vlatproto::tid::now_micros() as i64 / 1_000_000;
         sp.revocations.block(&space.uri, local_authority, now);
         nudge_revocation_peers(&app, Some(&space.uri)).await;
         tracing::warn!(
@@ -1617,7 +1617,7 @@ async fn internal_reload_revocations(
             Some(a) => authority_hosted(&app, a).await.unwrap_or(true),
             None => false,
         };
-        sp.revocations.block(space, local, vlsync_atproto::tid::now_micros() as i64 / 1_000_000);
+        sp.revocations.block(space, local, vlatproto::tid::now_micros() as i64 / 1_000_000);
     }
     sp.refresh_revocations(&app.store)
         .await
@@ -1714,8 +1714,8 @@ pub async fn deliver(app: &App, p: &Pending) -> Outcome {
         return outcome(r.map(|_| ()));
     }
     let endpoint = match app.did_resolver.resolve(&space.authority).await {
-        Ok(doc) => vlsync_atproto::did_resolver::service_endpoint(&doc, "atproto_space_host")
-            .or_else(|| vlsync_atproto::did_resolver::service_endpoint(&doc, "atproto_pds")),
+        Ok(doc) => vlatproto::did_resolver::service_endpoint(&doc, "atproto_space_host")
+            .or_else(|| vlatproto::did_resolver::service_endpoint(&doc, "atproto_pds")),
         Err(e) => return Outcome::Retry(format!("could not resolve {}: {e:?}", space.authority)),
     };
     let Some(endpoint) = endpoint else { return Outcome::Retry(format!("{} names no space host", space.authority)) };
@@ -1732,7 +1732,7 @@ pub async fn deliver(app: &App, p: &Pending) -> Outcome {
         "hash": b64(&hash),
     });
     let url = format!("{}/xrpc/{lxm}", endpoint.trim_end_matches('/'));
-    let req = match vlsync_atproto::http::guarded(app.config.dev_mode).request(reqwest::Method::POST, &url) {
+    let req = match vlatproto::http::guarded(app.config.dev_mode).request(reqwest::Method::POST, &url) {
         Ok(r) => r,
         Err(e) => return Outcome::Refused(format!("space host {url}: {e}")),
     };
@@ -1835,7 +1835,7 @@ pub async fn prune_registration(app: &App, uri: &str, service: &str) -> anyhow::
     let Some(v) = p.db.get(state::space_notify_key(&space.authority, &space.sid, service)).await? else {
         return Ok(());
     };
-    let now = vlsync_atproto::tid::now_micros();
+    let now = vlatproto::tid::now_micros();
     if crate::space::rows::NotifyRow::decode(&v)?.expires > now {
         return Ok(());
     }
@@ -1878,20 +1878,20 @@ struct GetRepoQ {
 /// with byte fields as bytes).
 fn commit_block(c: &crate::space::commit::SignedCommit) -> Vec<u8> {
     let mut b = Vec::with_capacity(256);
-    vlsync_atproto::cbor::write_map_head(&mut b, 6);
+    vlatproto::cbor::write_map_head(&mut b, 6);
     // canonical key order: by length, then bytes
     for (k, v) in [("ikm", &c.ikm), ("mac", &c.mac)] {
-        vlsync_atproto::cbor::write_text(&mut b, k);
-        vlsync_atproto::cbor::write_bytes(&mut b, v);
+        vlatproto::cbor::write_text(&mut b, k);
+        vlatproto::cbor::write_bytes(&mut b, v);
     }
-    vlsync_atproto::cbor::write_text(&mut b, "rev");
-    vlsync_atproto::cbor::write_text(&mut b, &c.rev);
-    vlsync_atproto::cbor::write_text(&mut b, "sig");
-    vlsync_atproto::cbor::write_bytes(&mut b, &c.sig);
-    vlsync_atproto::cbor::write_text(&mut b, "ver");
-    vlsync_atproto::cbor::write_int(&mut b, c.ver);
-    vlsync_atproto::cbor::write_text(&mut b, "hash");
-    vlsync_atproto::cbor::write_bytes(&mut b, &c.hash);
+    vlatproto::cbor::write_text(&mut b, "rev");
+    vlatproto::cbor::write_text(&mut b, &c.rev);
+    vlatproto::cbor::write_text(&mut b, "sig");
+    vlatproto::cbor::write_bytes(&mut b, &c.sig);
+    vlatproto::cbor::write_text(&mut b, "ver");
+    vlatproto::cbor::write_int(&mut b, c.ver);
+    vlatproto::cbor::write_text(&mut b, "hash");
+    vlatproto::cbor::write_bytes(&mut b, &c.hash);
     b
 }
 
@@ -2048,7 +2048,7 @@ pub(super) async fn process_notify_write(
     same_rev: SameRev,
 ) -> XResult<Notified> {
     super::simplespace::assert_space_host(app, space).await?;
-    if repo_rev.micros() > vlsync_atproto::tid::now_micros() + FUTURE_REV.as_micros() as u64 {
+    if repo_rev.micros() > vlatproto::tid::now_micros() + FUTURE_REV.as_micros() as u64 {
         return Err(XrpcError::bad("FutureRev", "Repo revision is in the future"));
     }
     let row = super::simplespace::live_space(app, space).await?;
@@ -2138,7 +2138,7 @@ async fn notify_write_inner(app: &App, headers: &HeaderMap, inp: &J) -> XResult<
         .ok_or_else(|| XrpcError::bad("InvalidRequest", "Input/repoRev must be a valid TID"))?;
     let space = Space::parse(field("space").unwrap_or(""))?;
     let repo = field("repo")
-        .filter(|d| vlsync_atproto::syntax::valid_did(d))
+        .filter(|d| vlatproto::syntax::valid_did(d))
         .ok_or_else(|| XrpcError::bad("InvalidRequest", "Input/repo must be a valid did"))?;
     let hash = inp
         .get("hash")
@@ -2323,7 +2323,7 @@ async fn register_notify(State(app): AppState, headers: HeaderMap, Json(inp): Js
             format!("Could not resolve a service endpoint for {}", inp.service),
         ));
     };
-    let expires = vlsync_atproto::tid::now_micros() + crate::space::host::REGISTRATION_TTL.as_micros() as u64;
+    let expires = vlatproto::tid::now_micros() + crate::space::host::REGISTRATION_TTL.as_micros() as u64;
     let row = crate::space::rows::NotifyRow { endpoint, expires };
     submit_space(&app, &space.authority, &space, SpaceOp::RegisterNotify { service: inp.service, row }).await?;
     let at =
@@ -2378,7 +2378,7 @@ mod tests {
             rev: "3jzfcijpj2z2a".into(),
         };
         let b = commit_block(&c);
-        let v = vlsync_atproto::cbor::Value::decode(&b).unwrap();
+        let v = vlatproto::cbor::Value::decode(&b).unwrap();
         assert_eq!(v.to_cbor(), b, "decodes and re-encodes to the same bytes");
         assert_eq!(v.get("rev").and_then(|r| r.as_str()), Some("3jzfcijpj2z2a"));
     }

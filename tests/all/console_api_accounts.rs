@@ -151,7 +151,7 @@ async fn cases_by_subject() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn account_keys_from_the_did_doc_and_the_directory() {
     let plc = MockPlc::start().await;
-    let rotation = Arc::new(vlsync_atproto::crypto::Keypair::generate());
+    let rotation = Arc::new(vlatproto::crypto::Keypair::generate());
     let s = TestServer::spawn_plc(&plc.url, rotation.clone()).await;
     let a = s.create_account("keys").await;
     let k = admin_get(&s, "vlpds.admin.getAccountKeys", &[("did", &a.did)]).await;

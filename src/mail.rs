@@ -90,7 +90,7 @@ pub struct MailLogEntry {
 }
 
 fn now_ms() -> u64 {
-    vlsync_atproto::tid::now_micros() / 1000
+    vlatproto::tid::now_micros() / 1000
 }
 
 /// The part after the last `@`, which is all the console may show of a

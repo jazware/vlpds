@@ -19,7 +19,7 @@
 
 use base64::Engine;
 use serde_json::Value as J;
-use vlsync_atproto::syntax;
+use vlatproto::syntax;
 
 pub const CLOCK_SKEW_SECS: i64 = 5;
 pub const CREDENTIAL_MAX_AGE_SECS: i64 = 3600;
@@ -347,7 +347,7 @@ mod tests {
     use super::*;
     use crate::space::vectors::VECTORS;
     use sha2::Digest;
-    use vlsync_atproto::crypto::Keypair;
+    use vlatproto::crypto::Keypair;
 
     const SPACE: &str = "at://did:example:space/space/app.bsky.group/test";
     const USER: &str = "did:example:alice";

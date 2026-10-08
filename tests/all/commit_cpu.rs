@@ -1,8 +1,8 @@
 //! The write path's CPU work changed without changing its output: commit
-//! signatures (RFC 6979 nonce on hardware SHA-256, vlsync-atproto/src/crypto.rs; hedged
+//! signatures (RFC 6979 nonce on hardware SHA-256, vlatproto/src/crypto.rs; hedged
 //! with fresh nonce data since) and the getBlocks node index keying each
 //! written node by its own first value instead of its subtree's leftmost key
-//! (vlsync-atproto/src/mst.rs `subtree_key`).
+//! (vlatproto/src/mst.rs `subtree_key`).
 use crate::common::*;
 use std::collections::HashSet;
 
@@ -16,7 +16,7 @@ fn commit_signatures_match_k256_across_keys_and_lengths() {
     use k256::ecdsa::signature::{Signer, Verifier};
     let did = "did:plc:abcdefghijklmnopqrstuvwx";
     for k in 0..64u32 {
-        let kp = vlsync_atproto::crypto::Keypair::generate();
+        let kp = vlatproto::crypto::Keypair::generate();
         let sk = k256::ecdsa::SigningKey::from_slice(&kp.to_bytes()).unwrap();
         for len in (0..200usize).step_by(if k == 0 { 1 } else { 37 }) {
             let msg: Vec<u8> = (0..len).map(|i| (i as u32 * 31 + k) as u8).collect();
@@ -25,16 +25,16 @@ fn commit_signatures_match_k256_across_keys_and_lengths() {
             assert_eq!(kp.sign_deterministic(&msg)[..], theirs.to_bytes()[..], "key {k} len {len}");
         }
         // the commit object a worker signs
-        let data = vlsync_atproto::cid::Cid::dag_cbor(format!("data {k}").as_bytes());
+        let data = vlatproto::cid::Cid::dag_cbor(format!("data {k}").as_bytes());
         let (_, block) = vlpds::worker::sign_commit(did, "3lbcdefghij22", &data, &kp).unwrap();
         let (_, again) = vlpds::worker::sign_commit(did, "3lbcdefghij22", &data, &kp).unwrap();
         assert_ne!(block, again, "hedged signatures repeat");
-        let unsigned = vlsync_atproto::events::encode_commit(did, "3lbcdefghij22", &data, None);
+        let unsigned = vlatproto::events::encode_commit(did, "3lbcdefghij22", &data, None);
         let Some(Value::Bytes(sig)) = Value::decode(&block).unwrap().get("sig").cloned() else {
             panic!("commit without sig")
         };
         let sig: [u8; 64] = sig[..].try_into().unwrap();
-        assert_eq!(&block[..], &vlsync_atproto::events::encode_commit(did, "3lbcdefghij22", &data, Some(&sig))[..]);
+        assert_eq!(&block[..], &vlatproto::events::encode_commit(did, "3lbcdefghij22", &data, Some(&sig))[..]);
         let theirs = k256::ecdsa::Signature::from_slice(&sig).unwrap();
         assert!(theirs.normalize_s() == theirs, "high-S");
         sk.verifying_key().verify(&unsigned, &theirs).unwrap();
@@ -48,7 +48,7 @@ async fn assert_nodes_served(s: &TestServer, did: &str) -> Vec<Cid> {
     for chunk in nodes.chunks(100) {
         let r = s.get_blocks(did, chunk).await;
         assert_eq!(r.status, 200, "{}", r.text());
-        let (_, blocks) = vlsync_atproto::car::read_car(&r.body).unwrap();
+        let (_, blocks) = vlatproto::car::read_car(&r.body).unwrap();
         assert_eq!(blocks.len(), chunk.len());
         for (c, b) in blocks {
             assert_eq!(Some(b), repo.blocks.get(&c).map(|v| &v[..]), "{c}");
@@ -74,7 +74,7 @@ async fn node_index_serves_deep_trees_across_commits() {
     };
     // pseudo-random TID-shaped rkeys, so inserts land all over the tree
     let rkey = |i: u64| {
-        vlsync_atproto::tid::Tid::from_parts(1_700_000_000_000_000 + (i * 2_654_435_761) % 100_000_000_000, i % 1024)
+        vlatproto::tid::Tid::from_parts(1_700_000_000_000_000 + (i * 2_654_435_761) % 100_000_000_000, i % 1024)
             .to_string()
     };
     for batch in 0..8u64 {

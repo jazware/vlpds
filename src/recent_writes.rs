@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
-use vlsync_atproto::cid::Cid;
+use vlatproto::cid::Cid;
 
 /// Records kept per repo above `base`.
 pub const MAX_RECS: usize = 32;
@@ -315,7 +315,7 @@ mod tests {
     use super::*;
 
     fn cid(n: u8) -> Cid {
-        vlsync_atproto::cid::Cid::dag_cbor(&[n])
+        vlatproto::cid::Cid::dag_cbor(&[n])
     }
 
     fn commit(did: &str, since: u64, rev: u64, ops: Vec<(&str, bool)>) -> Commit {

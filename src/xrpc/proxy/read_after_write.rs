@@ -269,13 +269,13 @@ impl Local {
 }
 
 fn rev_time(rev: u64) -> String {
-    let us = vlsync_atproto::tid::Tid(rev).micros() as i64;
+    let us = vlatproto::tid::Tid(rev).micros() as i64;
     chrono::DateTime::from_timestamp_micros(us).unwrap_or_default().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 fn record_json(bytes: &[u8]) -> Option<J> {
     let mut out = Vec::with_capacity(bytes.len() * 2);
-    vlsync_atproto::cbor::write_json(bytes, &mut out).ok()?;
+    vlatproto::cbor::write_json(bytes, &mut out).ok()?;
     serde_json::from_slice(&out).ok()
 }
 
@@ -316,7 +316,7 @@ async fn records_since(app: &App, did: &str, part: recent_writes::Part, since: u
     }
     let Some(raw) = p.db.get(state::head_key(did)).await? else { return Ok(Vec::new()) };
     let head = state::Head::decode(&raw)?;
-    let nonempty = head.data != *vlsync_atproto::mst::EMPTY_ROOT;
+    let nonempty = head.data != *vlatproto::mst::EMPTY_ROOT;
     if since >= head.rev.0 {
         let read = recent_writes::Read { head: head.rev.0, base: head.rev.0, old_exists: nonempty, recs: Vec::new() };
         recent_writes::fill(did, part, gen, read, since);
@@ -853,7 +853,7 @@ pub(super) async fn proxy(
         }
         return Ok(err.into_response());
     }
-    let Some(rev) = parts.headers.get(REPO_REV).and_then(|v| v.to_str().ok()).and_then(vlsync_atproto::tid::Tid::parse)
+    let Some(rev) = parts.headers.get(REPO_REV).and_then(|v| v.to_str().ok()).and_then(vlatproto::tid::Tid::parse)
     else {
         return Ok(passthrough(parts, body));
     };
@@ -930,7 +930,7 @@ fn query_params(pq: &str) -> Vec<(String, String)> {
 /// yet (reference `readAfterWriteNotFound`): the thread is built locally,
 /// its parents fetched from the AppView.
 async fn thread_not_found(app: &App, acct: &CachedAcct, did: &str, pq: &str, headers: &HeaderMap) -> Option<Response> {
-    let rev = headers.get(REPO_REV)?.to_str().ok().and_then(vlsync_atproto::tid::Tid::parse)?;
+    let rev = headers.get(REPO_REV)?.to_str().ok().and_then(vlatproto::tid::Tid::parse)?;
     let params = query_params(pq);
     let param = |k: &str| params.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
     let (host, coll, rkey) = at_uri_parts(param("uri")?)?;

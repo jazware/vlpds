@@ -1122,7 +1122,7 @@ fn effective_secret(a: &Args, id: &str) -> Option<String> {
 }
 
 fn main() -> anyhow::Result<()> {
-    vlsync_atproto::http::set_user_agent(concat!("vlpds/", env!("CARGO_PKG_VERSION")));
+    vlatproto::http::set_user_agent(concat!("vlpds/", env!("CARGO_PKG_VERSION")));
     match std::env::args().nth(1).as_deref() {
         Some("admin") => return admin_main(AdminArgs::parse_from(std::env::args().skip(1))),
         Some("dashboards") => return dashboards_main(DashboardsArgs::parse_from(std::env::args().skip(1))),
@@ -1132,7 +1132,7 @@ fn main() -> anyhow::Result<()> {
     let matches = cmd.clone().get_matches();
     let mut args = <Args as clap::FromArgMatches>::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     if args.generate_did_key {
-        let key = vlsync_atproto::crypto::Keypair::generate();
+        let key = vlatproto::crypto::Keypair::generate();
         println!("private key (hex): {}", hex::encode(key.to_bytes().as_slice()));
         println!("did:key: {}", key.did_key());
         return Ok(());
@@ -1149,6 +1149,8 @@ fn main() -> anyhow::Result<()> {
         (f, _) => Some(std::path::PathBuf::from(f)),
     };
     vlsync_store::lifecycle::init(exit_state);
+    // a signature-fault fail-stop records its reason in the exit-state file
+    vlatproto::crypto::set_fail_stop_exit(vlsync_store::lifecycle::fail_stop);
     let rev = vlpds::build::rev().to_string();
     vlpds::metrics::BUILD_INFO
         .with_label_values(&[node_id.as_str(), rev.as_str(), if vlpds::profiling::ENABLED { "1" } else { "0" }])
@@ -1254,7 +1256,7 @@ async fn wrap_plc_rotation_key(args: &Args) -> anyhow::Result<()> {
     std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
     let t = input.trim();
     let key = if t.is_empty() {
-        std::sync::Arc::new(vlsync_atproto::crypto::Keypair::generate())
+        std::sync::Arc::new(vlatproto::crypto::Keypair::generate())
     } else if t.starts_with("vw1.") {
         vlpds::plc::RotationKey::Wrapped(t.to_string()).load(&secrets).await?
     } else {

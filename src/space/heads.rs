@@ -11,7 +11,7 @@ use super::lthash::LtHash;
 use crate::state::SpaceId;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use vlsync_atproto::tid::Tid;
+use vlatproto::tid::Tid;
 use vlsync_store::slots::ShardId;
 
 #[derive(Clone, Debug)]

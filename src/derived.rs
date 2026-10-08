@@ -32,8 +32,8 @@ pub fn derive_commit_muts_n(frame: &[u8], n: usize, gen: u64) -> anyhow::Result<
 fn derive(frame: &[u8], want: Option<usize>, gen: u64) -> anyhow::Result<Vec<Mutation>> {
     // borrowed decoding: replay runs this for every #commit it applies
     use crate::state;
-    use vlsync_atproto::cbor::ValueRef as Value;
-    use vlsync_atproto::cid::Cid;
+    use vlatproto::cbor::ValueRef as Value;
+    use vlatproto::cid::Cid;
     let (header, n) = Value::decode_prefix(frame)?;
     anyhow::ensure!(header.get("t").and_then(Value::as_str) == Some("#commit"), "not a #commit frame");
     let body = Value::decode(&frame[n..])?;
@@ -43,10 +43,10 @@ fn derive(frame: &[u8], want: Option<usize>, gen: u64) -> anyhow::Result<Vec<Mut
         _ => None,
     };
     let did = text("repo")?;
-    let rev = vlsync_atproto::tid::Tid::parse(text("rev")?).ok_or_else(|| anyhow::anyhow!("bad #commit rev"))?;
+    let rev = vlatproto::tid::Tid::parse(text("rev")?).ok_or_else(|| anyhow::anyhow!("bad #commit rev"))?;
     let commit = link(body.get("commit")).ok_or_else(|| anyhow::anyhow!("#commit without commit"))?;
     let Some(Value::Bytes(car)) = body.get("blocks") else { anyhow::bail!("#commit without blocks") };
-    let (_, blocks) = vlsync_atproto::car::read_car(car)?;
+    let (_, blocks) = vlatproto::car::read_car(car)?;
     let block = |c: &Cid| {
         blocks
             .iter()
@@ -106,30 +106,30 @@ mod tests {
     /// rebuilt from its #commit frame on parse.
     #[test]
     fn seal_in_place_and_derived_muts() {
-        use vlsync_atproto::cid::Cid;
+        use vlatproto::cid::Cid;
         let did = "did:plc:abc";
-        let rec = vlsync_atproto::cid::Cid::dag_cbor(b"\xa1aa\x01");
+        let rec = vlatproto::cid::Cid::dag_cbor(b"\xa1aa\x01");
         let mut rec_block = Vec::new();
         rec_block.extend_from_slice(b"\xa1aa\x01");
         let mut commit_block = Vec::new();
-        vlsync_atproto::cbor::Value::Map(vec![
-            ("did".into(), vlsync_atproto::cbor::Value::Text(did.into())),
-            ("data".into(), vlsync_atproto::cbor::Value::Link(rec)),
+        vlatproto::cbor::Value::Map(vec![
+            ("did".into(), vlatproto::cbor::Value::Text(did.into())),
+            ("data".into(), vlatproto::cbor::Value::Link(rec)),
         ])
         .encode(&mut commit_block);
         let commit = Cid::dag_cbor(&commit_block);
         let mut car = Vec::new();
-        vlsync_atproto::car::write_header(&mut car, &commit);
-        vlsync_atproto::car::write_block(&mut car, &commit, &commit_block);
-        vlsync_atproto::car::write_block(&mut car, &rec, &rec_block);
-        let rev = vlsync_atproto::tid::Tid::parse("3l3qo2vutsw2b").unwrap();
-        let ops = [vlsync_atproto::events::RepoOp {
+        vlatproto::car::write_header(&mut car, &commit);
+        vlatproto::car::write_block(&mut car, &commit, &commit_block);
+        vlatproto::car::write_block(&mut car, &rec, &rec_block);
+        let rev = vlatproto::tid::Tid::parse("3l3qo2vutsw2b").unwrap();
+        let ops = [vlatproto::events::RepoOp {
             action: "update",
             path: "app.bsky.feed.post/1",
             cid: Some(rec),
             prev: Some(commit),
         }];
-        let frame = vlsync_atproto::events::commit_frame(&vlsync_atproto::events::CommitFrame {
+        let frame = vlatproto::events::commit_frame(&vlatproto::events::CommitFrame {
             repo: did,
             rev: &rev.to_string(),
             since: None,
@@ -185,10 +185,10 @@ mod tests {
     /// here needs a new feature level that gates the new verdicts.
     #[test]
     fn derivation_validator_verdicts_are_frozen() {
-        use vlsync_atproto::cbor::Value;
+        use vlatproto::cbor::Value;
         let rec = |coll: &str, subject: Value| {
             let mut m = vec![("$type".to_string(), Value::Text(coll.into())), ("subject".to_string(), subject)];
-            m.sort_by(|a, b| vlsync_atproto::cbor::key_cmp(&a.0, &b.0));
+            m.sort_by(|a, b| vlatproto::cbor::key_cmp(&a.0, &b.0));
             Value::Map(m).to_cbor()
         };
         let uri = |u: &str| {

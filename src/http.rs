@@ -1,7 +1,7 @@
 //! The PDS's outbound HTTP clients, one per role, each built once and shared
 //! so connections are reused (DESIGN.md "HTTP"): [`PeerClient`] (node to
 //! node), [`dedicated`] (key material), and [`proxy`] and [`h1`] (the
-//! AppView proxy). vlsync-atproto's `http` has the shared ones: `public`
+//! AppView proxy). vlatproto's `http` has the shared ones: `public`
 //! (operator-configured upstreams) and `guarded` (URLs derived from
 //! untrusted input).
 //!
@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
-use vlsync_atproto::http::{base, outbound, outbound_no_read_timeout};
+use vlatproto::http::{base, outbound, outbound_no_read_timeout};
 
 /// reqwest multiplexes every request to a host over ONE h2 connection;
 /// several spread the connection driver's work over threads and keep one
@@ -273,7 +273,7 @@ pub mod h1 {
         host: &Host,
         permit: OwnedSemaphorePermit,
     ) -> Result<SendRequest<Body>, BoxError> {
-        vlsync_atproto::http::HTTP_CLIENT_CONNECTS.with_label_values(&[role]).inc();
+        vlatproto::http::HTTP_CLIENT_CONNECTS.with_label_values(&[role]).inc();
         let authority = &*host.authority;
         let connect = async {
             let mut last = None;
@@ -307,7 +307,7 @@ pub mod h1 {
         let host = self::host(authority);
         let h = req.headers_mut();
         h.insert(http::header::HOST, http::HeaderValue::from_str(authority)?);
-        h.entry(http::header::USER_AGENT).or_insert(http::HeaderValue::from_static(vlsync_atproto::http::user_agent()));
+        h.entry(http::header::USER_AGENT).or_insert(http::HeaderValue::from_static(vlatproto::http::user_agent()));
         h.entry(http::header::ACCEPT).or_insert(http::HeaderValue::from_static("*/*"));
         // a request body still uploading when the response ends keeps its
         // connection busy: such a connection is not pooled (PooledBody)
@@ -713,7 +713,7 @@ pub fn split_origin(url: &str) -> (&str, &str) {
 /// Trusts no CA, so every request fails.
 fn refusing() -> &'static reqwest::Client {
     static C: LazyLock<reqwest::Client> = LazyLock::new(|| {
-        let tls = rustls::ClientConfig::builder_with_provider(vlsync_atproto::http::tls_provider())
+        let tls = rustls::ClientConfig::builder_with_provider(vlatproto::http::tls_provider())
             .with_protocol_versions(&[&rustls::version::TLS13])
             .expect("TLS 1.3 with the ring provider")
             .with_root_certificates(rustls::RootCertStore::empty())
@@ -855,7 +855,7 @@ pub(crate) mod tests {
         let router = axum::Router::new().route("/", axum::routing::get(|| async { "ok" }));
         let url = format!("{}/", tls_peer(&ca, "server", router).await);
         let peers = PeerClient::new(3, ca.node("client"));
-        let count = || vlsync_atproto::http::HTTP_CLIENT_CONNECTS.with_label_values(&["peer"]).get();
+        let count = || vlatproto::http::HTTP_CLIENT_CONNECTS.with_label_values(&["peer"]).get();
         let before = count();
         for _ in 0..60 {
             let r = peers.get(&url).send().await.unwrap();
@@ -905,7 +905,7 @@ pub(crate) mod tests {
     }
 
     fn h1_connects(role: &str) -> u64 {
-        vlsync_atproto::http::HTTP_CLIENT_CONNECTS.with_label_values(&[role]).get()
+        vlatproto::http::HTTP_CLIENT_CONNECTS.with_label_values(&[role]).get()
     }
 
     /// Sends a GET on a new OS thread and reads its body to the end on

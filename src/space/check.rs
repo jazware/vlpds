@@ -16,8 +16,8 @@ use anyhow::Context;
 use bytes::Bytes;
 use serde_json::{json, Value as J};
 use std::collections::{BTreeMap, HashMap};
-use vlsync_atproto::cid::Cid;
-use vlsync_atproto::tid::Tid;
+use vlatproto::cid::Cid;
+use vlatproto::tid::Tid;
 
 /// Problems listed per check (counts are exact).
 const LIST_MAX: usize = 20;

@@ -6,8 +6,8 @@
 use super::lthash::{LtHash, STATE_BYTES};
 use anyhow::{bail, ensure, Context};
 use bytes::{BufMut, Bytes};
-use vlsync_atproto::cid::{Cid, CID_BYTES_LEN};
-use vlsync_atproto::tid::Tid;
+use vlatproto::cid::{Cid, CID_BYTES_LEN};
+use vlatproto::tid::Tid;
 
 struct Reader<'a> {
     b: &'a [u8],

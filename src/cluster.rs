@@ -474,7 +474,7 @@ fn now_ms() -> u64 {
 pub(crate) async fn wait_clock_past(floor: i64, max: Duration) -> bool {
     let deadline = Instant::now() + max;
     loop {
-        let now = vlsync_atproto::tid::now_micros();
+        let now = vlatproto::tid::now_micros();
         if vlsync_firehose::log::seq_floor(now) > floor {
             return true;
         }
@@ -534,7 +534,7 @@ impl Cluster {
         store: Store,
         before_lease: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
     ) -> anyhow::Result<Arc<Cluster>> {
-        let log_id = format!("{}.{}", cfg.node_id, vlsync_atproto::tid::now_micros());
+        let log_id = format!("{}.{}", cfg.node_id, vlatproto::tid::now_micros());
         let mut c = Cluster {
             log_id: log_id.clone(),
             writer: 0,
@@ -3078,7 +3078,7 @@ mod tests {
         let m = &crate::metrics::LEASE_RENEW_ERRORS;
         let store = Store::memory(None);
         let (h, hd) = host();
-        let id = format!("lease-metrics-{}", vlsync_atproto::tid::now_micros());
+        let id = format!("lease-metrics-{}", vlatproto::tid::now_micros());
         let restarts0 = crate::metrics::PEER_TAKEOVERS.with_label_values(&["restart"]).get();
         let a = join(cfg(&id), store.clone()).await.unwrap();
         let (timed0, conflicts0) =
@@ -3348,11 +3348,11 @@ mod tests {
     #[tokio::test]
     async fn joiner_waits_until_its_seqs_pass_the_floors() {
         let store = Store::memory(None);
-        let id = format!("floors-{}", vlsync_atproto::tid::now_micros());
+        let id = format!("floors-{}", vlatproto::tid::now_micros());
         let a = join(cfg(&id), store.clone()).await.unwrap();
         // a's previous incarnation's merger may have settled up to 300 ms
         // ahead of our clock
-        let cap = vlsync_firehose::log::seq_floor(vlsync_atproto::tid::now_micros() + 300_000);
+        let cap = vlsync_firehose::log::seq_floor(vlatproto::tid::now_micros() + 300_000);
         let mut lease = a.lease.read().clone();
         lease.wm_cap = cap;
         a.put_json(&a.path(&format!("nodes/{id}")), &lease, PutMode::Overwrite).await.unwrap();
@@ -3363,7 +3363,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(300)).await;
         b.step(&hb_dyn).await.unwrap();
         assert!(b.joined() && b.owned().len() == 8);
-        assert!(vlsync_firehose::log::seq_floor(vlsync_atproto::tid::now_micros()) > cap);
+        assert!(vlsync_firehose::log::seq_floor(vlatproto::tid::now_micros()) > cap);
     }
 
     /// A shard whose close failed (its barrier never became durable) is
@@ -4380,7 +4380,7 @@ mod tests {
         refusals();
         let store = Store::memory(None);
         put_version(&store, 2, None).await;
-        let id = format!("old-{}", vlsync_atproto::tid::now_micros());
+        let id = format!("old-{}", vlatproto::tid::now_micros());
         let err = join(levels(&id, 1, 1), store.clone()).await.err().expect("refused");
         assert!(format!("{err:#}").contains(version::EXIT_REASON), "{err:#}");
         assert_eq!(refused(&id).len(), 1, "fail-stop 7 hook ran once");
@@ -4392,15 +4392,15 @@ mod tests {
         );
         // a build that can no longer read the active level, and one that is
         // older than a raise in progress, are refused too
-        let id2 = format!("new-{}", vlsync_atproto::tid::now_micros());
+        let id2 = format!("new-{}", vlatproto::tid::now_micros());
         assert!(join(levels(&id2, 3, 4), store.clone()).await.is_err());
         assert_eq!(refused(&id2).len(), 1);
         put_version(&store, 1, Some(2)).await;
-        let id3 = format!("mid-{}", vlsync_atproto::tid::now_micros());
+        let id3 = format!("mid-{}", vlatproto::tid::now_micros());
         assert!(join(levels(&id3, 1, 1), store.clone()).await.is_err());
         assert!(refused(&id3)[0].contains("raising"), "{:?}", refused(&id3));
         // one that can run it joins
-        assert!(join(levels(&format!("ok-{}", vlsync_atproto::tid::now_micros()), 1, 2), store.clone()).await.is_ok());
+        assert!(join(levels(&format!("ok-{}", vlatproto::tid::now_micros()), 1, 2), store.clone()).await.is_ok());
     }
 
     /// An operator forced the active level past a running node's window: its
@@ -4409,7 +4409,7 @@ mod tests {
     async fn running_node_seeing_a_level_past_it_fail_stops() {
         refusals();
         let store = Store::memory(None);
-        let id = format!("run-{}", vlsync_atproto::tid::now_micros());
+        let id = format!("run-{}", vlatproto::tid::now_micros());
         let a = join(levels(&id, 1, 1), store.clone()).await.unwrap();
         let (_, ha) = host();
         a.step(&ha).await.unwrap();
@@ -4431,7 +4431,7 @@ mod tests {
     async fn finalize_raises_only_when_every_live_node_can() {
         refusals();
         let store = Store::memory(None);
-        let old_id = format!("fin-old-{}", vlsync_atproto::tid::now_micros());
+        let old_id = format!("fin-old-{}", vlatproto::tid::now_micros());
         let old = join(levels(&old_id, 1, 1), store.clone()).await.unwrap();
         let new = join(levels("fin-new", 1, 2), store.clone()).await.unwrap();
         assert_eq!(new.cluster_version().unwrap().active, 1, "created by the level-1 build");
@@ -4456,7 +4456,7 @@ mod tests {
         // a finalize that died after its target: nodes that can't run the
         // target refuse until a finalize at the active level clears it
         put_version(&store, 2, Some(3)).await;
-        let stuck = format!("fin-stuck-{}", vlsync_atproto::tid::now_micros());
+        let stuck = format!("fin-stuck-{}", vlatproto::tid::now_micros());
         assert!(join(levels(&stuck, 1, 2), store.clone()).await.is_err());
         assert_eq!(new.finalize_level(2, "op").await.unwrap().target, None);
         assert_eq!(new.read_version().await.unwrap().unwrap().0.target, None);
@@ -4532,7 +4532,7 @@ mod tests {
         let store = Store::memory(None);
         put_version(&store, 1, None).await;
         let new = join(levels("race-new", 1, 2), store.clone()).await.unwrap();
-        let old_id = format!("race-old-{}", vlsync_atproto::tid::now_micros());
+        let old_id = format!("race-old-{}", vlatproto::tid::now_micros());
         let n = new.clone();
         let raise = Box::pin(async move {
             assert_eq!(n.finalize_level(2, "op").await.unwrap().active, 2, "the joiner had no lease yet");
@@ -4553,7 +4553,7 @@ mod tests {
             let store = Store::memory(None);
             put_version(&store, 1, None).await;
             let new = join(levels(&format!("racer-new-{i}"), 1, 2), store.clone()).await.unwrap();
-            let old_id = format!("racer-old-{i}-{}", vlsync_atproto::tid::now_micros());
+            let old_id = format!("racer-old-{i}-{}", vlatproto::tid::now_micros());
             let (n, s, oid) = (new.clone(), store.clone(), old_id.clone());
             let raise = tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_micros(rand::random::<u64>() % 3000)).await;

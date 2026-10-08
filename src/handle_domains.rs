@@ -157,13 +157,13 @@ pub fn invalid(domain: &str) -> Option<String> {
     if domain.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok() {
         return Some(format!("{domain}: an IP address is not a domain"));
     }
-    if !vlsync_atproto::syntax::valid_handle(domain) {
+    if !vlatproto::syntax::valid_handle(domain) {
         return Some(format!("{domain}: not a valid DNS name of two or more labels"));
     }
     if domain.len() > MAX_DOMAIN_LEN {
         return Some(format!("{domain}: longer than {MAX_DOMAIN_LEN} characters, leaving no room for a handle"));
     }
-    if vlsync_atproto::syntax::disallowed_handle_tld(domain) {
+    if vlatproto::syntax::disallowed_handle_tld(domain) {
         return Some(format!("{domain}: handles can't end in that TLD"));
     }
     if crate::space::fanout::is_public_suffix(domain) {
@@ -296,7 +296,7 @@ async fn update(
             }
         };
         f(&mut doc)?;
-        doc.updated_at = Some(vlsync_atproto::events::now_rfc3339());
+        doc.updated_at = Some(vlatproto::events::now_rfc3339());
         let mode = match etag {
             Some(e) => crate::cluster::if_match(Some(e)),
             None => PutMode::Create,
@@ -334,7 +334,7 @@ pub async fn add(d: &HandleDomains, store: &Store, domain: &str, by: &str) -> Re
         }
         doc.domains.push(Added {
             domain: domain.into(),
-            added_at: Some(vlsync_atproto::events::now_rfc3339()),
+            added_at: Some(vlatproto::events::now_rfc3339()),
             added_by: Some(by.clone()),
         });
         Ok(())

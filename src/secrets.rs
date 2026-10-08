@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
-use vlsync_atproto::crypto::Keypair;
+use vlatproto::crypto::Keypair;
 use zeroize::{Zeroize, Zeroizing};
 
 mod vault;
@@ -479,7 +479,7 @@ impl GcpKms {
             name: name.to_string(),
             endpoint: endpoint.trim_end_matches('/').to_string(),
             token,
-            http: vlsync_atproto::http::public().clone(),
+            http: vlatproto::http::public().clone(),
             cached: tokio::sync::Mutex::new(None),
         })
     }

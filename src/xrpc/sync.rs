@@ -136,9 +136,7 @@ struct GetRepoQ {
 async fn get_repo(State(app): AppState, MaybeAuth(creds): MaybeAuth, Query(q): Query<GetRepoQ>) -> XResult<Response> {
     let since = match &q.since {
         Some(s) => Some(
-            vlsync_atproto::tid::Tid::parse(s)
-                .ok_or_else(|| XrpcError::bad("InvalidRequest", "since must be a TID"))?
-                .0,
+            vlatproto::tid::Tid::parse(s).ok_or_else(|| XrpcError::bad("InvalidRequest", "since must be a TID"))?.0,
         ),
         None => None,
     };
@@ -380,22 +378,22 @@ struct Stoppable<'a, S> {
 }
 
 impl<S> Stoppable<'_, S> {
-    fn check(&self) -> Result<(), vlsync_atproto::mst::MstError> {
+    fn check(&self) -> Result<(), vlatproto::mst::MstError> {
         match self.stop.get() {
-            Some(r) => Err(vlsync_atproto::mst::MstError::Store(format!("export ended: {r}"))),
+            Some(r) => Err(vlatproto::mst::MstError::Store(format!("export ended: {r}"))),
             None => Ok(()),
         }
     }
 }
 
 impl<S: crate::mst_lazy::Source> crate::mst_lazy::Source for Stoppable<'_, S> {
-    fn cached(&self, cid: &Cid) -> Option<Arc<vlsync_atproto::mst::Node>> {
+    fn cached(&self, cid: &Cid) -> Option<Arc<vlatproto::mst::Node>> {
         self.inner.cached(cid)
     }
-    fn remember(&self, n: &Arc<vlsync_atproto::mst::Node>) {
+    fn remember(&self, n: &Arc<vlatproto::mst::Node>) {
         self.inner.remember(n)
     }
-    fn node(&self, cid: &Cid) -> Result<Option<Arc<[u8]>>, vlsync_atproto::mst::MstError> {
+    fn node(&self, cid: &Cid) -> Result<Option<Arc<[u8]>>, vlatproto::mst::MstError> {
         self.check()?;
         self.inner.node(cid)
     }
@@ -404,7 +402,7 @@ impl<S: crate::mst_lazy::Source> crate::mst_lazy::Source for Stoppable<'_, S> {
         lo: Option<&[u8]>,
         hi: Option<&[u8]>,
         out: &mut Vec<(crate::mst_lazy::Key, Cid)>,
-    ) -> Result<(), vlsync_atproto::mst::MstError> {
+    ) -> Result<(), vlatproto::mst::MstError> {
         self.check()?;
         self.inner.records(lo, hi, out)
     }
@@ -412,8 +410,8 @@ impl<S: crate::mst_lazy::Source> crate::mst_lazy::Source for Stoppable<'_, S> {
         &self,
         lo: Option<&[u8]>,
         hi: Option<&[u8]>,
-        enc: &mut vlsync_atproto::mst::LeafEncoder,
-    ) -> Result<(), vlsync_atproto::mst::MstError> {
+        enc: &mut vlatproto::mst::LeafEncoder,
+    ) -> Result<(), vlatproto::mst::MstError> {
         self.check()?;
         self.inner.leaf_records(lo, hi, enc)
     }
@@ -421,7 +419,7 @@ impl<S: crate::mst_lazy::Source> crate::mst_lazy::Source for Stoppable<'_, S> {
         &self,
         upto: Option<&[u8]>,
         f: &mut dyn FnMut(Cid, &[u8]),
-    ) -> Result<(), vlsync_atproto::mst::MstError> {
+    ) -> Result<(), vlatproto::mst::MstError> {
         self.check()?;
         self.inner.record_blocks(upto, f)
     }
@@ -592,7 +590,7 @@ async fn get_blocks(
     }
     // records, by the record CID index (c/ keys) of the matching snapshot
     for c in rest(&found) {
-        if c.codec == vlsync_atproto::cid::CODEC_DAG_CBOR {
+        if c.codec == vlatproto::cid::CODEC_DAG_CBOR {
             if let Some(b) = find_record(&snap, &did, view.gen, &c).await? {
                 found.insert(c, b);
             }
@@ -610,11 +608,11 @@ async fn get_blocks(
     // CAR v1 with no roots, as the reference does
     let mut out = Vec::new();
     let mut h = Vec::with_capacity(32);
-    vlsync_atproto::cbor::write_map_head(&mut h, 2);
-    vlsync_atproto::cbor::write_text(&mut h, "roots");
-    vlsync_atproto::cbor::write_array_head(&mut h, 0);
-    vlsync_atproto::cbor::write_text(&mut h, "version");
-    vlsync_atproto::cbor::write_uint(&mut h, 1);
+    vlatproto::cbor::write_map_head(&mut h, 2);
+    vlatproto::cbor::write_text(&mut h, "roots");
+    vlatproto::cbor::write_array_head(&mut h, 0);
+    vlatproto::cbor::write_text(&mut h, "version");
+    vlatproto::cbor::write_uint(&mut h, 1);
     car::write_varint(&mut out, h.len() as u64);
     out.extend_from_slice(&h);
     for c in &want {
@@ -655,7 +653,7 @@ async fn sync_get_record(
     MaybeAuth(creds): MaybeAuth,
     Query(q): Query<SyncRecordQ>,
 ) -> XResult<Response> {
-    if !vlsync_atproto::syntax::valid_nsid(&q.collection) || !vlsync_atproto::syntax::valid_rkey(&q.rkey) {
+    if !vlatproto::syntax::valid_nsid(&q.collection) || !vlatproto::syntax::valid_rkey(&q.rkey) {
         return Err(XrpcError::bad("InvalidRequest", "invalid collection or rkey"));
     }
     assert_available(&app, &q.did, creds.as_ref()).await?;
@@ -689,7 +687,7 @@ async fn lazy_nodes(
     cids: Vec<Cid>,
     walk: bool,
 ) -> XResult<Vec<(Cid, Vec<u8>)>> {
-    use vlsync_atproto::mst::{NodeIndex, NodeRef};
+    use vlatproto::mst::{NodeIndex, NodeRef};
     let mut want: std::collections::HashSet<Cid> = cids.into_iter().collect();
     let mut out = Vec::new();
     let rev = view.head.rev.0;
@@ -715,7 +713,7 @@ async fn lazy_nodes(
             }
         }
         for c in want {
-            if c.codec != vlsync_atproto::cid::CODEC_DAG_CBOR {
+            if c.codec != vlatproto::cid::CODEC_DAG_CBOR {
                 continue;
             }
             if let Some(b) = snap.get(state::mst_node_key(did, view.gen, &c)).await.map_err(XrpcError::from_err)? {
@@ -764,15 +762,15 @@ async fn lazy_nodes(
                 let scan = crate::mst_store::ScanSource::open(&*snap, &did, gen, nodes, &rt)?;
                 crate::mst_lazy::export_blocks(root, pre.persist_min(), &scan, &mut |c, b| {
                     // nodes with keys of their own (all leaves): where they sit
-                    if let Ok(n) = vlsync_atproto::mst::decode_node(b, c) {
-                        if let Some(vlsync_atproto::mst::Entry::Value { key, .. }) =
-                            n.entries.iter().find(|e| matches!(e, vlsync_atproto::mst::Entry::Value { .. }))
+                    if let Ok(n) = vlatproto::mst::decode_node(b, c) {
+                        if let Some(vlatproto::mst::Entry::Value { key, .. }) =
+                            n.entries.iter().find(|e| matches!(e, vlatproto::mst::Entry::Value { .. }))
                         {
                             map.insert(c, (key.clone(), n.height));
                         }
                     }
                 })?;
-                Ok::<_, vlsync_atproto::mst::MstError>(NodeIndex::from_refs(map, rev))
+                Ok::<_, vlatproto::mst::MstError>(NodeIndex::from_refs(map, rev))
             })
             .await
             .map_err(XrpcError::from_err)?
@@ -793,7 +791,7 @@ async fn lazy_nodes(
 static INDEX_BUILDS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 
 /// Keyed by the repo's shared index cell (one per cached repo).
-fn index_build_gate(cell: &vlsync_atproto::mst::SharedNodeIndex) -> Arc<tokio::sync::Mutex<()>> {
+fn index_build_gate(cell: &vlatproto::mst::SharedNodeIndex) -> Arc<tokio::sync::Mutex<()>> {
     type Gates = HashMap<usize, std::sync::Weak<tokio::sync::Mutex<()>>>;
     static GATES: std::sync::LazyLock<parking_lot::Mutex<Gates>> = std::sync::LazyLock::new(Default::default);
     let key = Arc::as_ptr(cell) as usize;
@@ -1108,7 +1106,7 @@ pub(super) async fn list_repos_by_collection_local(
     app: &App,
     q: &ByCollectionQ,
 ) -> XResult<(Vec<String>, Vec<vlsync_store::slots::ShardId>)> {
-    if !vlsync_atproto::syntax::valid_nsid(&q.collection) {
+    if !vlatproto::syntax::valid_nsid(&q.collection) {
         return Err(XrpcError::bad("InvalidRequest", "collection must be a valid nsid"));
     }
     let limit = super::extract::limit_param(q.limit, 500, 1, 2000)?;

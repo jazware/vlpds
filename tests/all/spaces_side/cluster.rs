@@ -11,13 +11,13 @@ use std::sync::Arc;
 
 pub struct Plc {
     pub url: String,
-    rotation: Arc<vlsync_atproto::crypto::Keypair>,
+    rotation: Arc<vlatproto::crypto::Keypair>,
 }
 
 impl Plc {
     pub async fn start() -> Plc {
         let plc = vlpds::plc::mock::MockPlc::start().await;
-        Plc { url: plc.url, rotation: Arc::new(vlsync_atproto::crypto::Keypair::generate()) }
+        Plc { url: plc.url, rotation: Arc::new(vlatproto::crypto::Keypair::generate()) }
     }
 
     /// Every node of a cluster registers under the same rotation key.

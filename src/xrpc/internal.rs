@@ -314,8 +314,8 @@ pub(super) fn check(app: &App, headers: &HeaderMap) -> XResult<()> {
 
 /// Dev mode also accepts the admin token.
 pub fn internal_token_ok(cfg: &crate::server::Config, t: &str) -> bool {
-    vlsync_atproto::xrpc::token_eq(&cfg.internal_token, t)
-        || (cfg.dev_mode && vlsync_atproto::xrpc::token_eq(&cfg.admin_token, t))
+    vlatproto::xrpc::token_eq(&cfg.internal_token, t)
+        || (cfg.dev_mode && vlatproto::xrpc::token_eq(&cfg.admin_token, t))
 }
 
 #[derive(Deserialize)]

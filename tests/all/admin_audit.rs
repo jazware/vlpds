@@ -10,8 +10,8 @@ use crate::common::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use vlatproto::crypto::Keypair;
 use vlpds::plc::mock::MockPlc;
-use vlsync_atproto::crypto::Keypair;
 
 const NODE: &str = "audit-node";
 const ALICE: &str = "alice@example.com";

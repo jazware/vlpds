@@ -384,11 +384,11 @@ async fn check_get_repo(a: &mut Account, space: &str, want: &Records, ctx: &str)
         let q: &[(&str, &str)] = if exclude { &[("excludeValues", "true")] } else { &[] };
         let r = a.read("com.atproto.space.getRepo", space, q).await;
         assert_eq!(r.status, 200, "{ctx}: getRepo: {}", r.text());
-        let (roots, blocks) = vlsync_atproto::car::read_car(&r.body).expect("getRepo CAR");
+        let (roots, blocks) = vlatproto::car::read_car(&r.body).expect("getRepo CAR");
         assert_eq!(roots.len(), 2, "{ctx}: getRepo roots");
         assert!(blocks.len() >= 2 && blocks[0].0 == roots[0] && blocks[1].0 == roots[1], "{ctx}: roots first");
         for (c, b) in &blocks {
-            assert!(vlsync_atproto::car::block_matches(c, b), "{ctx}: getRepo block {c} doesn't hash");
+            assert!(vlatproto::car::block_matches(c, b), "{ctx}: getRepo block {c} doesn't hash");
         }
         let commit = Value::decode(blocks[0].1).expect("commit block");
         let bytes = |k: &str| match commit.get(k) {

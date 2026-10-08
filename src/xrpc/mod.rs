@@ -64,8 +64,8 @@ pub use sync::{
     export_memory_bytes, find_record, set_export_prefetch_max_bytes, size_export_prefetch_pool, stream_export,
     ExportChunkTx, DEFAULT_EXPORT_STALL, DEFAULT_MAX_EXPORTS,
 };
-use vlsync_atproto::cbor::blob_refs;
-use vlsync_atproto::xrpc::{XrpcError, SIGNATURE_FAULT};
+use vlatproto::cbor::blob_refs;
+use vlatproto::xrpc::{XrpcError, SIGNATURE_FAULT};
 pub use webui::WebUi;
 
 #[allow(unused_imports)]
@@ -80,11 +80,11 @@ mod prelude {
     };
     pub(crate) use axum::body::{Body, Bytes as AxBytes};
     pub(crate) use axum::extract::{State, WebSocketUpgrade};
-    pub(crate) use vlsync_atproto::car;
-    pub(crate) use vlsync_atproto::cbor::Value;
-    pub(crate) use vlsync_atproto::cid::Cid;
-    pub(crate) use vlsync_atproto::crypto::{self, Keypair};
-    pub(crate) use vlsync_atproto::tid::TidClock;
+    pub(crate) use vlatproto::car;
+    pub(crate) use vlatproto::cbor::Value;
+    pub(crate) use vlatproto::cid::Cid;
+    pub(crate) use vlatproto::crypto::{self, Keypair};
+    pub(crate) use vlatproto::tid::TidClock;
     pub(crate) use vlsync_firehose::firehose::Firehose;
     pub(crate) use vlsync_store::store::Store;
     // XRPC-envelope rejections (400 InvalidRequest / 413) instead of axum's.
@@ -124,7 +124,7 @@ pub struct App {
     pub imports: Arc<import_budget::ImportBudget>,
     pub admin_token: String,
     pub config: Arc<crate::server::Config>,
-    pub did_resolver: Arc<vlsync_atproto::did_resolver::DidResolver>,
+    pub did_resolver: Arc<vlatproto::did_resolver::DidResolver>,
     /// None = single node owning every partition.
     pub cluster: Option<Arc<crate::cluster::Cluster>>,
     pub http: crate::http::PeerClient,

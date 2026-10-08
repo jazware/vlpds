@@ -3,7 +3,7 @@
 //! accept/reject decision on corrupted input.
 use crate::common::*;
 use rand::{Rng, SeedableRng};
-use vlsync_atproto::cbor::write_json;
+use vlatproto::cbor::write_json;
 
 fn tree_json(b: &[u8]) -> Option<J> {
     Value::decode(b).ok().map(|v| v.to_json())

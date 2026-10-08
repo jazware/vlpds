@@ -6,8 +6,8 @@
 use crate::common::spaces::SpaceClient;
 use crate::common::*;
 use std::time::Duration;
-use vlsync_atproto::cbor::Value;
-use vlsync_atproto::cid::Cid;
+use vlatproto::cbor::Value;
+use vlatproto::cid::Cid;
 
 const TYPE: &str = "com.example.group";
 const COLL: &str = "com.example.post";
@@ -300,25 +300,25 @@ async fn pds(plc: &str, service_did: &str) -> TestServer {
 /// A 2-root CAR of `roots` and `blocks`.
 fn car(roots: &[Cid], blocks: &[(Cid, Vec<u8>)]) -> Vec<u8> {
     let mut h = Vec::new();
-    vlsync_atproto::cbor::write_map_head(&mut h, 2);
-    vlsync_atproto::cbor::write_text(&mut h, "roots");
-    vlsync_atproto::cbor::write_array_head(&mut h, roots.len());
+    vlatproto::cbor::write_map_head(&mut h, 2);
+    vlatproto::cbor::write_text(&mut h, "roots");
+    vlatproto::cbor::write_array_head(&mut h, roots.len());
     for r in roots {
-        vlsync_atproto::cbor::write_cid(&mut h, r);
+        vlatproto::cbor::write_cid(&mut h, r);
     }
-    vlsync_atproto::cbor::write_text(&mut h, "version");
-    vlsync_atproto::cbor::write_uint(&mut h, 1);
+    vlatproto::cbor::write_text(&mut h, "version");
+    vlatproto::cbor::write_uint(&mut h, 1);
     let mut out = Vec::new();
-    vlsync_atproto::car::write_varint(&mut out, h.len() as u64);
+    vlatproto::car::write_varint(&mut out, h.len() as u64);
     out.extend_from_slice(&h);
     for (c, b) in blocks {
-        vlsync_atproto::car::write_block(&mut out, c, b);
+        vlatproto::car::write_block(&mut out, c, b);
     }
     out
 }
 
 fn commit_block(c: &vlpds::space::commit::SignedCommit) -> Vec<u8> {
-    use vlsync_atproto::cbor::*;
+    use vlatproto::cbor::*;
     let mut b = Vec::new();
     write_map_head(&mut b, 6);
     for (k, v) in [("ikm", &c.ikm), ("mac", &c.mac)] {
@@ -437,7 +437,7 @@ async fn import_repo_round_trip_and_refusals() {
     let b = SpaceClient::for_account(&y, &a.did, &handle, &jwt, OWNER).await;
     let import = async |car: Vec<u8>| b.post_bytes(IMPORT, &[("space", space.as_str())], car, CAR).await;
 
-    let (roots, blocks) = vlsync_atproto::car::read_car(&exported).unwrap();
+    let (roots, blocks) = vlatproto::car::read_car(&exported).unwrap();
     let blocks: Vec<(Cid, Vec<u8>)> = blocks.into_iter().map(|(c, b)| (c, b.to_vec())).collect();
     let (commit_cid, index_cid) = (roots[0], roots[1]);
     let commit = decode_commit(&blocks.iter().find(|(c, _)| *c == commit_cid).unwrap().1);
@@ -463,13 +463,13 @@ async fn import_repo_round_trip_and_refusals() {
         let (Value::Link(c), Some((coll, rkey))) = (v, path.split_once('/')) else { panic!("index entry") };
         set.add(&vlpds::space::commit::element(coll, rkey, &c.to_string()));
     }
-    let other = vlsync_atproto::crypto::Keypair::generate();
+    let other = vlatproto::crypto::Keypair::generate();
     let ctx = vlpds::space::commit::CommitCtx { space: &space, author: &a.did, rev: &commit.rev };
     let forged = vlpds::space::commit::sign(&set, &ctx, rand::random(), |m| Ok::<_, ()>(other.sign(m))).unwrap();
     import(with_commit(&forged)).await.err(400, "InvalidCommit");
     // a rev far ahead would hold every later notify past the authority's
     // FutureRev window
-    let ahead = vlsync_atproto::tid::Tid::from_parts(vlsync_atproto::tid::now_micros() + 3_600_000_000, 0).to_string();
+    let ahead = vlatproto::tid::Tid::from_parts(vlatproto::tid::now_micros() + 3_600_000_000, 0).to_string();
     let ctx = vlpds::space::commit::CommitCtx { space: &space, author: &a.did, rev: &ahead };
     let future = vlpds::space::commit::sign(&set, &ctx, rand::random(), |m| Ok::<_, ()>(other.sign(m))).unwrap();
     import(with_commit(&future)).await.err(400, "FutureRev");
