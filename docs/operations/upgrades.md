@@ -157,6 +157,33 @@ that ships without a level is a bug, and this page lists each one with what to d
 The format inventory (every persisted and wire format, and how it's versioned) is in DESIGN.md under
 "Rolling upgrades and format versioning".
 
+## Releases
+
+A release is a git tag `vMAJOR.MINOR.PATCH` on
+[github.com/jazware/vlpds](https://github.com/jazware/vlpds/tags). Its version is the one in
+`Cargo.toml` at the tagged commit, and a running node reports it in `_health` as
+`<version>+<rev>`. Tags never move. Commits between releases build and run too, but only tags get
+the promises below.
+
+vlpds is developed in a monorepo, where the same release is the tag `vlpds-v<version>`. This
+repo's history is exported from it, and the export publishes each tag on the commit it made from
+the tagged one. The first release is `v1.0.0`, the build in production from 2026-10-07.
+
+The version says what an upgrade takes:
+
+| Bump | Means |
+|---|---|
+| patch | Fixes only. A rolling deploy, and rollback is a redeploy |
+| minor | New features, maybe a new feature level to finalize. A rolling deploy, and rollback is a redeploy until you finalize |
+| major | The upgrade from the previous release needs more than a rolling deploy: a stop-all upgrade, a one-way step, or a raised `MIN_LEVEL`. The release says what |
+
+"Upgrading from vX" means running a later release on data that vX wrote. Each release is tested
+that way before it's tagged. The `upgrade-*` HA scenarios (`bench/ha/upgrade.sh`, under
+[Testing an upgrade](#testing-an-upgrade)) take the newest earlier tag as the old build. They run
+a rolling upgrade under load and check every acked write, roll upgraded nodes back to vX, and check
+that vX refuses to start after a finalize. Skipping releases is fine within one major version.
+Across a major one, upgrade to each major's last release first.
+
 ## Upgrading from builds before 2026-10-06
 
 Builds from 2026-10-06 on store more in each repo's stats row (40 bytes, up from 24) and keep
