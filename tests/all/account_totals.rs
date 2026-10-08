@@ -8,8 +8,8 @@ use crate::common::*;
 use rand::{Rng, SeedableRng};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use vlpds::slots::ShardId;
 use vlpds::totals::{Totals, WINDOWS};
+use vlsync_store::slots::ShardId;
 
 fn cluster(s: &TestServer) -> &vlpds::cluster::Cluster {
     s.app.cluster.as_deref().unwrap()

@@ -96,7 +96,7 @@ fn is_segment(location: &Path) -> bool {
 /// value. Segments are compressed, so the bytes are looked for decoded.
 fn segment_carries(payload: &PutPayload, needle: &[u8]) -> bool {
     let data = bytes::Bytes::from(payload.clone());
-    let Ok(vlpds::segment::LogObject::Segment(_, entries)) = vlpds::segment::parse(data, true, None) else {
+    let Ok(vlsync_store::segment::LogObject::Segment(_, entries)) = vlpds::derived::parse(data, None) else {
         return false;
     };
     let has = |b: &[u8]| b.windows(needle.len()).any(|w| w == needle);
@@ -366,7 +366,7 @@ pub struct Notified {
 
 pub struct StubDid {
     pub did: String,
-    pub key: Arc<vlpds::crypto::Keypair>,
+    pub key: Arc<vlsync_atproto::crypto::Keypair>,
     refuse: Arc<AtomicBool>,
     seen: Arc<Mutex<Vec<Notified>>>,
 }
@@ -388,7 +388,7 @@ impl StubDid {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
         let (did, base) = (format!("did:web:127.0.0.1%3A{}", addr.port()), format!("http://{addr}"));
-        let key = Arc::new(vlpds::crypto::Keypair::generate());
+        let key = Arc::new(vlsync_atproto::crypto::Keypair::generate());
         let doc = json!({
             "@context": ["https://www.w3.org/ns/did/v1", "https://w3id.org/security/multikey/v1"],
             "id": did,

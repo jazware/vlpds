@@ -2,8 +2,8 @@
 //! authenticated also by the shared internal token (DESIGN.md "Exposure").
 
 use super::*;
-use crate::segment::Mutation;
 use base64::Engine;
+use vlsync_store::segment::Mutation;
 
 pub(super) const HDR: &str = "x-vlpds-internal";
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
@@ -39,7 +39,7 @@ pub fn routes() -> Router<Arc<App>> {
 /// For HA tests and ops.
 async fn cluster_status(State(app): AppState, headers: HeaderMap) -> XResult<Json<J>> {
     check(&app, &headers)?;
-    let owned: Vec<crate::slots::ShardId> = app.partitions.owned().iter().map(|p| p.id).collect();
+    let owned: Vec<vlsync_store::slots::ShardId> = app.partitions.owned().iter().map(|p| p.id).collect();
     let (node, table, peers, lease_valid) = match &app.cluster {
         Some(c) => (
             c.cfg.node_id.clone(),
@@ -100,7 +100,7 @@ const PREWARM_BODY_MAX: usize = 4 << 20;
 
 #[derive(serde::Serialize, Deserialize)]
 pub struct PrewarmShard {
-    pub shard: crate::slots::ShardId,
+    pub shard: vlsync_store::slots::ShardId,
     /// Its recently written repos, newest first.
     #[serde(default)]
     pub recent: Vec<String>,
@@ -110,7 +110,7 @@ pub struct PrewarmShard {
 /// [`PREWARM_RECENT_BYTES`] in all, taken rank by rank across the shards:
 /// the order `Node::warm_handoff` warms them in, so the cut is what the
 /// recipient would reach last.
-pub fn prewarm_request(shards: Vec<(crate::slots::ShardId, Vec<String>)>) -> Vec<PrewarmShard> {
+pub fn prewarm_request(shards: Vec<(vlsync_store::slots::ShardId, Vec<String>)>) -> Vec<PrewarmShard> {
     let mut out: Vec<PrewarmShard> =
         shards.iter().map(|(s, _)| PrewarmShard { shard: *s, recent: Vec::new() }).collect();
     let mut lists: Vec<std::vec::IntoIter<String>> = shards.into_iter().map(|(_, r)| r.into_iter()).collect();
@@ -197,15 +197,15 @@ struct HelloIn {
     max_level: u32,
 }
 
-fn note_peer_build(peer: &str, rev: &str, min: u32, max: u32, ours: crate::version::Window) {
+fn note_peer_build(peer: &str, rev: &str, min: u32, max: u32, ours: vlsync_store::version::Window) {
     let window = (min, max);
-    if window != (ours.min, ours.max) || rev != crate::version::build_rev() {
+    if window != (ours.min, ours.max) || rev != crate::build::rev() {
         tracing::info!(
             peer,
             rev,
             min_level = window.0,
             max_level = window.1,
-            our_rev = crate::version::build_rev(),
+            our_rev = crate::build::rev(),
             our_min = ours.min,
             our_max = ours.max,
             "peer runs a different build"
@@ -230,7 +230,7 @@ async fn cluster_hello(
     let floor = c.learn_peer(&host, &inp.node_id).await.map_err(XrpcError::from_err)?;
     Ok(Json(json!({
         "ok": floor.is_some(), "floor": floor,
-        "rev": crate::version::build_rev(), "minLevel": c.cfg.levels.min, "maxLevel": c.cfg.levels.max,
+        "rev": crate::build::rev(), "minLevel": c.cfg.levels.min, "maxLevel": c.cfg.levels.max,
     })))
 }
 
@@ -240,13 +240,13 @@ pub async fn hello_peers(
     http: &crate::http::PeerClient,
     token: &str,
     node_id: &str,
-    levels: crate::version::Window,
+    levels: vlsync_store::version::Window,
     addrs: Vec<String>,
 ) -> Vec<Option<i64>> {
     let sends = addrs.into_iter().map(|addr| async move {
         let hello = HelloIn {
             node_id: node_id.to_string(),
-            rev: crate::version::build_rev().to_string(),
+            rev: crate::build::rev().to_string(),
             min_level: levels.min,
             max_level: levels.max,
         };
@@ -314,7 +314,8 @@ pub(super) fn check(app: &App, headers: &HeaderMap) -> XResult<()> {
 
 /// Dev mode also accepts the admin token.
 pub fn internal_token_ok(cfg: &crate::server::Config, t: &str) -> bool {
-    crate::auth::token_eq(&cfg.internal_token, t) || (cfg.dev_mode && crate::auth::token_eq(&cfg.admin_token, t))
+    vlsync_atproto::xrpc::token_eq(&cfg.internal_token, t)
+        || (cfg.dev_mode && vlsync_atproto::xrpc::token_eq(&cfg.admin_token, t))
 }
 
 #[derive(Deserialize)]
@@ -788,7 +789,7 @@ async fn sync_list_repos_by_collection(
 pub struct PeerReply {
     pub node: String,
     /// Shards the peer scanned.
-    pub owned: Vec<crate::slots::ShardId>,
+    pub owned: Vec<vlsync_store::slots::ShardId>,
     pub body: J,
 }
 

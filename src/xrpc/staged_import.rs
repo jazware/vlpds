@@ -93,9 +93,9 @@ impl Drop for Sweeping {
 /// not swept) and "sweeping" (before each sweep entry). A firing hook stops
 /// the work there with nothing undone, as a crash would; the test halts
 /// the node in it.
-static CRASH_HOOKS: crate::lifecycle::CrashHooks = crate::lifecycle::CrashHooks::new();
+static CRASH_HOOKS: vlsync_store::lifecycle::CrashHooks = vlsync_store::lifecycle::CrashHooks::new();
 
-pub fn set_crash_hook(did: &str, h: Option<crate::lifecycle::CrashHook>) {
+pub fn set_crash_hook(did: &str, h: Option<vlsync_store::lifecycle::CrashHook>) {
     CRASH_HOOKS.set(did, h)
 }
 
@@ -275,7 +275,7 @@ impl Stage {
         app: &App,
         gen: u64,
         links: Vec<(Vec<u8>, Box<str>)>,
-        muts: &mut Vec<crate::segment::Mutation>,
+        muts: &mut Vec<vlsync_store::segment::Mutation>,
         bloom_words: usize,
     ) -> XResult<()> {
         let mut by_link: std::collections::BTreeMap<Vec<u8>, crate::backlinks::Rkeys> = Default::default();
@@ -297,7 +297,7 @@ impl Stage {
             v.sort();
             v.dedup();
             self.seen.insert(&l, bloom_words);
-            muts.push(crate::segment::Mutation {
+            muts.push(vlsync_store::segment::Mutation {
                 key: state::backlink_key(&self.did, gen, &l).into(),
                 val: Some(crate::backlinks::encode(&v)),
             });
@@ -355,7 +355,7 @@ fn rows(
     t: ImportTicket,
     records: Vec<ImportedRecord>,
     nodes: Vec<(Cid, Arc<[u8]>)>,
-) -> (Vec<crate::segment::Mutation>, Vec<(Vec<u8>, Box<str>)>, Vec<String>) {
+) -> (Vec<vlsync_store::segment::Mutation>, Vec<(Vec<u8>, Box<str>)>, Vec<String>) {
     import_rows(did, t.gen, t.rev, records, nodes)
 }
 
@@ -365,11 +365,11 @@ fn rows(
 pub fn import_rows(
     did: &str,
     gen: u64,
-    rev: crate::tid::Tid,
+    rev: vlsync_atproto::tid::Tid,
     records: Vec<ImportedRecord>,
     nodes: Vec<(Cid, Arc<[u8]>)>,
-) -> (Vec<crate::segment::Mutation>, Vec<(Vec<u8>, Box<str>)>, Vec<String>) {
-    use crate::segment::Mutation;
+) -> (Vec<vlsync_store::segment::Mutation>, Vec<(Vec<u8>, Box<str>)>, Vec<String>) {
+    use vlsync_store::segment::Mutation;
     let rev_t = rev;
     let rev = rev_t.0.to_be_bytes();
     let mut muts = Vec::with_capacity(records.len() * 3 + nodes.len());
@@ -408,7 +408,8 @@ pub fn import_rows(
 /// Distinct blob CIDs among a generation's refs: `b/` keys sort by CID.
 async fn distinct_blobs<R: slatedb::DbReadOps + Sync + ?Sized>(db: &R, did: &str, gen: u64) -> anyhow::Result<u64> {
     let prefix = state::blob_ref_prefix(did, gen);
-    let mut it = state::BatchedScan::new(db.scan(prefix.clone()..state::prefix_end(&prefix)).await?);
+    let mut it =
+        vlsync_store::keys::BatchedScan::new(db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await?);
     let (mut n, mut last) = (0u64, Vec::new());
     while let Some(kv) = it.next().await? {
         let cid = kv.key[prefix.len()..].split(|b| *b == 0).next().unwrap_or_default();
@@ -427,7 +428,7 @@ async fn collections<R: slatedb::DbReadOps + Sync + ?Sized>(
     gen: u64,
 ) -> anyhow::Result<Vec<String>> {
     let prefix = state::record_prefix(did, gen);
-    let end = state::prefix_end(&prefix);
+    let end = vlsync_store::keys::prefix_end(&prefix);
     let mut lo = prefix.clone();
     let mut out = Vec::new();
     loop {
@@ -435,7 +436,7 @@ async fn collections<R: slatedb::DbReadOps + Sync + ?Sized>(
         let Some(kv) = it.next().await? else { return Ok(out) };
         let path = String::from_utf8_lossy(&kv.key[prefix.len()..]).into_owned();
         let coll = crate::worker::collection_of(&path).to_string();
-        lo = state::prefix_end(&[&prefix[..], coll.as_bytes(), b"/"].concat());
+        lo = vlsync_store::keys::prefix_end(&[&prefix[..], coll.as_bytes(), b"/"].concat());
         out.push(coll);
     }
 }
@@ -519,15 +520,16 @@ pub async fn sweep_gen(app: &App, did: &str, gen: u64) -> XResult<()> {
     let p = app.partition(did)?;
     for fam in state::GEN_FAMILIES {
         let prefix = state::gen_prefix(fam, did, gen);
-        let end = state::prefix_end(&prefix);
+        let end = vlsync_store::keys::prefix_end(&prefix);
         let mut lo = prefix.clone();
         loop {
-            let mut it =
-                state::BatchedScan::new(p.db.scan(lo.clone()..end.clone()).await.map_err(XrpcError::from_err)?);
+            let mut it = vlsync_store::keys::BatchedScan::new(
+                p.db.scan(lo.clone()..end.clone()).await.map_err(XrpcError::from_err)?,
+            );
             let mut dels = Vec::new();
             while dels.len() < SWEEP_KEYS {
                 let Some(kv) = it.next().await.map_err(XrpcError::from_err)? else { break };
-                dels.push(crate::segment::Mutation { key: kv.key, val: None });
+                dels.push(vlsync_store::segment::Mutation { key: kv.key, val: None });
             }
             drop(it);
             let Some(last) = dels.last() else { break };
@@ -557,7 +559,7 @@ pub async fn sweep_pending(app: &Arc<App>) -> Swept {
         let scan = async {
             let mut it = state::FamilyScan::new(p.db.as_ref(), fam, None, &Default::default()).await?;
             while let Some(kv) = it.next().await? {
-                let did = String::from_utf8_lossy(&state::key_body(&kv.key)[fam.len()..]).into_owned();
+                let did = String::from_utf8_lossy(&vlsync_store::keys::key_body(&kv.key)[fam.len()..]).into_owned();
                 if let Ok(s) = state::ImportState::decode(&kv.value) {
                     found.push((did, s));
                 }

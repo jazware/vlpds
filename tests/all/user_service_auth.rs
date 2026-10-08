@@ -10,8 +10,8 @@
 use crate::common::*;
 use base64::Engine;
 use std::time::Duration;
-use vlpds::crypto::Keypair;
 use vlpds::plc::mock::MockPlc;
+use vlsync_atproto::crypto::Keypair;
 
 const UPLOAD: &str = "com.atproto.repo.uploadBlob";
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -122,7 +122,7 @@ async fn bad_user_service_tokens_are_refused_with_the_reference_errors() {
     // expired
     let exp = now() + 1;
     let t = service_token(&s, &a, &pds, Some(UPLOAD), Some(exp)).await;
-    while vlpds::tid::now_micros() as f64 / 1e6 <= exp as f64 {
+    while vlsync_atproto::tid::now_micros() as f64 / 1e6 <= exp as f64 {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_err(&upload(&s, &t, body()).await, 401, "JwtExpired", "jwt expired");

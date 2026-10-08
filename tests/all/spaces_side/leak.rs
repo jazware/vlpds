@@ -13,7 +13,7 @@ use object_store::ObjectStoreExt;
 use sha2::Digest;
 use std::sync::Arc;
 use std::time::Duration;
-use vlpds::slots::{slot_of, SlotRange};
+use vlsync_store::slots::{slot_of, SlotRange};
 
 /// Every state family a space write or the space host may put in the log
 /// (plan §2.1, C5's sb/sc blob refs).
@@ -219,7 +219,7 @@ pub(super) async fn read_shard(sub: &mut Sub, full: &[Frame], k: u32) -> Vec<Fra
 pub(super) async fn s3_backfill(s: &TestServer) -> Vec<(i64, Vec<u8>)> {
     let s3 = s.app.firehose.store.read().clone().unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::channel(1 << 16);
-    let job = tokio::spawn(async move { vlpds::backfill::backfill(&s3, 0, i64::MAX, &tx).await });
+    let job = tokio::spawn(async move { vlsync_firehose::backfill::backfill(&s3, 0, i64::MAX, &tx).await });
     let mut all = Vec::new();
     while let Some((seq, frame)) = rx.recv().await {
         all.push((seq, frame.to_vec()));
@@ -241,22 +241,22 @@ pub(super) async fn scan_log(s: &TestServer, p: &Planted) -> (usize, bool) {
     let (mut private, mut seen) = (0, false);
     for m in metas {
         let data = store.raw.get(&m.location).await.unwrap().bytes().await.unwrap();
-        let vlpds::segment::LogObject::Segment(_, entries) = vlpds::segment::parse(data, true, None).unwrap() else {
+        let vlsync_store::segment::LogObject::Segment(_, entries) = vlpds::derived::parse(data, None).unwrap() else {
             continue;
         };
         for e in entries {
-            let space_keys: Vec<&[u8]> =
-                e.muts
-                    .iter()
-                    .map(|m| {
-                        if vlpds::state::key_slot(&m.key).is_some() {
-                            vlpds::state::key_body(&m.key)
-                        } else {
-                            &m.key[..]
-                        }
-                    })
-                    .filter(|body| SPACE_FAMILIES.iter().any(|f| body.starts_with(f)))
-                    .collect();
+            let space_keys: Vec<&[u8]> = e
+                .muts
+                .iter()
+                .map(|m| {
+                    if vlsync_store::keys::key_slot(&m.key).is_some() {
+                        vlsync_store::keys::key_body(&m.key)
+                    } else {
+                        &m.key[..]
+                    }
+                })
+                .filter(|body| SPACE_FAMILIES.iter().any(|f| body.starts_with(f)))
+                .collect();
             if !space_keys.is_empty() {
                 private += 1;
                 assert!(

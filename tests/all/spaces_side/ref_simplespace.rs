@@ -534,7 +534,7 @@ async fn stops_past_expiry_and_resumes_on_renewal() {
     let pds1 = &net.pds[0].url;
     let reg = json!({"space": space, "service": syncer.service_ref()});
     cred.post(pds1, "com.atproto.space.registerNotify", reg.clone()).await.ok();
-    let expired = vlpds::tid::now_micros() - 1_000_000;
+    let expired = vlsync_atproto::tid::now_micros() - 1_000_000;
     vlpds::xrpc::space::set_registration_expiry(&net.pds[0].app, &space, &syncer.service_ref(), expired).await.unwrap();
 
     write(&bob, &space, W::new().text("after expiry")).await.ok();

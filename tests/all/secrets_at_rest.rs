@@ -37,7 +37,8 @@ async fn everything(s: &TestServer) -> Vec<(String, Vec<u8>)> {
         let Ok(r) = raw.get(&m.location).await else { continue };
         let data = r.bytes().await.unwrap();
         let path = m.location.to_string();
-        let data = if path.contains("/log/") { vlpds::segment::decode(data.clone()).unwrap_or(data) } else { data };
+        let data =
+            if path.contains("/log/") { vlsync_store::segment::decode(data.clone()).unwrap_or(data) } else { data };
         out.push((path, data.to_vec()));
     }
     for p in s.app.partitions.owned() {
@@ -436,7 +437,7 @@ async fn plc_rotation_key_never_reaches_the_bucket() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let kms = mock_kms().await;
     let plc = vlpds::plc::mock::MockPlc::start().await;
-    let rot = vlpds::crypto::Keypair::generate();
+    let rot = vlsync_atproto::crypto::Keypair::generate();
     let raw = rot.to_bytes().to_vec();
     // `vlpds --wrap-plc-rotation-key` with the node's KEK, into a file
     let ring = vlpds::secrets::Secrets::from_config(&gcp(&kms), false).unwrap();

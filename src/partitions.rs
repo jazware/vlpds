@@ -1,10 +1,10 @@
 //! The shards this node has open, and the layout it routes by.
 
 use crate::partition::Partition;
-use crate::slots::{Layout, ShardId};
 use parking_lot::RwLock;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use vlsync_store::slots::{Layout, ShardId};
 
 pub struct PartitionTable {
     layout: RwLock<Arc<Layout>>,

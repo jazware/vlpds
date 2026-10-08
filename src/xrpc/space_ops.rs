@@ -12,8 +12,8 @@ use super::moderation::{audit, ClientIp, SubjectRef, Who};
 use super::space::{space_takedown_name, takedown_name, Space};
 use super::*;
 use crate::space::rows::{AppAccess, HeadRow, MemberRow, Policy, SeqRow, SpaceRow, WriterRow};
-use crate::tid::Tid;
 use std::collections::HashMap;
+use vlsync_atproto::tid::Tid;
 
 pub fn routes() -> Router<Arc<App>> {
     Router::new()
@@ -93,7 +93,8 @@ async fn local_handle(app: &App, did: &str) -> Option<String> {
 /// Rows under `prefix`, counted up to [`COUNT_CAP`] (+1 means "more").
 async fn count_prefix(db: &slatedb::Db, prefix: &[u8]) -> XResult<usize> {
     let opts = slatedb::config::ScanOptions::default();
-    let mut it = db.scan_with_options(prefix.to_vec()..state::prefix_end(prefix), &opts).await.map_err(err)?;
+    let mut it =
+        db.scan_with_options(prefix.to_vec()..vlsync_store::keys::prefix_end(prefix), &opts).await.map_err(err)?;
     let mut n = 0;
     while n <= COUNT_CAP {
         let rows = it.next_batch(256).await.map_err(err)?;
@@ -109,7 +110,8 @@ async fn count_prefix(db: &slatedb::Db, prefix: &[u8]) -> XResult<usize> {
 async fn last_seq(db: &slatedb::Db, authority: &str, sid: &state::SpaceId) -> XResult<Option<(Tid, String)>> {
     let prefix = state::space_prefix(state::SPACE_SEQ_FAMILY, authority, sid);
     let desc = slatedb::config::ScanOptions::default().with_order(slatedb::IterationOrder::Descending);
-    let mut it = db.scan_with_options(prefix.clone()..state::prefix_end(&prefix), &desc).await.map_err(err)?;
+    let mut it =
+        db.scan_with_options(prefix.clone()..vlsync_store::keys::prefix_end(&prefix), &desc).await.map_err(err)?;
     let Some(kv) = it.next().await.map_err(err)? else { return Ok(None) };
     let rev = crate::space::rows::seq_rev(&kv.key).ok_or_else(|| XrpcError::internal("malformed space seq key"))?;
     Ok(Some((rev, SeqRow::decode(&kv.value).map_err(err)?.writer)))
@@ -183,7 +185,7 @@ struct RepoAgg {
 #[derive(Default, serde::Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalSpaces {
-    owned: Vec<crate::slots::ShardId>,
+    owned: Vec<vlsync_store::slots::ShardId>,
     spaces: Vec<SpaceSummary>,
     repos: HashMap<String, RepoAgg>,
     truncated: bool,
@@ -198,7 +200,7 @@ async fn local_spaces(app: &App) -> XResult<LocalSpaces> {
         out.owned.push(p.id);
         // a split's children hold the parent's rows until they're swept
         let range = layout.range_of(p.id);
-        let ours = |k: &[u8]| state::key_slot(k).is_some_and(|s| range.is_none_or(|r| r.contains(s)));
+        let ours = |k: &[u8]| vlsync_store::keys::key_slot(k).is_some_and(|s| range.is_none_or(|r| r.contains(s)));
         let mut scan = state::FamilyScan::new(p.db.as_ref(), state::SPACE_FAMILY, None, &opts).await.map_err(err)?;
         while let Some(kv) = scan.next().await.map_err(err)? {
             if !ours(&kv.key) {
@@ -266,7 +268,7 @@ async fn list_spaces(State(app): AppState, Auth(creds): Auth, Query(q): Query<Li
     }
     let mine = local_spaces(&app).await?;
     let g = super::internal::gather(&app, "/internal/v1/admin/spaces", &[]).await;
-    let mut covered: std::collections::HashSet<crate::slots::ShardId> = mine.owned.iter().copied().collect();
+    let mut covered: std::collections::HashSet<vlsync_store::slots::ShardId> = mine.owned.iter().copied().collect();
     let mut truncated = mine.truncated;
     let mut spaces = mine.spaces;
     let mut repos = mine.repos;
@@ -349,7 +351,8 @@ async fn get_space_info(State(app): AppState, Auth(creds): Auth, Query(q): Query
     let opts = slatedb::config::ScanOptions::default();
 
     let prefix = state::space_prefix(state::SPACE_MEMBER_FAMILY, &space.authority, &space.sid);
-    let mut it = snap.scan_with_options(prefix.clone()..state::prefix_end(&prefix), &opts).await.map_err(err)?;
+    let mut it =
+        snap.scan_with_options(prefix.clone()..vlsync_store::keys::prefix_end(&prefix), &opts).await.map_err(err)?;
     let mut members = Vec::new();
     let mut more_members = false;
     while let Some(kv) = it.next().await.map_err(err)? {
@@ -363,7 +366,8 @@ async fn get_space_info(State(app): AppState, Auth(creds): Auth, Query(q): Query
     }
 
     let prefix = state::space_prefix(state::SPACE_WRITER_FAMILY, &space.authority, &space.sid);
-    let mut it = snap.scan_with_options(prefix.clone()..state::prefix_end(&prefix), &opts).await.map_err(err)?;
+    let mut it =
+        snap.scan_with_options(prefix.clone()..vlsync_store::keys::prefix_end(&prefix), &opts).await.map_err(err)?;
     let mut writers = Vec::new();
     let mut more_writers = false;
     let mut hidden = Vec::new();
@@ -403,7 +407,8 @@ async fn get_space_info(State(app): AppState, Auth(creds): Auth, Query(q): Query
 
     let prefix = state::space_prefix(state::SPACE_SEQ_FAMILY, &space.authority, &space.sid);
     let desc = slatedb::config::ScanOptions::default().with_order(slatedb::IterationOrder::Descending);
-    let mut it = snap.scan_with_options(prefix.clone()..state::prefix_end(&prefix), &desc).await.map_err(err)?;
+    let mut it =
+        snap.scan_with_options(prefix.clone()..vlsync_store::keys::prefix_end(&prefix), &desc).await.map_err(err)?;
     let mut activity = Vec::new();
     while activity.len() < ACTIVITY {
         let Some(kv) = it.next().await.map_err(err)? else { break };
@@ -452,7 +457,8 @@ async fn get_account_spaces(State(app): AppState, Auth(creds): Auth, Query(q): Q
     let snap = p.db.snapshot().map_err(err)?;
     let prefix = state::space_did_prefix(state::SPACE_LIST_FAMILY, &q.did);
     let opts = slatedb::config::ScanOptions::default();
-    let mut it = snap.scan_with_options(prefix.clone()..state::prefix_end(&prefix), &opts).await.map_err(err)?;
+    let mut it =
+        snap.scan_with_options(prefix.clone()..vlsync_store::keys::prefix_end(&prefix), &opts).await.map_err(err)?;
     let ctl = super::server::ctl(&app, &q.did).await?;
     let (mut repos, mut governs, mut more) = (Vec::new(), Vec::new(), false);
     while let Some(kv) = it.next().await.map_err(err)? {
@@ -577,7 +583,7 @@ async fn remove_registration_row(app: &App, space: &Space, service: String) -> X
 fn node_status(sp: &crate::space::Spaces) -> J {
     use crate::space::revocations as rv;
     let r = &sp.revocations;
-    let now = crate::tid::now_micros() as i64 / 1_000_000;
+    let now = vlsync_atproto::tid::now_micros() as i64 / 1_000_000;
     let (blocked_spaces, blocked_authorities) = r.blocks(now);
     json!({
         "outbox": {"rows": sp.outbox.len(), "max": crate::space::outbox::MAX_ROWS},

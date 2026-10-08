@@ -130,7 +130,7 @@ async fn list_space_records(
         Some(c) => [&base[..], c.as_bytes(), &[0]].concat().max(prefix.clone()),
         None => prefix.clone(),
     };
-    let end = state::prefix_end(&prefix);
+    let end = vlsync_store::keys::prefix_end(&prefix);
     let ctl = super::server::ctl(&app, &q.repo).await?;
     let mut records = Vec::new();
     let mut last = None;

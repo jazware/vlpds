@@ -111,7 +111,7 @@ pub(crate) async fn unpaced_ingest(db: &slatedb::Db, records: u64) -> Ingest {
             let mut val = cid.to_vec();
             val.extend_from_slice(&record);
             wb.put(vlpds::state::record_key(did, 0, &path), val);
-            let c = vlpds::cid::Cid::dag_cbor(&cid);
+            let c = vlsync_atproto::cid::Cid::dag_cbor(&cid);
             wb.put(vlpds::state::record_cid_key(did, 0, &c, &path), b"");
         }
         let t = Instant::now();
@@ -143,10 +143,10 @@ async fn idle_requests_per_mode() {
     for (name, mode) in MODES {
         vlpds::partition::set_compaction_polling(mode);
         let counting = Counting::new(Arc::new(object_store::memory::InMemory::new()));
-        let store = vlpds::store::Store { raw: counting.clone(), ..vlpds::store::Store::memory(None) };
+        let store = vlsync_store::store::Store { raw: counting.clone(), ..vlsync_store::store::Store::memory(None) };
         let mut dbs = Vec::new();
         for s in 0..shards {
-            let db = vlpds::partition::open_db(&store, vlpds::slots::ShardId(s), None).await.unwrap();
+            let db = vlpds::partition::open_db(&store, vlsync_store::slots::ShardId(s), None).await.unwrap();
             db.put(b"k", b"v").await.unwrap();
             db.flush_with_options(slatedb::config::FlushOptions { flush_type: slatedb::config::FlushType::MemTable })
                 .await
@@ -189,8 +189,8 @@ async fn unpaced_ingest_per_mode() {
         }
         vlpds::partition::set_compaction_polling(mode);
         let counting = Counting::new(Arc::new(throttled_store(latency_ms)));
-        let store = vlpds::store::Store { raw: counting.clone(), ..vlpds::store::Store::memory(None) };
-        let db = vlpds::partition::open_db(&store, vlpds::slots::ShardId(0), None).await.unwrap();
+        let store = vlsync_store::store::Store { raw: counting.clone(), ..vlsync_store::store::Store::memory(None) };
+        let db = vlpds::partition::open_db(&store, vlsync_store::slots::ShardId(0), None).await.unwrap();
         let Ingest { secs, worst, slow, stalled, .. } = unpaced_ingest(&db, records).await;
         let [g, p, l, d] = counting.take();
         eprintln!(

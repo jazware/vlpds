@@ -3,13 +3,14 @@
 //! (nodelog.rs).
 
 use crate::nodelog::NodeLog;
-pub use crate::nodelog::{seq_floor, AckFn, LogEntry, Watermark};
-use crate::slots::ShardId;
-use crate::store::Store;
+pub use crate::nodelog::{AckFn, LogEntry};
 use slatedb::Db;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use vlsync_firehose::log::Watermark;
+use vlsync_store::slots::ShardId;
+use vlsync_store::store::Store;
 
 pub struct Partition {
     pub id: ShardId,
@@ -209,7 +210,7 @@ fn shared_meta_cache() -> &'static Arc<MetaCache> {
     META.get_or_init(|| {
         let meta = Arc::new(MetaCache::new(META_CACHE_BYTES.load(std::sync::atomic::Ordering::Relaxed)));
         crate::metrics::META_CACHE_CAPACITY.set(meta.capacity() as i64);
-        crate::metrics::on_render(|| {
+        vlsync_store::metrics::on_render(|| {
             crate::metrics::META_CACHE_BYTES.set(shared_meta_cache().bytes() as i64);
             true
         });
@@ -1120,7 +1121,7 @@ pub fn db_path(store: &Store, id: ShardId) -> String {
 pub async fn clone_db(store: &Store, child: ShardId, sources: &[(ShardId, u32, u32)]) -> anyhow::Result<()> {
     anyhow::ensure!(!sources.is_empty(), "clone of shard {child} without sources");
     let srcs: Vec<(String, (bytes::Bytes, bytes::Bytes))> =
-        sources.iter().map(|&(id, lo, hi)| (db_path(store, id), crate::state::slot_range_keys(lo, hi))).collect();
+        sources.iter().map(|&(id, lo, hi)| (db_path(store, id), vlsync_store::keys::slot_range_keys(lo, hi))).collect();
     clone_projected(store, db_path(store, child), &clone_checkpoint_name(child), &srcs).await
 }
 
@@ -1129,7 +1130,7 @@ pub type FamilyRange = fn(u32, u32) -> (bytes::Bytes, bytes::Bytes);
 
 /// [`clone_db`] for a DB that keeps slot-keyed rows under several key
 /// families, each family's rows of a slot range one contiguous key range
-/// (the first is usually [`crate::state::slot_range_keys`]). Keys outside
+/// (the first is usually [`vlsync_store::keys::slot_range_keys`]). Keys outside
 /// every family stay with the parent, as with `clone_db`. vlpds itself never
 /// calls it: an embedder with more families (vlRelay) opts in.
 ///
@@ -1522,16 +1523,16 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore]
     async fn compression() {
-        use crate::cid::Cid;
         use std::collections::HashMap;
+        use vlsync_atproto::cid::Cid;
         let path = std::env::var("VLPDS_BENCH_CAR").expect("VLPDS_BENCH_CAR=path/to/repo.car");
         let copies: usize = std::env::var("VLPDS_BENCH_COPIES").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
         let car = std::fs::read(path).unwrap();
-        let (roots, blocks) = crate::car::read_car(&car).unwrap();
+        let (roots, blocks) = vlsync_atproto::car::read_car(&car).unwrap();
         let blocks: HashMap<Cid, Vec<u8>> = blocks.into_iter().map(|(c, b)| (c, b.to_vec())).collect();
-        let commit = crate::cbor::Value::decode(&blocks[&roots[0]]).unwrap();
-        let Some(crate::cbor::Value::Link(data)) = commit.get("data") else { panic!("no data in commit") };
-        let tree = crate::mst::Tree::load_from_blocks(&blocks, *data).unwrap();
+        let commit = vlsync_atproto::cbor::Value::decode(&blocks[&roots[0]]).unwrap();
+        let Some(vlsync_atproto::cbor::Value::Link(data)) = commit.get("data") else { panic!("no data in commit") };
+        let tree = vlsync_atproto::mst::Tree::load_from_blocks(&blocks, *data).unwrap();
         let mut records = Vec::new();
         tree.walk(&mut |k, c| records.push((String::from_utf8(k.to_vec()).unwrap(), c)));
         let raw: usize = records.iter().map(|(_, c)| blocks[c].len()).sum();
@@ -1579,7 +1580,7 @@ mod tests {
                 }
                 stores.push(store);
             }
-            let db = open_db(&stores[0], crate::slots::ShardId(0), None).await.unwrap();
+            let db = open_db(&stores[0], vlsync_store::slots::ShardId(0), None).await.unwrap();
             let t = cpu();
             let mut n = 0;
             let mut it = db.scan(b"R/".to_vec()..b"R0".to_vec()).await.unwrap();
@@ -1589,7 +1590,7 @@ mod tests {
             let scan = cpu() - t;
             drop(it);
             db.close().await.unwrap();
-            let db = open_db(&stores[1], crate::slots::ShardId(0), None).await.unwrap();
+            let db = open_db(&stores[1], vlsync_store::slots::ShardId(0), None).await.unwrap();
             let step = (records.len() / 5000).max(1);
             let t = cpu();
             let mut gets = 0;
@@ -1854,7 +1855,7 @@ mod clone_tests {
     use super::*;
 
     fn k(slot: u16, rest: &str) -> Vec<u8> {
-        crate::state::slot_family(slot, rest.as_bytes())
+        vlsync_store::keys::slot_family(slot, rest.as_bytes())
     }
 
     async fn count(db: &Db) -> usize {
@@ -1937,7 +1938,7 @@ mod clone_tests {
 
     fn tag_range(tag: u8, lo: u32, hi: u32) -> (bytes::Bytes, bytes::Bytes) {
         let at = |s: u32| -> bytes::Bytes {
-            if s >= crate::slots::SLOTS {
+            if s >= vlsync_store::slots::SLOTS {
                 bytes::Bytes::copy_from_slice(&[tag + 1])
             } else {
                 bytes::Bytes::copy_from_slice(&[&[tag][..], &(s as u16).to_be_bytes()].concat())
@@ -1947,7 +1948,7 @@ mod clone_tests {
     }
 
     const FAMILIES: &[FamilyRange] =
-        &[crate::state::slot_range_keys, |lo, hi| tag_range(0x02, lo, hi), |lo, hi| tag_range(0x03, lo, hi)];
+        &[vlsync_store::keys::slot_range_keys, |lo, hi| tag_range(0x02, lo, hi), |lo, hi| tag_range(0x03, lo, hi)];
 
     /// Every family's rows follow their slots through a split and a merge
     /// (an empty family included), shard-wide keys stay behind, and no stage
@@ -2298,7 +2299,7 @@ mod clone_tests {
                 let mut it = crate::state::FamilyScan::new(db, fam, start, &Default::default()).await.unwrap();
                 let mut out = Vec::new();
                 while let Some(kv) = it.next().await.unwrap() {
-                    out.push(String::from_utf8_lossy(crate::state::key_body(&kv.key)).into_owned());
+                    out.push(String::from_utf8_lossy(vlsync_store::keys::key_body(&kv.key)).into_owned());
                 }
                 out
             }

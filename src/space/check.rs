@@ -12,12 +12,12 @@
 
 use super::commit::element;
 use super::lthash::LtHash;
-use crate::cid::Cid;
-use crate::tid::Tid;
 use anyhow::Context;
 use bytes::Bytes;
 use serde_json::{json, Value as J};
 use std::collections::{BTreeMap, HashMap};
+use vlsync_atproto::cid::Cid;
+use vlsync_atproto::tid::Tid;
 
 /// Problems listed per check (counts are exact).
 const LIST_MAX: usize = 20;
@@ -217,7 +217,7 @@ pub async fn load<R: slatedb::DbReadOps + Sync + ?Sized>(db: &R, did: &str, uri:
 }
 
 async fn scan<R: slatedb::DbReadOps + Sync + ?Sized>(db: &R, prefix: &[u8]) -> anyhow::Result<Vec<(Bytes, Bytes)>> {
-    let mut it = db.scan(prefix.to_vec()..crate::state::prefix_end(prefix)).await?;
+    let mut it = db.scan(prefix.to_vec()..vlsync_store::keys::prefix_end(prefix)).await?;
     let mut out = Vec::new();
     while let Some(kv) = it.next().await? {
         out.push((kv.key, kv.value));

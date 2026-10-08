@@ -1,7 +1,7 @@
 //! atproto crypto interop fixtures (testdata/interop/crypto).
 //!
 //! vlpds only generates secp256k1 (K-256) keys, so the K-256 vectors are
-//! checked against `vlpds::crypto` and against the same verification rules
+//! checked against `vlsync_atproto::crypto` and against the same verification rules
 //! the harness applies to commits (compact 64-byte, low-S). P-256 vectors are
 //! only checked for being recognized as non-K-256 keys.
 use crate::common::*;
@@ -44,7 +44,7 @@ fn w3c_did_key_k256_from_private_key() {
     let cases: Vec<DidKeyFixture> = serde_json::from_str(&read_fixture("interop/crypto/w3c_didkey_K256.json")).unwrap();
     assert!(!cases.is_empty());
     for c in cases {
-        let kp = vlpds::crypto::Keypair::from_bytes(&hex::decode(&c.private_key_bytes_hex).unwrap()).unwrap();
+        let kp = vlsync_atproto::crypto::Keypair::from_bytes(&hex::decode(&c.private_key_bytes_hex).unwrap()).unwrap();
         assert_eq!(kp.did_key(), c.public_did_key);
         // and the did:key decodes back to the same public key
         let vk = decode_did_key_k256(&c.public_did_key).unwrap();
@@ -79,8 +79,8 @@ fn signature_fixtures_k256() {
         assert_eq!(ok, c.valid_signature, "{}", c.comment);
         // the production verifier (libsecp256k1) agrees, incl. rejecting high-S
         let pk = key.to_sec1_point(true);
-        let ours = vlpds::crypto::verify_k256(pk.as_bytes(), &msg, &sig).unwrap_or(false);
-        assert_eq!(ours, c.valid_signature, "vlpds::crypto::verify_k256: {}", c.comment);
+        let ours = vlsync_atproto::crypto::verify_k256(pk.as_bytes(), &msg, &sig).unwrap_or(false);
+        assert_eq!(ours, c.valid_signature, "vlsync_atproto::crypto::verify_k256: {}", c.comment);
     }
     assert!(n >= 3);
 }
@@ -96,7 +96,7 @@ fn harness_commit_verifier_rejects_high_s() {
 
 #[test]
 fn vlpds_signatures_are_low_s_compact_and_verify() {
-    let kp = vlpds::crypto::Keypair::generate();
+    let kp = vlsync_atproto::crypto::Keypair::generate();
     let vk = decode_did_key_k256(&kp.did_key()).unwrap();
     for i in 0..256u32 {
         let msg = format!("message {i}");
@@ -107,16 +107,16 @@ fn vlpds_signatures_are_low_s_compact_and_verify() {
 
 #[test]
 fn multibase_and_did_key_agree() {
-    let kp = vlpds::crypto::Keypair::generate();
+    let kp = vlsync_atproto::crypto::Keypair::generate();
     assert_eq!(kp.did_key(), format!("did:key:{}", kp.public_multibase()));
     assert!(kp.did_key().starts_with("did:key:zQ3s"), "K-256 did:key prefix");
-    let kp2 = vlpds::crypto::Keypair::from_bytes(&kp.to_bytes()).unwrap();
+    let kp2 = vlsync_atproto::crypto::Keypair::from_bytes(&kp.to_bytes()).unwrap();
     assert_eq!(kp2.did_key(), kp.did_key());
 }
 
 #[test]
 fn service_auth_jwt_is_es256k_and_verifies() {
-    let kp = vlpds::crypto::Keypair::generate();
+    let kp = vlsync_atproto::crypto::Keypair::generate();
     let tok = vlpds::auth::service_auth_jwt(&kp, "did:plc:abc", "did:web:example.com", Some("com.example.method"), 60)
         .unwrap();
     let parts: Vec<&str> = tok.split('.').collect();
@@ -139,7 +139,7 @@ fn signatures_byte_identical_to_rustcrypto_k256() {
     // deterministic path; what a node emits is hedged, and k256 verifies it.)
     use k256::ecdsa::signature::{Signer, Verifier};
     for k in 0..16u32 {
-        let kp = vlpds::crypto::Keypair::generate();
+        let kp = vlsync_atproto::crypto::Keypair::generate();
         let sk = k256::ecdsa::SigningKey::from_slice(&kp.to_bytes()).unwrap();
         assert_eq!(sk.verifying_key().to_sec1_point(true).as_bytes(), &kp.public_key_sec1()[..]);
         for i in 0..64u32 {
@@ -147,18 +147,20 @@ fn signatures_byte_identical_to_rustcrypto_k256() {
             let theirs: k256::ecdsa::Signature = sk.sign(msg.as_bytes());
             let theirs = theirs.normalize_s();
             assert_eq!(kp.sign_deterministic(msg.as_bytes())[..], theirs.to_bytes()[..], "key {k} msg {i}");
-            let hedged = kp.sign_verified(vlpds::crypto::Purpose::Commit, msg.as_bytes()).unwrap();
+            let hedged = kp.sign_verified(vlsync_atproto::crypto::Purpose::Commit, msg.as_bytes()).unwrap();
             assert_ne!(hedged, kp.sign_deterministic(msg.as_bytes()));
             sk.verifying_key().verify(msg.as_bytes(), &k256::ecdsa::Signature::from_slice(&hedged).unwrap()).unwrap();
-            assert!(vlpds::crypto::verify_k256(&kp.public_key_sec1(), msg.as_bytes(), &theirs.to_bytes()).unwrap());
-            assert!(!vlpds::crypto::verify_k256(&kp.public_key_sec1(), b"other", &theirs.to_bytes()).unwrap());
+            assert!(
+                vlsync_atproto::crypto::verify_k256(&kp.public_key_sec1(), msg.as_bytes(), &theirs.to_bytes()).unwrap()
+            );
+            assert!(!vlsync_atproto::crypto::verify_k256(&kp.public_key_sec1(), b"other", &theirs.to_bytes()).unwrap());
         }
     }
     // malformed encodings are errors, not panics
-    let kp = vlpds::crypto::Keypair::generate();
-    assert!(vlpds::crypto::verify_k256(&[0u8; 33], b"m", &kp.sign(b"m")).is_err());
-    assert!(vlpds::crypto::verify_k256(&kp.public_key_sec1(), b"m", &[0u8; 63]).is_err());
-    assert!(vlpds::crypto::Keypair::from_bytes(&[0u8; 32]).is_err());
+    let kp = vlsync_atproto::crypto::Keypair::generate();
+    assert!(vlsync_atproto::crypto::verify_k256(&[0u8; 33], b"m", &kp.sign(b"m")).is_err());
+    assert!(vlsync_atproto::crypto::verify_k256(&kp.public_key_sec1(), b"m", &[0u8; 63]).is_err());
+    assert!(vlsync_atproto::crypto::Keypair::from_bytes(&[0u8; 32]).is_err());
 }
 
 /// Throughput of the commit-signing path. Run with
@@ -166,7 +168,7 @@ fn signatures_byte_identical_to_rustcrypto_k256() {
 #[test]
 #[ignore]
 fn sign_verify_bench() {
-    let kp = vlpds::crypto::Keypair::generate();
+    let kp = vlsync_atproto::crypto::Keypair::generate();
     let msg = vec![7u8; 200];
     let sig = kp.sign(&msg);
     let pk = kp.public_key_sec1();
@@ -175,7 +177,7 @@ fn sign_verify_bench() {
         std::hint::black_box(kp.sign(&msg));
     };
     let mut verify = || {
-        std::hint::black_box(vlpds::crypto::verify_k256(&pk, &msg, &sig).unwrap());
+        std::hint::black_box(vlsync_atproto::crypto::verify_k256(&pk, &msg, &sig).unwrap());
     };
     let cases: [(&str, &mut dyn FnMut()); 2] = [("sign", &mut sign), ("verify", &mut verify)];
     for (name, f) in cases {

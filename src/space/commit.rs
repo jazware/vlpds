@@ -197,7 +197,8 @@ pub(crate) mod tests {
     #[test]
     fn signs_like_the_reference() {
         let c = &VECTORS["commits"][0];
-        let key = crate::crypto::Keypair::from_bytes(&sha2::Sha256::digest(b"vlpds spaces alpha author k256")).unwrap();
+        let key = vlsync_atproto::crypto::Keypair::from_bytes(&sha2::Sha256::digest(b"vlpds spaces alpha author k256"))
+            .unwrap();
         assert_eq!(key.did_key(), c["didKey"].as_str().unwrap());
         let ikm: [u8; 32] = h(&c["ikm"]).try_into().unwrap();
         let commit = sign(&set_of(c), &ctx_of(c), ikm, |m| Ok::<_, ()>(key.sign_deterministic(m))).unwrap();
@@ -209,8 +210,8 @@ pub(crate) mod tests {
     /// The reference's signing cases (tests/repo-commit.test.ts).
     #[test]
     fn verification() {
-        let key = crate::crypto::Keypair::generate();
-        let other = crate::crypto::Keypair::generate();
+        let key = vlsync_atproto::crypto::Keypair::generate();
+        let other = vlsync_atproto::crypto::Keypair::generate();
         let ctx = CommitCtx {
             space: "at://did:example:space/space/app.bsky.group/test",
             author: "did:example:alice",
@@ -218,8 +219,9 @@ pub(crate) mod tests {
         };
         let mut set = LtHash::default();
         set.add(&element("app.bsky.feed.post", "1", "bafyreidefdycgbfy3oglcb6ism3eqhyp5llsrpzxjsuac2gsy4mtrtx244"));
-        let signed =
-            |ikm: [u8; 32]| sign(&set, &ctx, ikm, |m| key.sign_verified(crate::crypto::Purpose::Commit, m)).unwrap();
+        let signed = |ikm: [u8; 32]| {
+            sign(&set, &ctx, ikm, |m| key.sign_verified(vlsync_atproto::crypto::Purpose::Commit, m)).unwrap()
+        };
         let commit = signed(rand::random());
         assert_eq!((commit.ver, commit.hash.len(), commit.ikm.len(), commit.mac.len()), (1, 32, 32, 32));
         assert!(verify(&commit, &ctx, &key.did_key()));

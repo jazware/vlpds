@@ -52,7 +52,7 @@ async fn takeover_replay_and_lease_metrics_move() {
 
     // writes in b's shards (a node creates accounts in shards it owns),
     // never checkpointed
-    let b_shards: Vec<vlpds::slots::ShardId> = b.app.partitions.owned().iter().map(|p| p.id).collect();
+    let b_shards: Vec<vlsync_store::slots::ShardId> = b.app.partitions.owned().iter().map(|p| p.id).collect();
     let layout = b.app.cluster.as_ref().unwrap().layout();
     let mut in_b = 0;
     for _ in 0..40 {

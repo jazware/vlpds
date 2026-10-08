@@ -39,12 +39,12 @@ async fn node(id: &str, store: &Arc<dyn object_store::ObjectStore>) -> TestServe
     .await
 }
 
-fn owned(n: &TestServer) -> Vec<vlpds::slots::ShardId> {
+fn owned(n: &TestServer) -> Vec<vlsync_store::slots::ShardId> {
     n.app.partitions.owned().iter().map(|p| p.id).collect()
 }
 
 /// Per moved shard: (release -> serve, unavailable).
-type Gaps = Vec<(vlpds::slots::ShardId, Duration, Duration)>;
+type Gaps = Vec<(vlsync_store::slots::ShardId, Duration, Duration)>;
 
 /// Polls until `joiner` serves `want` shards.
 async fn watch_handback(
@@ -56,8 +56,8 @@ async fn watch_handback(
     let j = nodes.iter().position(|n| std::ptr::eq(*n, joiner)).unwrap();
     let jid = joiner.app.cluster.as_ref().unwrap().cfg.node_id.clone();
     let (mut dropped, mut released): (
-        HashMap<vlpds::slots::ShardId, Instant>,
-        HashMap<vlpds::slots::ShardId, Instant>,
+        HashMap<vlsync_store::slots::ShardId, Instant>,
+        HashMap<vlsync_store::slots::ShardId, Instant>,
     ) = Default::default();
     let mut gaps = HashMap::new();
     let mut prev: Vec<Option<usize>> = vec![None; SHARDS as usize];
@@ -70,7 +70,7 @@ async fn watch_handback(
                 cur[s.0 as usize] = Some(i);
             }
         }
-        for s in (0..SHARDS).map(vlpds::slots::ShardId) {
+        for s in (0..SHARDS).map(vlsync_store::slots::ShardId) {
             let (p, c) = (prev[s.0 as usize], cur[s.0 as usize]);
             if p.is_some() && p != Some(j) && c.is_none() {
                 dropped.insert(s, now);

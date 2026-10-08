@@ -1,5 +1,5 @@
 //! atproto data-model interop fixtures: JSON <-> DAG-CBOR <-> CID round trips
-//! through `vlpds::cbor` / `vlpds::cid`, and the valid/invalid record data
+//! through `vlsync_atproto::cbor` / `vlsync_atproto::cid`, and the valid/invalid record data
 //! fixtures through createRecord / getRecord.
 use crate::common::*;
 

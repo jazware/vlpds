@@ -4,7 +4,7 @@
 use super::*;
 use std::collections::HashSet;
 use std::time::Instant;
-use vlpds::slots::ShardId;
+use vlsync_store::slots::ShardId;
 
 /// Cluster node `id` on `store` with `shards` shards and fast leases (1.5 s
 /// TTL, 100 ms renewals, 200 ms skew); `f` adjusts the config afterwards.

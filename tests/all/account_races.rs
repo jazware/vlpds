@@ -93,7 +93,7 @@ async fn rejected_account_mutation_writes_nothing() {
         .app
         .mutate_account(&a.did, true, true, false, |acct| {
             acct.handle = "nope.test".into();
-            Err(vlpds::xrpc::XrpcError::bad("Precondition", "no"))
+            Err(vlsync_atproto::xrpc::XrpcError::bad("Precondition", "no"))
         })
         .await
         .expect_err("rejected");

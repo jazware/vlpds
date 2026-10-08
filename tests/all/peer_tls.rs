@@ -108,7 +108,7 @@ async fn mtls_cluster_end_to_end() {
 
     // internal private put/get, from c, for an account a owns
     let did = &owned[0].did;
-    let m = vlpds::segment::Mutation {
+    let m = vlsync_store::segment::Mutation {
         key: vlpds::state::private_key(did, "mtls").into(),
         val: Some(bytes::Bytes::from_static(b"v")),
     };
@@ -207,7 +207,7 @@ fn no_client_cert() -> reqwest::Client {
     for c in rustls::pki_types::CertificateDer::pem_slice_iter(test_ca().cert_pem.as_bytes()) {
         roots.add(c.unwrap()).unwrap();
     }
-    let mut cfg = rustls::ClientConfig::builder_with_provider(peer_tls::provider())
+    let mut cfg = rustls::ClientConfig::builder_with_provider(vlsync_atproto::http::tls_provider())
         .with_protocol_versions(&[&rustls::version::TLS13])
         .unwrap()
         .with_root_certificates(roots)

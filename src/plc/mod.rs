@@ -2,14 +2,15 @@
 //! byte with did-method-plc (`@did-plc/lib`, which the reference PDS uses),
 //! the PLC directory client, and the server's PLC rotation key.
 
-use crate::cid::Cid;
-use crate::crypto::Keypair;
 use base64::Engine;
 use prometheus::{register_histogram_vec, register_int_counter_vec, HistogramVec, IntCounterVec};
 use serde_json::{json, Map, Value as J};
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
+use vlsync_atproto::cid::Cid;
+use vlsync_atproto::crypto::Keypair;
+use vlsync_atproto::plc::{valid_plc_did, OpType};
 
 #[doc(hidden)]
 pub mod mock;
@@ -83,22 +84,22 @@ pub enum PlcError {
     #[error("Did is tombstoned")]
     Tombstoned,
     #[error(transparent)]
-    Signature(#[from] crate::crypto::SignatureFault),
+    Signature(#[from] vlsync_atproto::crypto::SignatureFault),
 }
 
 fn invalid(m: impl Into<String>) -> PlcError {
     PlcError::Invalid(m.into())
 }
 
-impl From<PlcError> for crate::xrpc::XrpcError {
+impl From<PlcError> for vlsync_atproto::xrpc::XrpcError {
     /// A directory that refuses or fails is a 500, as in the reference (its
     /// `PlcClientError` is not an XRPC error).
-    fn from(e: PlcError) -> crate::xrpc::XrpcError {
+    fn from(e: PlcError) -> vlsync_atproto::xrpc::XrpcError {
         match e {
-            PlcError::Invalid(m) => crate::xrpc::XrpcError::bad("InvalidRequest", m),
-            PlcError::Tombstoned => crate::xrpc::XrpcError::bad("InvalidRequest", "Did is tombstoned"),
+            PlcError::Invalid(m) => vlsync_atproto::xrpc::XrpcError::bad("InvalidRequest", m),
+            PlcError::Tombstoned => vlsync_atproto::xrpc::XrpcError::bad("InvalidRequest", "Did is tombstoned"),
             PlcError::Signature(f) => f.into(),
-            e => crate::xrpc::XrpcError::internal(e.to_string()),
+            e => vlsync_atproto::xrpc::XrpcError::internal(e.to_string()),
         }
     }
 }
@@ -111,7 +112,7 @@ pub fn dag_cbor(v: &J) -> Result<Vec<u8>, PlcError> {
 }
 
 fn encode(v: &J, out: &mut Vec<u8>, depth: usize) -> Result<(), PlcError> {
-    use crate::cbor::*;
+    use vlsync_atproto::cbor::*;
     if depth > 16 {
         return Err(invalid("operation nested too deeply"));
     }
@@ -151,70 +152,12 @@ pub fn op_cid(op: &J) -> Result<Cid, PlcError> {
 /// `didForCreateOp`.
 pub fn did_for_genesis(op: &J) -> Result<String, PlcError> {
     let h = Sha256::digest(dag_cbor(op)?);
-    Ok(format!("did:plc:{}", &crate::cid::base32_encode(&h)[..24]))
+    Ok(format!("did:plc:{}", &vlsync_atproto::cid::base32_encode(&h)[..24]))
 }
 
-/// Also guarantees the DID is path-safe.
-pub fn valid_plc_did(did: &str) -> bool {
-    did.strip_prefix("did:plc:")
-        .is_some_and(|id| id.len() == 24 && id.bytes().all(|b| b.is_ascii_lowercase() || (b'2'..=b'7').contains(&b)))
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OpType {
-    Operation,
-    Tombstone,
-    /// The legacy v1 genesis `create`.
-    LegacyCreate,
-}
-
-fn is_str(v: Option<&J>) -> bool {
-    matches!(v, Some(J::String(_)))
-}
-
-fn str_array(v: Option<&J>) -> bool {
-    matches!(v, Some(J::Array(a)) if a.iter().all(|x| x.is_string()))
-}
-
-fn only_keys(m: &Map<String, J>, allowed: &[&str]) -> bool {
-    m.keys().all(|k| allowed.contains(&k.as_str())) && m.len() == allowed.len()
-}
-
-/// The zod schemas of @did-plc/lib types.ts, strict: exactly the fields of
-/// one type, with `sig` iff `signed`.
+/// [`vlsync_atproto::plc::op_type`], refused as `Invalid operation`.
 pub fn op_type(op: &J, signed: bool) -> Result<OpType, PlcError> {
-    let bad = || invalid("Invalid operation");
-    let m = op.as_object().ok_or_else(bad)?;
-    let sig: &[&str] = if signed { &["sig"] } else { &[] };
-    let with = |fields: &[&'static str]| -> Vec<&str> { fields.iter().copied().chain(sig.iter().copied()).collect() };
-    if signed && !is_str(m.get("sig")) {
-        return Err(bad());
-    }
-    match m.get("type").and_then(J::as_str) {
-        Some("plc_operation") => {
-            let ok = only_keys(
-                m,
-                &with(&["type", "rotationKeys", "verificationMethods", "alsoKnownAs", "services", "prev"]),
-            ) && str_array(m.get("rotationKeys"))
-                && str_array(m.get("alsoKnownAs"))
-                && matches!(m.get("verificationMethods"), Some(J::Object(v)) if v.values().all(J::is_string))
-                && matches!(m.get("services"), Some(J::Object(s)) if s.values().all(|s| {
-                    matches!(s, J::Object(o) if only_keys(o, &["type", "endpoint"]) && is_str(o.get("type")) && is_str(o.get("endpoint")))
-                }))
-                && matches!(m.get("prev"), Some(J::String(_) | J::Null));
-            ok.then_some(OpType::Operation).ok_or_else(bad)
-        }
-        Some("plc_tombstone") => (only_keys(m, &with(&["type", "prev"])) && is_str(m.get("prev")))
-            .then_some(OpType::Tombstone)
-            .ok_or_else(bad),
-        Some("create") => {
-            let ok = only_keys(m, &with(&["type", "signingKey", "recoveryKey", "handle", "service", "prev"]))
-                && ["signingKey", "recoveryKey", "handle", "service"].iter().all(|k| is_str(m.get(*k)))
-                && m.get("prev") == Some(&J::Null);
-            ok.then_some(OpType::LegacyCreate).ok_or_else(bad)
-        }
-        _ => Err(bad()),
-    }
+    vlsync_atproto::plc::op_type(op, signed).ok_or_else(|| invalid("Invalid operation"))
 }
 
 /// `normalizeOp`: a legacy `create` as the equivalent `plc_operation`.
@@ -293,7 +236,7 @@ pub fn sign(unsigned: J, key: &Keypair) -> Result<J, PlcError> {
         return Err(invalid("operation is already signed"));
     }
     let bytes = dag_cbor(&J::Object(m.clone()))?;
-    let sig = key.sign_verified(crate::crypto::Purpose::PlcOperation, &bytes)?;
+    let sig = key.sign_verified(vlsync_atproto::crypto::Purpose::PlcOperation, &bytes)?;
     m.insert("sig".into(), J::String(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig)));
     Ok(J::Object(m))
 }
@@ -549,7 +492,7 @@ pub struct PlcClient {
 
 impl PlcClient {
     pub fn new(url: &str) -> PlcClient {
-        PlcClient { url: url.trim_end_matches('/').to_string(), http: crate::http::public().clone() }
+        PlcClient { url: url.trim_end_matches('/').to_string(), http: vlsync_atproto::http::public().clone() }
     }
 
     fn did_url(&self, did: &str, suffix: &str) -> Result<String, PlcError> {

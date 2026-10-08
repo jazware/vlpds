@@ -30,7 +30,7 @@ fn rec(text: &str) -> J {
 }
 
 fn now() -> i64 {
-    vlpds::tid::now_micros() as i64 / 1_000_000
+    vlsync_atproto::tid::now_micros() as i64 / 1_000_000
 }
 
 async fn spawn() -> TestServer {
@@ -67,7 +67,7 @@ async fn eventually<T>(within: Duration, mut f: impl FnMut() -> Option<T>) -> Op
 /// `status` and records each.
 struct Stub {
     did: String,
-    key: vlpds::crypto::Keypair,
+    key: vlsync_atproto::crypto::Keypair,
     notifies: Arc<Mutex<Vec<J>>>,
     status: Arc<Mutex<u16>>,
 }
@@ -77,7 +77,7 @@ impl Stub {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
         let (base, did) = (format!("http://{addr}"), format!("did:web:127.0.0.1%3A{}", addr.port()));
-        let key = vlpds::crypto::Keypair::generate();
+        let key = vlsync_atproto::crypto::Keypair::generate();
         let doc = json!({
             "id": did,
             "verificationMethod": [{
@@ -426,15 +426,15 @@ async fn space_keys(s: &TestServer, did: &str) -> Vec<String> {
         while let Some(kv) = scan.next().await.unwrap() {
             // an sL key names other authorities' DIDs in its URIs
             if fam == vlpds::state::SPACE_LIST_FAMILY {
-                if vlpds::state::key_body(&kv.key).starts_with(format!("sL/{did}\0").as_bytes()) {
-                    out.push(String::from_utf8_lossy(vlpds::state::key_body(&kv.key)).into_owned());
+                if vlsync_store::keys::key_body(&kv.key).starts_with(format!("sL/{did}\0").as_bytes()) {
+                    out.push(String::from_utf8_lossy(vlsync_store::keys::key_body(&kv.key)).into_owned());
                 }
                 continue;
             }
             if vlpds::space::rows::did_sid(&kv.key).is_some_and(|(d, _)| d == did)
-                || vlpds::state::key_body(&kv.key).windows(did.len()).any(|w| w == did.as_bytes())
+                || vlsync_store::keys::key_body(&kv.key).windows(did.len()).any(|w| w == did.as_bytes())
             {
-                out.push(String::from_utf8_lossy(vlpds::state::key_body(&kv.key)).into_owned());
+                out.push(String::from_utf8_lossy(vlsync_store::keys::key_body(&kv.key)).into_owned());
             }
         }
     }

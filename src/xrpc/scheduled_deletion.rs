@@ -77,7 +77,7 @@ pub async fn sweep(app: &App, now: DateTime<Utc>, max: usize) -> Swept {
         let scan = async {
             let mut it = state::FamilyScan::new(p.db.as_ref(), fam, None, &Default::default()).await?;
             while let Some(kv) = it.next().await? {
-                found.push(String::from_utf8_lossy(&state::key_body(&kv.key)[fam.len()..]).into_owned());
+                found.push(String::from_utf8_lossy(&vlsync_store::keys::key_body(&kv.key)[fam.len()..]).into_owned());
             }
             Ok::<_, slatedb::Error>(())
         };
@@ -183,8 +183,11 @@ async fn sweep_one(app: &App, did: &str, now: DateTime<Utc>, min_hold: Duration)
 /// that moved fails this and its new owner drops the row.
 async fn drop_row(app: &App, did: &str) -> XResult<()> {
     let p = app.partition(did)?;
-    write_private_local(&p, vec![crate::segment::Mutation { key: state::delete_after_key(did).into(), val: None }])
-        .await
+    write_private_local(
+        &p,
+        vec![vlsync_store::segment::Mutation { key: state::delete_after_key(did).into(), val: None }],
+    )
+    .await
 }
 
 pub fn spawn(app: Arc<App>) -> tokio::task::JoinHandle<()> {

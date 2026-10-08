@@ -6,11 +6,11 @@
 //! state, and anything before the flip can be aborted.
 
 use crate::cluster::{if_match, is_conflict, Assignment, Cluster, ShardHost, LAYOUT};
-use crate::slots::{Layout, Reshard, ShardId};
 use object_store::PutMode;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use vlsync_store::slots::{Layout, Reshard, ShardId};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Plan {
@@ -33,10 +33,10 @@ pub struct Policy {
 
 const POLICY_EVERY: Duration = Duration::from_secs(60);
 
-pub use crate::lifecycle::CrashHook;
+pub use vlsync_store::lifecycle::CrashHook;
 
 /// Phases: "planned", "closed", "frozen", "cloned", "children", "flipped".
-static CRASH_HOOKS: crate::lifecycle::CrashHooks = crate::lifecycle::CrashHooks::new();
+static CRASH_HOOKS: vlsync_store::lifecycle::CrashHooks = vlsync_store::lifecycle::CrashHooks::new();
 
 pub fn set_crash_hook(node_id: &str, h: Option<CrashHook>) {
     CRASH_HOOKS.set(node_id, h)

@@ -4,15 +4,15 @@
 //! (src/lexicon.rs) with the reference's messages. Body limits follow the
 //! reference's `jsonLimit`: 150 KiB, 1,000,000 bytes for record writes.
 
-use super::syntax;
 use super::XrpcError;
-use crate::cbor::JsonValue;
 use axum::extract::{FromRequest, FromRequestParts, OptionalFromRequest, Request};
 use axum::http::request::Parts;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures::StreamExt;
 use serde::de::DeserializeOwned;
+use vlsync_atproto::cbor::JsonValue;
+use vlsync_atproto::syntax;
 
 const JSON_LIMIT: usize = 150 * 1024;
 const RECORD_JSON_LIMIT: usize = 1_000_000;

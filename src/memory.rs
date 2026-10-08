@@ -752,8 +752,9 @@ mod tests {
     /// target; releasing them shrinks it once the hold passes.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn owned_shards_drive_the_meta_target() {
-        use crate::slots::ShardId;
-        let store = crate::store::Store { prefix: "memory-sizer".into(), ..crate::store::Store::memory(None) };
+        use vlsync_store::slots::ShardId;
+        let store =
+            vlsync_store::store::Store { prefix: "memory-sizer".into(), ..vlsync_store::store::Store::memory(None) };
         let mut dbs = Vec::new();
         for i in 0..3u32 {
             let db = crate::partition::open_db(&store, ShardId(i), None).await.unwrap();

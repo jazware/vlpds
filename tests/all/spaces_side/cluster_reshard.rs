@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use vlpds::slots::{Layout, ShardId};
+use vlsync_store::slots::{Layout, ShardId};
 
 const SHARDS: u32 = 6;
 
@@ -79,11 +79,12 @@ fn shard_of(n: &TestServer, did: &str) -> ShardId {
 }
 
 fn is_space_key(key: &[u8]) -> bool {
-    vlpds::state::key_slot(key).is_some() && SPACE_FAMILIES.iter().any(|f| vlpds::state::key_body(key).starts_with(f))
+    vlsync_store::keys::key_slot(key).is_some()
+        && SPACE_FAMILIES.iter().any(|f| vlsync_store::keys::key_body(key).starts_with(f))
 }
 
 fn show(key: &[u8]) -> String {
-    let body = vlpds::state::key_body(key);
+    let body = vlsync_store::keys::key_body(key);
     let did_end = body.iter().position(|b| *b == 0).unwrap_or(body.len());
     format!("{}…", String::from_utf8_lossy(&body[..did_end]))
 }
@@ -97,7 +98,7 @@ async fn space_rows(nodes: &[&TestServer]) -> BTreeMap<Vec<u8>, Vec<u8>> {
         let l = layout(n);
         for p in n.app.partitions.owned() {
             let r = l.shards.iter().find(|r| r.id == p.id).expect("an open shard is in the layout");
-            let (lo, hi) = vlpds::state::slot_range_keys(r.lo, r.hi);
+            let (lo, hi) = vlsync_store::keys::slot_range_keys(r.lo, r.hi);
             let mut it = p.db.scan(lo.to_vec()..hi.to_vec()).await.unwrap();
             let here = format!("{} shard {}", cluster(n).cfg.node_id, p.id.0);
             while let Some(kv) = it.next().await.unwrap() {
@@ -117,7 +118,7 @@ async fn space_rows(nodes: &[&TestServer]) -> BTreeMap<Vec<u8>, Vec<u8>> {
 fn family_counts(rows: &BTreeMap<Vec<u8>, Vec<u8>>) -> BTreeMap<String, usize> {
     let mut m = BTreeMap::new();
     for k in rows.keys() {
-        *m.entry(String::from_utf8_lossy(&vlpds::state::key_body(k)[..3]).into_owned()).or_default() += 1;
+        *m.entry(String::from_utf8_lossy(&vlsync_store::keys::key_body(k)[..3]).into_owned()).or_default() += 1;
     }
     m
 }
@@ -301,7 +302,7 @@ async fn split_and_merge_keep_every_space_row() {
     let nodes = w.refs();
     w.populate("a").await;
     let before = w.check(None, "before").await;
-    let pending: Vec<_> = before.rows.keys().filter(|k| vlpds::state::key_body(k).starts_with(b"sP/")).collect();
+    let pending: Vec<_> = before.rows.keys().filter(|k| vlsync_store::keys::key_body(k).starts_with(b"sP/")).collect();
     assert_eq!(pending.len(), w.writers.len(), "one pending sP row per writer of the remote space");
 
     // split the shard holding the authority (host rows, its own repos)

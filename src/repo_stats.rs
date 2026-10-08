@@ -2,9 +2,9 @@
 //! what the repo worker's incremental `S/{did}` must equal. O(repo): tests,
 //! `vlpds admin check-repo`, and a repo whose `S/` row is missing.
 
-use crate::mst::{Entry, MstError, Node, Tree};
 use crate::state::{self, RepoBytes, RepoStats};
 use std::collections::HashSet;
+use vlsync_atproto::mst::{Entry, MstError, Node, Tree};
 
 /// (records, nodes with entries) of a fully loaded tree.
 pub fn count_tree(tree: &Tree) -> Result<(u64, u64), MstError> {
@@ -42,7 +42,7 @@ pub fn tree_bytes(tree: &Tree) -> Result<u64, MstError> {
                 Some(b) => b.len() as u64,
                 None => {
                     buf.clear();
-                    crate::mst::encode_node(n, buf)?;
+                    vlsync_atproto::mst::encode_node(n, buf)?;
                     buf.len() as u64
                 }
             };
@@ -69,7 +69,8 @@ pub fn of_tree(tree: &Tree, record_bytes: u64, blobs: u64) -> Result<RepoStats, 
 /// Records and the tree rebuilt from them (`R/`), distinct blob CIDs (`b/`).
 pub async fn walk<R: slatedb::DbReadOps + Sync + ?Sized>(db: &R, did: &str, gen: u64) -> anyhow::Result<RepoStats> {
     let prefix = state::record_prefix(did, gen);
-    let mut it = state::BatchedScan::new(db.scan(prefix.clone()..state::prefix_end(&prefix)).await?);
+    let mut it =
+        vlsync_store::keys::BatchedScan::new(db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await?);
     let mut recs = Vec::new();
     let mut record_bytes = 0u64;
     while let Some(kv) = it.next().await? {
@@ -87,7 +88,7 @@ pub async fn walk<R: slatedb::DbReadOps + Sync + ?Sized>(db: &R, did: &str, gen:
     let (tree, node_bytes) = tree;
     let (records, nodes) = count_tree(&tree)?;
     let bprefix = state::blob_ref_prefix(did, gen);
-    let mut it = db.scan(bprefix.clone()..state::prefix_end(&bprefix)).await?;
+    let mut it = db.scan(bprefix.clone()..vlsync_store::keys::prefix_end(&bprefix)).await?;
     let mut blobs = HashSet::new();
     while let Some(kv) = it.next().await? {
         let rest = &kv.key[bprefix.len()..];

@@ -13,12 +13,12 @@
 //! refusing mail past its quota is no worse than refusing all mail while
 //! the store is unreachable, and `mail-node-hour` still bounds each node.
 
-use crate::store::Store;
 use object_store::{GetOptions, ObjectStore, PutMode, PutOptions, PutPayload};
 use prometheus::{IntCounter, IntGaugeVec};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
+use vlsync_store::store::Store;
 
 const STORE_TIMEOUT: Duration = Duration::from_secs(5);
 const CAS_RETRIES: usize = 8;

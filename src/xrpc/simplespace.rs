@@ -114,7 +114,8 @@ pub(super) async fn space_row_opt(app: &App, space: &Space) -> XResult<Option<Sp
 async fn live_spaces(app: &App, did: &str, stop_at: usize) -> XResult<usize> {
     let p = app.partition(did)?;
     let prefix = state::space_did_prefix(state::SPACE_FAMILY, did);
-    let mut it = p.db.scan(prefix.clone()..state::prefix_end(&prefix)).await.map_err(XrpcError::from_err)?;
+    let mut it =
+        p.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await.map_err(XrpcError::from_err)?;
     let mut n = 0;
     while let Some(kv) = it.next().await.map_err(XrpcError::from_err)? {
         if SpaceRow::decode(&kv.value).map_err(XrpcError::from_err)?.live() {
@@ -198,7 +199,7 @@ fn req_space(v: &J) -> XResult<Space> {
 fn req_did<'a>(v: &'a J, k: &str) -> XResult<&'a str> {
     v.get(k)
         .and_then(|s| s.as_str())
-        .filter(|d| super::syntax::valid_did(d))
+        .filter(|d| vlsync_atproto::syntax::valid_did(d))
         .ok_or_else(|| XrpcError::bad("InvalidRequest", format!("{k} must be a DID")))
 }
 
@@ -212,12 +213,12 @@ async fn create_space(State(app): AppState, Auth(creds): Auth, Json(inp): Json<J
     spaces(&app)?;
     let did = creds.user_did()?.to_string();
     let space_type = inp.get("spaceType").and_then(|t| t.as_str()).unwrap_or("");
-    if !super::syntax::valid_nsid(space_type) {
+    if !vlsync_atproto::syntax::valid_nsid(space_type) {
         return Err(XrpcError::bad("InvalidRequest", "spaceType must be an NSID"));
     }
     let skey = match inp.get("skey") {
         None | Some(J::Null) => app.tids.next().to_string(),
-        Some(J::String(s)) if super::syntax::valid_rkey(s) => s.clone(),
+        Some(J::String(s)) if vlsync_atproto::syntax::valid_rkey(s) => s.clone(),
         Some(_) => return Err(XrpcError::bad("InvalidRequest", "skey must be a valid record key")),
     };
     let space = Space::parse(&format!("at://{did}/space/{space_type}/{skey}"))?;
@@ -230,7 +231,7 @@ async fn create_space(State(app): AppState, Auth(creds): Auth, Json(inp): Json<J
         read_policy,
         write_policy,
         app_access,
-        created_at: crate::events::now_rfc3339(),
+        created_at: vlsync_atproto::events::now_rfc3339(),
         deleted_at: None,
     };
     let existing = space_row_opt(&app, &space).await?;
@@ -308,7 +309,8 @@ async fn delete_space(State(app): AppState, Auth(creds): Auth, Json(inp): Json<J
     let did = assert_owner(&creds, &space, SpaceAccess::Manage("delete"))?;
     assert_space_host(&app, &space).await?;
     let ack =
-        submit_space(&app, &did, &space, SpaceOp::DeleteSpace { deleted_at: crate::events::now_rfc3339() }).await?;
+        submit_space(&app, &did, &space, SpaceOp::DeleteSpace { deleted_at: vlsync_atproto::events::now_rfc3339() })
+            .await?;
     if let SpaceAck::Deleted { already: false } = ack {
         match crate::space::host::registrations(&app, &did, &space.sid).await {
             Ok((regs, _)) if !regs.is_empty() => {
@@ -344,7 +346,7 @@ pub(super) async fn delete_space_rows(app: &App, space: &Space) -> XResult<()> {
         state::SPACE_HEAD_FAMILY,
     ] {
         let prefix = state::space_prefix(fam, &space.authority, &space.sid);
-        let end = state::prefix_end(&prefix);
+        let end = vlsync_store::keys::prefix_end(&prefix);
         loop {
             let opts = slatedb::config::ScanOptions::default();
             let mut iter =
@@ -362,13 +364,13 @@ pub(super) async fn delete_space_rows(app: &App, space: &Space) -> XResult<()> {
                         .ok_or_else(|| XrpcError::internal("bad space blob ref key"))?;
                     let cid = Cid::parse(cid).map_err(XrpcError::from_err)?;
                     let key = state::space_blob_cid_key(&space.authority, &cid, &space.sid, path);
-                    muts.push(crate::segment::Mutation { key: key.into(), val: None });
+                    muts.push(vlsync_store::segment::Mutation { key: key.into(), val: None });
                 }
                 if fam == state::SPACE_HEAD_FAMILY {
                     let key = state::space_list_key(&space.authority, &space.uri, state::SpaceListed::Repo);
-                    muts.push(crate::segment::Mutation { key: key.into(), val: None });
+                    muts.push(vlsync_store::segment::Mutation { key: key.into(), val: None });
                 }
-                muts.push(crate::segment::Mutation { key: kv.key, val: None });
+                muts.push(vlsync_store::segment::Mutation { key: kv.key, val: None });
             }
             super::write_private_local(&p, muts).await?;
         }
@@ -426,7 +428,10 @@ async fn list_members(State(app): AppState, Auth(creds): Auth, Query(q): Query<L
         None => prefix.clone(),
     };
     let opts = slatedb::config::ScanOptions::default();
-    let mut iter = p.db.scan_with_options(lo..state::prefix_end(&prefix), &opts).await.map_err(XrpcError::from_err)?;
+    let mut iter =
+        p.db.scan_with_options(lo..vlsync_store::keys::prefix_end(&prefix), &opts)
+            .await
+            .map_err(XrpcError::from_err)?;
     let mut members = Vec::with_capacity(limit.min(256));
     while members.len() < limit {
         let rows = iter.next_batch(limit - members.len()).await.map_err(XrpcError::from_err)?;

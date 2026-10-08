@@ -9,11 +9,11 @@
 //! several rkeys are stored muts that follow and win. See DESIGN.md
 //! "Backlinks".
 
-use crate::cbor::ValueRef;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use vlsync_atproto::cbor::ValueRef;
 
 /// (collection, key code, subject is `subject.uri` (an AT-URI) rather than
 /// `subject` (a DID)).
@@ -42,7 +42,7 @@ pub fn link(collection: &str, record: &[u8]) -> Option<Vec<u8>> {
     let subject = v.get("subject")?;
     let s = match uri {
         true => subject.get("uri")?.as_str().filter(|s| crate::lexicon::valid_at_uri(s))?,
-        false => subject.as_str().filter(|s| crate::xrpc::syntax::valid_did(s))?,
+        false => subject.as_str().filter(|s| vlsync_atproto::syntax::valid_did(s))?,
     };
     let mut l = Vec::with_capacity(1 + s.len());
     l.push(code);
@@ -146,7 +146,7 @@ pub async fn fetch<R: slatedb::DbReadOps + Sync + ?Sized>(
     let mut want: Vec<Vec<u8>> = Vec::new();
     if all {
         let prefix = crate::state::backlink_prefix(did, gen);
-        let mut it = db.scan(prefix.clone()..crate::state::prefix_end(&prefix)).await?;
+        let mut it = db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await?;
         while let Some(kv) = it.next().await? {
             out.vals.push((kv.key[prefix.len()..].into(), decode(&kv.value)));
         }
@@ -180,7 +180,7 @@ mod tests {
     use super::*;
 
     fn rec(j: serde_json::Value) -> Vec<u8> {
-        crate::cbor::Value::from_json(&j).unwrap().to_cbor()
+        vlsync_atproto::cbor::Value::from_json(&j).unwrap().to_cbor()
     }
 
     #[test]

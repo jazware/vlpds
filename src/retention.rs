@@ -27,14 +27,15 @@
 
 use crate::cluster::Assignment;
 use crate::metrics;
-use crate::nodelog::{self, NodeLog};
-use crate::slots::ShardId;
-use crate::store::Store;
+use crate::nodelog::NodeLog;
 use futures::StreamExt;
 use object_store::path::Path;
 use object_store::{ObjectStoreExt, PutPayload};
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
+use vlsync_firehose::log::{read_json_dir, read_reports, report_path, Report};
+use vlsync_store::slots::ShardId;
+use vlsync_store::store::Store;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -69,75 +70,6 @@ impl Default for Config {
             fence_retention: Some(DEFAULT_FENCE_RETENTION),
         }
     }
-}
-
-/// `retain/{log_id}`, written by that log's owner.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
-pub struct Report {
-    /// shard -> highest epoch the log's owner opened it at
-    pub opened: BTreeMap<ShardId, u64>,
-    /// highest seq deleted by this node (including reports of dead logs it
-    /// folded in when it deleted them)
-    pub pruned_seq: i64,
-    /// The test feature level's field (DESIGN.md "Migrations"): a lower
-    /// bound on the segment level of the log's unpruned segments. Written
-    /// only while that level is active.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub min_seg_format: Option<u32>,
-}
-
-impl Report {
-    pub fn new(opened: BTreeMap<ShardId, u64>, pruned_seq: i64, log_level: u32) -> Report {
-        Report { opened, pruned_seq, min_seg_format: crate::version::test_level_active().then_some(log_level) }
-    }
-}
-
-fn report_path(store: &Store, log_id: &str) -> Path {
-    Path::from(format!("{}/retain/{}", store.prefix, log_id))
-}
-
-/// Every retention report, by log id.
-pub async fn read_reports(store: &Store) -> anyhow::Result<HashMap<String, Report>> {
-    Ok(read_json_dir(store, "retain", |name| Some(name.to_string()), 16).await?.into_iter().collect())
-}
-
-/// Every JSON object directly under `{prefix}/{dir}/` whose name `key`
-/// accepts, read `concurrency` at a time (objects gone meanwhile skipped).
-async fn read_json_dir<K: Send, T: serde::de::DeserializeOwned>(
-    store: &Store,
-    dir: &str,
-    key: impl Fn(&str) -> Option<K>,
-    concurrency: usize,
-) -> anyhow::Result<Vec<(K, T)>> {
-    let prefix = Path::from(format!("{}/{dir}", store.prefix));
-    let names: Vec<(K, Path)> = store
-        .raw
-        .list(Some(&prefix))
-        .filter_map(|m| {
-            let k = m.ok().and_then(|m| Some((key(m.location.filename()?)?, m.location)));
-            async move { k }
-        })
-        .collect()
-        .await;
-    let got: Vec<anyhow::Result<Option<(K, T)>>> = futures::stream::iter(names)
-        .map(|(k, path)| async move {
-            match store.raw.get(&path).await {
-                Ok(r) => Ok(Some((k, serde_json::from_slice(&r.bytes().await?)?))),
-                Err(object_store::Error::NotFound { .. }) => Ok(None),
-                Err(e) => Err(e.into()),
-            }
-        })
-        .buffer_unordered(concurrency)
-        .collect()
-        .await;
-    got.into_iter().filter_map(Result::transpose).collect()
-}
-
-/// The retained floor: every event deleted from any log has seq <= this,
-/// so a cursor at or past it is served in full. Raised before each delete.
-pub async fn retained_floor(store: &Store) -> anyhow::Result<i64> {
-    Ok(read_reports(store).await?.values().map(|r| r.pruned_seq).max().unwrap_or(0))
 }
 
 /// What retention needs from the cluster.
@@ -231,7 +163,14 @@ fn ordinal_of(p: &Path) -> Option<u64> {
 
 impl Retention {
     pub fn new(store: Store, log: Arc<NodeLog>, cfg: Config, members: Membership) -> Arc<Retention> {
-        Arc::new(Retention { store, log, cfg, members, state: Mutex::default(), log_level: crate::version::active() })
+        Arc::new(Retention {
+            store,
+            log,
+            cfg,
+            members,
+            state: Mutex::default(),
+            log_level: vlsync_store::version::active(),
+        })
     }
 
     pub fn spawn(self: &Arc<Self>) {
@@ -391,7 +330,9 @@ impl Retention {
         // Below a replay floor (or a fence) every object is a segment. One
         // already gone was deleted by another node, which raised its own
         // floor first.
-        if let nodelog::Head::Segment(h) = nodelog::read_head(&self.store, log_id, *last).await? {
+        if let vlsync_firehose::log::Head::Segment(h) =
+            vlsync_firehose::log::read_head(&self.store, log_id, *last).await?
+        {
             self.raise_floor(h.last_seq).await?;
         }
         let pass = self.delete(doomed.into_iter().map(|(_, p, n)| (p, n)).collect(), budget, kind).await?;
@@ -430,7 +371,7 @@ impl Retention {
     ) -> anyhow::Result<Pass> {
         let scanned = std::time::Instant::now();
         self.state.lock().dead_next = None;
-        let logs = crate::backfill::list_logs(&self.store).await?;
+        let logs = vlsync_firehose::backfill::list_logs(&self.store).await?;
         let dead: Vec<String> = logs.into_iter().filter(|l| !live.contains(l) && *l != *self.log.log_id).collect();
         let mut pass = Pass::default();
         let mut known: Option<Known> = None;
@@ -440,7 +381,9 @@ impl Retention {
         let (mut quiet, mut until) = (true, None::<chrono::DateTime<chrono::Utc>>);
         // objects left below `end` in log `x` (one LIST page)
         let held = |x: String, end: u64| async move {
-            anyhow::Ok(end.saturating_sub(crate::backfill::first_ordinal(&self.store, &x).await?.unwrap_or(end)))
+            anyhow::Ok(
+                end.saturating_sub(vlsync_firehose::backfill::first_ordinal(&self.store, &x).await?.unwrap_or(end)),
+            )
         };
         for x in dead {
             if *budget == 0 {
@@ -468,7 +411,7 @@ impl Retention {
             let cached = self.state.lock().fenced.get(&x).copied();
             let fence = match cached {
                 Some(f) => f,
-                None => match nodelog::first_free(&self.store, &x).await? {
+                None => match vlsync_firehose::log::first_free(&self.store, &x).await? {
                     // not fenced: its owner may be alive but unseen (joining),
                     // or dead with its shards not taken yet
                     (end, false) => {
@@ -493,7 +436,7 @@ impl Retention {
             pass.objects += n.objects;
             pass.bytes += n.bytes;
             // everything below the fence gone: retire it
-            let first = crate::backfill::first_ordinal(&self.store, &x).await?;
+            let first = vlsync_firehose::backfill::first_ordinal(&self.store, &x).await?;
             if first == Some(fence) {
                 let n = self.retire(&x, fence, cutoff, budget).await?;
                 pass.objects += n.objects;
@@ -662,9 +605,11 @@ pub fn parse_duration(s: &str) -> anyhow::Result<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nodelog::{segment_path, NodeLogConfig, ShardSink, Span};
-    use crate::segment::{fence_object, Mutation, SegmentBuilder};
+    use crate::nodelog;
+    use crate::nodelog::{NodeLogConfig, ShardSink, Span};
     use bytes::Bytes;
+    use vlsync_firehose::log::{retained_floor, segment_path};
+    use vlsync_store::segment::{fence_object, Mutation, SegmentBuilder};
 
     #[test]
     fn durations() {
@@ -747,7 +692,7 @@ mod tests {
                 let (atx, arx) = tokio::sync::oneshot::channel();
                 let e = nodelog::LogEntry {
                     shard: ShardId(3),
-                    frames: vec![crate::events::Frame {
+                    frames: vec![vlsync_atproto::events::Frame {
                         prefix: format!("e{i}").into_bytes(),
                         suffix: Vec::new(),
                         derived_muts: 0,
@@ -783,9 +728,12 @@ mod tests {
         assert!(p.bytes > 0);
         // the floor went out before the deletes, and fencing still finds the end
         let floor = retained_floor(&store).await.unwrap();
-        let nodelog::Head::Segment(h5) = nodelog::read_head(&store, "L", 5).await.unwrap() else { panic!() };
+        let vlsync_firehose::log::Head::Segment(h5) = vlsync_firehose::log::read_head(&store, "L", 5).await.unwrap()
+        else {
+            panic!()
+        };
         assert!(floor > 0 && floor < h5.first_seq, "floor {floor} = last seq of segment 4");
-        assert_eq!(nodelog::first_free(&store, "L").await.unwrap(), (6, false));
+        assert_eq!(vlsync_firehose::log::first_free(&store, "L").await.unwrap(), (6, false));
         assert_eq!(r.state.lock().written.as_ref().unwrap().opened.get(&ShardId(3)), Some(&7));
         // the window holds young segments regardless
         send(6).await;
@@ -907,7 +855,7 @@ mod tests {
         assert!(r.state.lock().pruned_seq >= 103);
         // a fence-only log still fences at the same place, and a replay of
         // its (applied) span reads nothing and doesn't fail
-        assert_eq!(nodelog::first_free(&store, "D").await.unwrap(), (4, true));
+        assert_eq!(vlsync_firehose::log::first_free(&store, "D").await.unwrap(), (4, true));
         let history = vec![Span { log_id: "D".into(), epoch: 1, start: 0, end: Some(4) }];
         assert_eq!(nodelog::replay_shard(&store, ShardId(0), &db, &history).await.unwrap(), 0);
         assert_eq!(r.pass().await.unwrap(), Pass::default(), "retired");
@@ -941,7 +889,7 @@ mod tests {
         let p = (gc.pass().await.unwrap().objects, gc.pass().await.unwrap().objects);
         assert_eq!(p, (0, 1), "retired again, then the fence");
         assert!(ordinals(&store, "D").await.is_empty());
-        assert!(!crate::backfill::list_logs(&store).await.unwrap().contains(&"D".to_string()), "D left log/");
+        assert!(!vlsync_firehose::backfill::list_logs(&store).await.unwrap().contains(&"D".to_string()), "D left log/");
         assert_eq!(dead(&gc), DeadLogs::default());
         // a replay of a span in the vanished log reads nothing and doesn't fail
         assert_eq!(nodelog::replay_shard(&store, ShardId(0), &db, &history).await.unwrap(), 0);

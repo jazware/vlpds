@@ -8,11 +8,11 @@
 //! epoch is never served, and a closing shard's entries are dropped.
 
 use super::lthash::LtHash;
-use crate::slots::ShardId;
 use crate::state::SpaceId;
-use crate::tid::Tid;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use vlsync_atproto::tid::Tid;
+use vlsync_store::slots::ShardId;
 
 #[derive(Clone, Debug)]
 pub struct DurableSpaceHead {

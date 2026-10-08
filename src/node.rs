@@ -2,13 +2,10 @@
 //! this node, and follows every peer's log for the merged firehose.
 
 use crate::cluster::{Cluster, ShardHost};
-use crate::firehose::Firehose;
-use crate::nodelog::{self, LogBatch, NodeLog, ShardSink, Span};
+use crate::nodelog::{self, NodeLog, ShardSink, Span};
 use crate::partition::{self, Partition};
 use crate::partitions::PartitionTable;
 use crate::remote::{self, Follower};
-use crate::slots::ShardId;
-use crate::store::Store;
 use crate::worker::{WorkerMsg, Workers};
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -16,6 +13,10 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+use vlsync_firehose::firehose::Firehose;
+use vlsync_firehose::log::LogBatch;
+use vlsync_store::slots::ShardId;
+use vlsync_store::store::Store;
 
 const SEQ_FLOOR_MAX_WAIT: Duration = Duration::from_secs(30);
 /// How long newly opened shards wait for `partition::warm` before serving,
@@ -51,7 +52,7 @@ pub struct Node {
 /// indexes of every SST in the shards this node owns.
 pub fn export_sst_meta_bytes(table: &Arc<PartitionTable>) {
     let weak = Arc::downgrade(table);
-    crate::metrics::on_render(move || {
+    vlsync_store::metrics::on_render(move || {
         let Some(table) = weak.upgrade() else { return false };
         let owned = table.owned();
         let (filter, index) = crate::memory::sst_meta_bytes(owned.iter().map(|p| &*p.db));
@@ -480,7 +481,7 @@ impl ShardHost for Node {
         }
         crate::metrics::LEASE_EVENTS.with_label_values(&["lost"]).inc();
         tracing::error!("node lease lost unexpectedly: fail-stop");
-        crate::lifecycle::fail_stop(5, "lease_lost");
+        vlsync_store::lifecycle::fail_stop(5, "lease_lost");
     }
 
     fn on_membership(&self) {
@@ -549,14 +550,18 @@ impl ShardHost for Node {
         }
     }
 
-    fn on_layout(&self, layout: Arc<crate::slots::Layout>) {
+    fn on_layout(&self, layout: Arc<vlsync_store::slots::Layout>) {
         self.table.set_layout(layout);
     }
 
-    async fn clone_shards(&self, layout: &crate::slots::Layout, op: &crate::slots::Reshard) -> anyhow::Result<()> {
+    async fn clone_shards(
+        &self,
+        layout: &vlsync_store::slots::Layout,
+        op: &vlsync_store::slots::Reshard,
+    ) -> anyhow::Result<()> {
         use futures::StreamExt;
         let started = Instant::now();
-        let parents: Vec<crate::slots::ShardRange> = op
+        let parents: Vec<vlsync_store::slots::ShardRange> = op
             .parents
             .iter()
             .map(|p| layout.range_of(*p).ok_or_else(|| anyhow::anyhow!("parent {p} not in layout v{}", layout.version)))

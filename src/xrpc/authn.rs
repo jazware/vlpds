@@ -350,7 +350,7 @@ pub async fn authenticate(app: &App, parts: &Parts) -> XResult<Credentials> {
         return super::oauth::verify_dpop(app, tok, parts).await;
     }
     if let Some(b) = h.strip_prefix("Basic ") {
-        if crate::auth::basic_admin_ok(b, &app.admin_token) {
+        if vlsync_atproto::xrpc::basic_admin_ok(b, &app.admin_token) {
             return Ok(Credentials::Admin { operator: None });
         }
         return Err(XrpcError::auth("invalid admin credentials"));
@@ -415,7 +415,7 @@ pub fn verify_access_token(
     type Verified = (Arc<str>, Arc<crate::oauth::jose::DecodedJwt>);
     static CACHE: std::sync::LazyLock<Arc<crate::auth::TokenCache<Verified>>> =
         std::sync::LazyLock::new(|| crate::auth::TokenCache::tracked(crate::caches::Cache::OAuthTokens));
-    let now = crate::tid::now_micros() / 1_000_000;
+    let now = vlsync_atproto::tid::now_micros() / 1_000_000;
     if let Some((kid, jwt)) = CACHE.get(token, now) {
         if *kid == *server.kid {
             return Ok(jwt);
@@ -601,7 +601,7 @@ async fn verify_jwt(
         return Err(service_auth_err("BadJwtType", &format!("Invalid jwt type \"{t}\"")));
     }
     let exp = payload["exp"].as_f64().ok_or_else(|| service_auth_err("BadJwt", "poorly formatted jwt"))?;
-    if (crate::tid::now_micros() as f64) / 1e6 > exp {
+    if (vlsync_atproto::tid::now_micros() as f64) / 1e6 > exp {
         return Err(service_auth_err("JwtExpired", "jwt expired"));
     }
     let aud = payload["aud"].as_str().unwrap_or("");
@@ -623,7 +623,7 @@ async fn verify_jwt(
         }
     }
     let iss = payload["iss"].as_str().unwrap_or("");
-    if !super::syntax::valid_did(iss.split('#').next().unwrap_or("")) {
+    if !vlsync_atproto::syntax::valid_did(iss.split('#').next().unwrap_or("")) {
         return Err(service_auth_err("BadJwtIss", "jwt iss is not a valid did"));
     }
     if trusted.is_some_and(|t| !t.iter().any(|x| x == iss)) {
@@ -739,7 +739,7 @@ async fn space_token_key(app: &App, iss: &str, kid: Option<&str>, fresh: bool) -
 /// signature, once more against a freshly resolved key if that fails (a
 /// rotation).
 async fn verify_space_token(app: &App, t: &token::SpaceToken) -> XResult<()> {
-    t.check(crate::tid::now_micros() as i64 / 1_000_000, None, None).map_err(token_err)?;
+    t.check(vlsync_atproto::tid::now_micros() as i64 / 1_000_000, None, None).map_err(token_err)?;
     let kid = t.header.kid.as_deref();
     let key = space_token_key(app, &t.claims.iss, kid, false).await?;
     if let Err(e) = t.verify_signature(&key) {
@@ -801,7 +801,7 @@ async fn check_space_credential(app: &App, headers: &HeaderMap) -> XResult<Crede
     if !sp.revocations.fresh() {
         return Err(XrpcError::unavailable("Unavailable", "space credential revocations are not loaded; retry"));
     }
-    let now = crate::tid::now_micros() as i64 / 1_000_000;
+    let now = vlsync_atproto::tid::now_micros() as i64 / 1_000_000;
     let key = crate::space::credcache::key(tok);
     let cached = sp.credentials.get(&key, now);
     crate::metrics::space_credential_cache(cached.is_some());
@@ -823,7 +823,7 @@ async fn check_space_credential(app: &App, headers: &HeaderMap) -> XResult<Crede
         }
     };
     let audience = single_header(headers, crate::space::httpsig::AUDIENCE_HEADER)
-        .filter(|a| super::syntax::valid_did(a))
+        .filter(|a| vlsync_atproto::syntax::valid_did(a))
         .ok_or_else(|| space_auth_err("BadSpaceSignature", "missing or invalid space audience DID"))?
         .to_string();
     if headers.get_all(header::AUTHORIZATION).iter().count() != 1 {

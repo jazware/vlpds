@@ -23,7 +23,7 @@ async fn contents(s: &TestServer, did: &str) -> (Cid, Vec<(String, Cid)>, HashMa
 fn stream_order(car: &[u8]) -> Vec<u8> {
     let repo = Repo::from_car(car).unwrap();
     let commit = &repo.blocks[&repo.root];
-    vlpds::car_order::write_car((repo.root, commit), repo.commit().data, &repo.blocks).unwrap()
+    vlsync_atproto::car_order::write_car((repo.root, commit), repo.commit().data, &repo.blocks).unwrap()
 }
 
 fn shuffled(car: &[u8]) -> Vec<u8> {
@@ -32,9 +32,9 @@ fn shuffled(car: &[u8]) -> Vec<u8> {
     // deterministic, and far from either order
     order.sort_by_key(|c| c.to_bytes().iter().rev().copied().collect::<Vec<u8>>());
     let mut out = Vec::new();
-    vlpds::car::write_header(&mut out, &repo.root);
+    vlsync_atproto::car::write_header(&mut out, &repo.root);
     for c in order {
-        vlpds::car::write_block(&mut out, &c, &repo.blocks[&c]);
+        vlsync_atproto::car::write_block(&mut out, &c, &repo.blocks[&c]);
     }
     out
 }

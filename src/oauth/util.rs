@@ -3,7 +3,7 @@
 use sha2::{Digest, Sha256};
 
 pub fn now_secs() -> i64 {
-    (crate::tid::now_micros() / 1_000_000) as i64
+    (vlsync_atproto::tid::now_micros() / 1_000_000) as i64
 }
 
 pub use crate::prims::{b64u, b64u_decode, hmac_sha256};
@@ -278,7 +278,7 @@ pub async fn claim_replay_owned(
     until: i64,
     durable: bool,
     holder: u64,
-) -> Result<bool, crate::xrpc::XrpcError> {
+) -> Result<bool, vlsync_atproto::xrpc::XrpcError> {
     let until = until.min(now_secs() + MAX_CLAIM_TTL);
     if !node_state(app).replays(ClaimKind::of(key, durable)).insert_held(routing, key, until, holder) {
         return Ok(false);
@@ -293,7 +293,7 @@ pub async fn claim_replay_owned(
             return Ok(false);
         }
     }
-    let m = crate::segment::Mutation {
+    let m = vlsync_store::segment::Mutation {
         key: crate::state::private_key(routing, &name).into(),
         val: Some(serde_json::to_vec(&until).unwrap().into()),
     };

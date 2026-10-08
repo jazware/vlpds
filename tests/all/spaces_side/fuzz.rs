@@ -384,11 +384,11 @@ async fn check_get_repo(a: &mut Account, space: &str, want: &Records, ctx: &str)
         let q: &[(&str, &str)] = if exclude { &[("excludeValues", "true")] } else { &[] };
         let r = a.read("com.atproto.space.getRepo", space, q).await;
         assert_eq!(r.status, 200, "{ctx}: getRepo: {}", r.text());
-        let (roots, blocks) = vlpds::car::read_car(&r.body).expect("getRepo CAR");
+        let (roots, blocks) = vlsync_atproto::car::read_car(&r.body).expect("getRepo CAR");
         assert_eq!(roots.len(), 2, "{ctx}: getRepo roots");
         assert!(blocks.len() >= 2 && blocks[0].0 == roots[0] && blocks[1].0 == roots[1], "{ctx}: roots first");
         for (c, b) in &blocks {
-            assert!(vlpds::car::block_matches(c, b), "{ctx}: getRepo block {c} doesn't hash");
+            assert!(vlsync_atproto::car::block_matches(c, b), "{ctx}: getRepo block {c} doesn't hash");
         }
         let commit = Value::decode(blocks[0].1).expect("commit block");
         let bytes = |k: &str| match commit.get(k) {
@@ -483,13 +483,13 @@ async fn checkpoint(s: &TestServer, a: &mut Account, r: usize, checks: Checks, c
 /// The account's s* rows in its shard.
 async fn space_rows(s: &TestServer, did: &str) -> Vec<String> {
     let p = s.app.partition(did).unwrap_or_else(|_| panic!("{did}'s shard isn't owned here"));
-    let slot = vlpds::slots::slot_of(did);
+    let slot = vlsync_store::slots::slot_of(did);
     let mut found = Vec::new();
     for fam in SPACE_FAMILIES {
-        let mut prefix = vlpds::state::slot_family(slot, fam);
+        let mut prefix = vlsync_store::keys::slot_family(slot, fam);
         prefix.extend_from_slice(did.as_bytes());
         prefix.push(0);
-        let mut it = p.db.scan(prefix.clone()..vlpds::state::prefix_end(&prefix)).await.unwrap();
+        let mut it = p.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await.unwrap();
         while let Some(kv) = it.next().await.unwrap() {
             found.push(format!("{}{}", String::from_utf8_lossy(fam), hex::encode(&kv.key[prefix.len()..])));
         }

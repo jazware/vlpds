@@ -2,8 +2,8 @@
 //! signature-request email and the exact error messages of signPlcOperation.
 use crate::common::*;
 use std::sync::Arc;
-use vlpds::crypto::Keypair;
 use vlpds::plc::mock::MockPlc;
+use vlsync_atproto::crypto::Keypair;
 
 /// "does not allow signing plc operation without a token", "requests a plc
 /// signature", "does not sign a plc operation with a bad token"

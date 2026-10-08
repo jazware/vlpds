@@ -26,10 +26,10 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use vlpds::cid::Cid;
-use vlpds::segment::{self, LogObject, Mutation, SegmentBuilder};
-use vlpds::slots::ShardId;
-use vlpds::version;
+use vlsync_atproto::cid::Cid;
+use vlsync_store::segment::{self, LogObject, Mutation, SegmentBuilder};
+use vlsync_store::slots::ShardId;
+use vlsync_store::version;
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/formats")
@@ -58,22 +58,22 @@ const SECRET: &[u8] = b"level-1 wrapped secret fixture";
 fn commit_car(rec_block: &[u8]) -> (Cid, Cid, Vec<u8>, Vec<u8>) {
     let rec = Cid::dag_cbor(rec_block);
     let mut commit_block = Vec::new();
-    vlpds::cbor::Value::Map(vec![
-        ("did".into(), vlpds::cbor::Value::Text(DID.into())),
-        ("data".into(), vlpds::cbor::Value::Link(rec)),
+    vlsync_atproto::cbor::Value::Map(vec![
+        ("did".into(), vlsync_atproto::cbor::Value::Text(DID.into())),
+        ("data".into(), vlsync_atproto::cbor::Value::Link(rec)),
     ])
     .encode(&mut commit_block);
     let commit = Cid::dag_cbor(&commit_block);
     let mut car = Vec::new();
-    vlpds::car::write_header(&mut car, &commit);
-    vlpds::car::write_block(&mut car, &commit, &commit_block);
-    vlpds::car::write_block(&mut car, &rec, rec_block);
+    vlsync_atproto::car::write_header(&mut car, &commit);
+    vlsync_atproto::car::write_block(&mut car, &commit, &commit_block);
+    vlsync_atproto::car::write_block(&mut car, &rec, rec_block);
     (rec, commit, commit_block, car)
 }
 
 /// A finished #commit frame of `ops` at `seq`.
-fn finish_commit(rev: &str, commit: Cid, car: &[u8], ops: &[vlpds::events::RepoOp], seq: i64) -> Vec<u8> {
-    let frame = vlpds::events::commit_frame(&vlpds::events::CommitFrame {
+fn finish_commit(rev: &str, commit: Cid, car: &[u8], ops: &[vlsync_atproto::events::RepoOp], seq: i64) -> Vec<u8> {
+    let frame = vlsync_atproto::events::commit_frame(&vlsync_atproto::events::CommitFrame {
         repo: DID,
         rev,
         since: None,
@@ -89,17 +89,21 @@ fn finish_commit(rev: &str, commit: Cid, car: &[u8], ops: &[vlpds::events::RepoO
 }
 
 /// A #commit frame (one update) and the record/commit blocks it carries.
-fn commit_frame() -> (Vec<u8>, Cid, Vec<u8>, vlpds::tid::Tid) {
+fn commit_frame() -> (Vec<u8>, Cid, Vec<u8>, vlsync_atproto::tid::Tid) {
     let (rec, commit, commit_block, car) = commit_car(b"\xa1aa\x01");
-    let rev = vlpds::tid::Tid::parse("3l3qo2vutsw2b").unwrap();
-    let ops =
-        [vlpds::events::RepoOp { action: "update", path: "app.bsky.feed.post/1", cid: Some(rec), prev: Some(commit) }];
+    let rev = vlsync_atproto::tid::Tid::parse("3l3qo2vutsw2b").unwrap();
+    let ops = [vlsync_atproto::events::RepoOp {
+        action: "update",
+        path: "app.bsky.feed.post/1",
+        cid: Some(rec),
+        prev: Some(commit),
+    }];
     (finish_commit(&rev.to_string(), commit, &car, &ops, 1000 << 8), commit, commit_block, rev)
 }
 
 fn segment_plain() -> Vec<u8> {
     let (frame, ..) = commit_frame();
-    let derived = segment::derive_commit_muts(&frame, 2).unwrap();
+    let derived = vlpds::derived::derive_commit_muts(&frame, 2).unwrap();
     let mut muts = derived.clone();
     muts.push(Mutation {
         key: Bytes::from(vlpds::state::collection_key("app.bsky.feed.post", DID)),
@@ -125,21 +129,21 @@ fn segment_plain() -> Vec<u8> {
 /// A like record (it has a backlink: src/backlinks.rs).
 fn like_record() -> Vec<u8> {
     let v = serde_json::json!({"$type": "app.bsky.feed.like", "subject": {"uri": "at://did:plc:subject000000000000000000/app.bsky.feed.post/3l3qo2vutsw2a", "cid": Cid::dag_cbor(b"\xa0").to_string()}, "createdAt": TIME});
-    vlpds::cbor::Value::from_json(&v).unwrap().to_cbor()
+    vlsync_atproto::cbor::Value::from_json(&v).unwrap().to_cbor()
 }
 
 /// A segment of one #commit creating a like: its derived muts include the
-/// backlink put (`bl/`, `segment::derive_commit_muts`).
+/// backlink put (`bl/`, `vlpds::derived::derive_commit_muts`).
 fn segment_like() -> Vec<u8> {
     let (rec, commit, _, car) = commit_car(&like_record());
-    let ops = [vlpds::events::RepoOp {
+    let ops = [vlsync_atproto::events::RepoOp {
         action: "create",
         path: "app.bsky.feed.like/3l3qo2vutsw2b",
         cid: Some(rec),
         prev: None,
     }];
     let bytes = finish_commit("3l3qo2vutsw2c", commit, &car, &ops, 1010 << 8);
-    let derived = segment::derive_commit_muts(&bytes, 0).unwrap();
+    let derived = vlpds::derived::derive_commit_muts(&bytes, 0).unwrap();
     let mut b = SegmentBuilder::for_log(LOG);
     b.push_derived(1010 << 8, ShardId(3), 7, |o| o.extend_from_slice(&bytes), &derived, derived.len(), 0);
     b.seal(LOG, 6, 6)
@@ -269,7 +273,7 @@ fn space_head() -> vlpds::space::rows::HeadRow {
     hash.add(&vlpds::space::commit::element("com.example.post", "1", &Cid::dag_cbor(b"\xa1aa\x01").to_string()));
     vlpds::space::rows::HeadRow {
         uri: SPACE.into(),
-        rev: vlpds::tid::Tid(0x1234_5678_9abc),
+        rev: vlsync_atproto::tid::Tid(0x1234_5678_9abc),
         hash,
         records: 1,
         created: 1_790_000_000_000_000,
@@ -323,14 +327,18 @@ fn space_ops_decode(b: &[u8]) -> Vec<vlpds::space::rows::OpRow> {
 }
 
 fn space_outbox() -> vlpds::space::rows::OutboxRow {
-    vlpds::space::rows::OutboxRow { uri: SPACE.into(), repo_rev: vlpds::tid::Tid(0x1234_5678_9abc), hash: [7; 32] }
+    vlpds::space::rows::OutboxRow {
+        uri: SPACE.into(),
+        repo_rev: vlsync_atproto::tid::Tid(0x1234_5678_9abc),
+        hash: [7; 32],
+    }
 }
 
 fn space_writer() -> vlpds::space::rows::WriterRow {
     vlpds::space::rows::WriterRow {
-        repo_rev: vlpds::tid::Tid(0x1234_5678_9abc),
+        repo_rev: vlsync_atproto::tid::Tid(0x1234_5678_9abc),
         hash: [7; 32],
-        space_rev: vlpds::tid::Tid(0x1234_5678_9abd),
+        space_rev: vlsync_atproto::tid::Tid(0x1234_5678_9abd),
     }
 }
 
@@ -425,14 +433,14 @@ fn assignment() -> vlpds::cluster::Assignment {
     }
 }
 
-fn layout() -> vlpds::slots::Layout {
-    let l = vlpds::slots::Layout::uniform(4);
+fn layout() -> vlsync_store::slots::Layout {
+    let l = vlsync_store::slots::Layout::uniform(4);
     let op = l.plan_split(ShardId(1), None, "node-a").unwrap();
     l.with_op(op)
 }
 
-fn report() -> vlpds::retention::Report {
-    vlpds::retention::Report::new([(ShardId(3), 7), (ShardId(70_000), 1)].into(), 255_000, 1)
+fn report() -> vlsync_firehose::log::Report {
+    vlsync_firehose::log::Report::new([(ShardId(3), 7), (ShardId(70_000), 1)].into(), 255_000, 1)
 }
 
 fn ratelimits() -> Vec<u8> {
@@ -470,7 +478,7 @@ fn writer_claim() -> Vec<u8> {
 }
 
 fn frames() -> Vec<(&'static str, Vec<u8>)> {
-    use vlpds::events;
+    use vlsync_atproto::events;
     let fin = |f: events::Frame, seq: i64| {
         let mut b = Vec::new();
         f.finish(seq, &mut b);
@@ -478,8 +486,8 @@ fn frames() -> Vec<(&'static str, Vec<u8>)> {
     };
     let mut car = Vec::new();
     let c = Cid::dag_cbor(b"\xa0");
-    vlpds::car::write_header(&mut car, &c);
-    vlpds::car::write_block(&mut car, &c, b"\xa0");
+    vlsync_atproto::car::write_header(&mut car, &c);
+    vlsync_atproto::car::write_block(&mut car, &c, b"\xa0");
     vec![
         ("firehose/commit.frame", commit_frame().0),
         ("firehose/identity.frame", fin(events::identity_frame(DID, "fixture.test", TIME), 1003 << 8)),
@@ -494,7 +502,7 @@ fn frames() -> Vec<(&'static str, Vec<u8>)> {
 fn written() -> Vec<(&'static str, Vec<u8>)> {
     let plain = segment_plain();
     let zstd = segment::compress(&plain, 1).unwrap().expect("compressible");
-    let batch = vlpds::nodelog::LogBatch {
+    let batch = vlsync_firehose::log::LogBatch {
         log_id: LOG.into(),
         ordinal: 5,
         events: vec![(1000 << 8, Bytes::from(commit_frame().0)), (1003 << 8, Bytes::from_static(b"frame"))],
@@ -613,9 +621,9 @@ fn slatedb_rows() -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
     ]
 }
 
-fn slatedb_store(prefix: &str) -> (vlpds::store::Store, Arc<object_store::memory::InMemory>) {
+fn slatedb_store(prefix: &str) -> (vlsync_store::store::Store, Arc<object_store::memory::InMemory>) {
     let mem = Arc::new(object_store::memory::InMemory::new());
-    (vlpds::store::Store { raw: mem.clone(), prefix: prefix.into(), latency: None }, mem)
+    (vlsync_store::store::Store { raw: mem.clone(), prefix: prefix.into(), latency: None }, mem)
 }
 
 /// Writes a tiny shard DB the way a node opens one (`partition::open_db`)
@@ -790,7 +798,7 @@ async fn writers_reproduce_the_max_level_fixtures() {
 }
 
 fn cbor_reencode(name: &str, b: &[u8]) {
-    use vlpds::cbor::Value;
+    use vlsync_atproto::cbor::Value;
     let (h, n) = Value::decode_prefix(b).unwrap_or_else(|e| panic!("{name}: {e:?}"));
     let body = Value::decode(&b[n..]).unwrap_or_else(|e| panic!("{name}: {e:?}"));
     let mut out = Vec::new();
@@ -827,7 +835,7 @@ async fn check(level: u32, name: &str, b: &[u8]) {
                 level == version::TEST_LEVEL,
                 "only the test level's header has a checksum"
             );
-            let LogObject::Segment(h, entries) = segment::parse(Bytes::copy_from_slice(b), true, None).unwrap() else {
+            let LogObject::Segment(h, entries) = vlpds::derived::parse(Bytes::copy_from_slice(b), None).unwrap() else {
                 panic!("{name}")
             };
             assert_eq!(entries[0].derived, 4, "#commit muts are derived, not stored");
@@ -841,7 +849,7 @@ async fn check(level: u32, name: &str, b: &[u8]) {
             assert!(segment::decode(Bytes::copy_from_slice(b)).unwrap() == plain, "{name}: decodes to plain.seg");
         }
         "segment/like.seg" => {
-            let LogObject::Segment(h, entries) = segment::parse(Bytes::copy_from_slice(b), true, None).unwrap() else {
+            let LogObject::Segment(h, entries) = vlpds::derived::parse(Bytes::copy_from_slice(b), None).unwrap() else {
                 panic!("{name}")
             };
             assert_eq!(h.level, level, "{name}: segment level");
@@ -849,7 +857,7 @@ async fn check(level: u32, name: &str, b: &[u8]) {
             // c/ put, R/ put, the backlink put, h/
             assert_eq!(e.derived, 4, "{name}: #commit muts derived");
             let bl = &e.muts[2];
-            assert_eq!(vlpds::state::key_body(&bl.key)[..3], *b"bl/", "{name}: the like's backlink put");
+            assert_eq!(vlsync_store::keys::key_body(&bl.key)[..3], *b"bl/", "{name}: the like's backlink put");
             assert_eq!(bl.val.as_deref(), Some(&b"3l3qo2vutsw2b"[..]));
             assert!(reseal(&h, &entries, level) == b, "{name}: re-encode differs");
         }
@@ -860,7 +868,7 @@ async fn check(level: u32, name: &str, b: &[u8]) {
             let link = vlpds::backlinks::link("app.bsky.feed.like", &hx("record")).unwrap();
             assert_eq!(link, hx("link"));
             assert_eq!(vlpds::state::backlink_key(DID, 0, &link), hx("key bl/"));
-            assert_eq!(vlpds::state::key_slot(&hx("key bl/")), Some(vlpds::slots::slot_of(DID)));
+            assert_eq!(vlsync_store::keys::key_slot(&hx("key bl/")), Some(vlsync_store::slots::slot_of(DID)));
             let v = vlpds::backlinks::decode(&hx("value"));
             assert_eq!(v.len(), 2);
             assert!(vlpds::backlinks::encode(&v) == hx("value"));
@@ -870,7 +878,7 @@ async fn check(level: u32, name: &str, b: &[u8]) {
             assert!(pretty(&k) == b);
             let key = hex::decode(&k["key S/"]).unwrap();
             assert_eq!(key, vlpds::state::repo_stats_key(DID));
-            assert_eq!(vlpds::state::key_slot(&key), Some(vlpds::slots::slot_of(DID)));
+            assert_eq!(vlsync_store::keys::key_slot(&key), Some(vlsync_store::slots::slot_of(DID)));
             let v = hex::decode(&k["value"]).unwrap();
             let st = vlpds::state::RepoStats::decode(&v).unwrap();
             assert_eq!((st.records, st.nodes, st.blobs), (1_000_003, 270_001, 4_096));
@@ -883,12 +891,12 @@ async fn check(level: u32, name: &str, b: &[u8]) {
             assert!(pretty(&k) == b);
             let key = hex::decode(&k["key L/"]).unwrap();
             assert_eq!(key, vlpds::state::lockout_key(DID, vlpds::xrpc::mfa::FACTOR_LOCK));
-            assert_eq!(vlpds::state::key_slot(&key), Some(vlpds::slots::slot_of(DID)));
+            assert_eq!(vlsync_store::keys::key_slot(&key), Some(vlsync_store::slots::slot_of(DID)));
             assert_eq!(hex::decode(&k["value"]).unwrap(), 1_790_000_300u64.to_be_bytes());
         }
 
         "segment/fence.bin" => {
-            let LogObject::Fence { by } = segment::parse(Bytes::copy_from_slice(b), true, None).unwrap() else {
+            let LogObject::Fence { by } = vlpds::derived::parse(Bytes::copy_from_slice(b), None).unwrap() else {
                 panic!("{name}")
             };
             assert!(segment::fence_object(&by) == b);
@@ -924,8 +932,8 @@ async fn check(level: u32, name: &str, b: &[u8]) {
             for (n, hexkey) in &k {
                 let key = hex::decode(hexkey).unwrap();
                 assert_eq!(
-                    vlpds::state::key_slot(&key),
-                    Some(vlpds::slots::slot_of(DID)),
+                    vlsync_store::keys::key_slot(&key),
+                    Some(vlsync_store::slots::slot_of(DID)),
                     "{n}: slot-prefixed by the DID's slot"
                 );
             }
@@ -935,7 +943,7 @@ async fn check(level: u32, name: &str, b: &[u8]) {
             assert!(pretty(&k) == b);
             for (n, hexkey) in &k {
                 let key = hex::decode(hexkey).unwrap();
-                assert_eq!(vlpds::state::key_slot(&key), Some(vlpds::slots::slot_of(DID)), "{n}");
+                assert_eq!(vlsync_store::keys::key_slot(&key), Some(vlsync_store::slots::slot_of(DID)), "{n}");
                 assert!(vlpds::state::is_space_key(&key), "{n}");
             }
         }
@@ -967,7 +975,7 @@ async fn check(level: u32, name: &str, b: &[u8]) {
             let k: BTreeMap<String, String> = serde_json::from_slice(b).unwrap();
             assert!(pretty(&k) == b);
             let key = hex::decode(&k["space notify sN/"]).unwrap();
-            assert_eq!(vlpds::state::key_slot(&key), Some(vlpds::slots::slot_of(DID)));
+            assert_eq!(vlsync_store::keys::key_slot(&key), Some(vlsync_store::slots::slot_of(DID)));
             assert!(vlpds::state::is_space_key(&key));
             let row = hex::decode(&k["row"]).unwrap();
             let r = vlpds::space::rows::NotifyRow::decode(&row).unwrap();
@@ -980,7 +988,7 @@ async fn check(level: u32, name: &str, b: &[u8]) {
             let sb = hex::decode(&k["space blob sb/"]).unwrap();
             let sc = hex::decode(&k["space blob by cid sc/"]).unwrap();
             for key in [&sb, &sc] {
-                assert_eq!(vlpds::state::key_slot(key), Some(vlpds::slots::slot_of(DID)));
+                assert_eq!(vlsync_store::keys::key_slot(key), Some(vlsync_store::slots::slot_of(DID)));
                 assert!(vlpds::state::is_space_key(key));
             }
             let prefix = vlpds::state::space_prefix(vlpds::state::SPACE_BLOB_FAMILY, DID, &sid);
@@ -1000,7 +1008,7 @@ async fn check(level: u32, name: &str, b: &[u8]) {
                 [("space list sL/ repo", SpaceListed::Repo), ("space list sL/ governs", SpaceListed::Governs)]
             {
                 let key = hex::decode(&k[name]).unwrap();
-                assert_eq!(vlpds::state::key_slot(&key), Some(vlpds::slots::slot_of(DID)));
+                assert_eq!(vlsync_store::keys::key_slot(&key), Some(vlsync_store::slots::slot_of(DID)));
                 assert!(vlpds::state::is_space_key(&key));
                 assert_eq!(vlpds::state::space_list_uri(&key, &base), Some(SPACE));
                 assert!(vlpds::state::space_list_key(DID, SPACE, why) == key);
@@ -1016,12 +1024,12 @@ async fn check(level: u32, name: &str, b: &[u8]) {
         "control/assignment.json" => {
             json_reencode::<vlpds::cluster::Assignment>(name, b);
         }
-        "control/layout.json" => json_reencode::<vlpds::slots::Layout>(name, b).validate().unwrap(),
+        "control/layout.json" => json_reencode::<vlsync_store::slots::Layout>(name, b).validate().unwrap(),
         "control/writer_claim.json" => {
             json_reencode::<serde_json::Value>(name, b);
         }
         "control/retain_report.json" => {
-            let r = json_reencode::<vlpds::retention::Report>(name, b);
+            let r = json_reencode::<vlsync_firehose::log::Report>(name, b);
             assert_eq!(
                 r.min_seg_format.is_some(),
                 level == version::TEST_LEVEL,

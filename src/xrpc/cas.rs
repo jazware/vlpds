@@ -13,8 +13,8 @@
 //! fails rather than landing after the new owner's writes.
 
 use super::*;
-use crate::segment::Mutation;
 use std::collections::HashMap;
+use vlsync_store::segment::Mutation;
 
 #[derive(Clone, Debug)]
 pub enum Cond {

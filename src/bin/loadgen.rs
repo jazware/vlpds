@@ -865,10 +865,10 @@ async fn consume_firehose(url: String, st: Arc<Run>) -> anyhow::Result<()> {
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await?;
     while let Some(msg) = ws.next().await {
         let Message::Binary(b) = msg? else { continue };
-        let Ok((_, hlen)) = vlpds::cbor::Value::decode_prefix(&b) else {
+        let Ok((_, hlen)) = vlsync_atproto::cbor::Value::decode_prefix(&b) else {
             continue;
         };
-        let Ok(body) = vlpds::cbor::Value::decode(&b[hlen..]) else {
+        let Ok(body) = vlsync_atproto::cbor::Value::decode(&b[hlen..]) else {
             continue;
         };
         st.fh_events.fetch_add(1, Ordering::Relaxed);
@@ -990,7 +990,7 @@ async fn owned_slots(c: &reqwest::Client, host: &str, admin_token: &str) -> anyh
 }
 
 fn owns(slots: &[(u32, u32)], i: u64) -> bool {
-    let s = vlpds::slots::slot_of(&vlpds::state::bulk_did(i)) as u32;
+    let s = vlsync_store::slots::slot_of(&vlpds::state::bulk_did(i)) as u32;
     let k = slots.partition_point(|r| r.1 <= s);
     k < slots.len() && slots[k].0 <= s
 }
@@ -1547,9 +1547,9 @@ async fn fanout(
                 bytes += b.len() as u64;
                 // decode a sample (every 64th) for lag + order checks; full decode is costly at 100k ev/s x N
                 if events % 64 == 1 {
-                    if let Ok((_, hl)) = vlpds::cbor::Value::decode_prefix(&b) {
-                        if let Ok(body) = vlpds::cbor::Value::decode(&b[hl..]) {
-                            if let Some(vlpds::cbor::Value::Int(seq)) = body.get("seq") {
+                    if let Ok((_, hl)) = vlsync_atproto::cbor::Value::decode_prefix(&b) {
+                        if let Ok(body) = vlsync_atproto::cbor::Value::decode(&b[hl..]) {
+                            if let Some(vlsync_atproto::cbor::Value::Int(seq)) = body.get("seq") {
                                 if *seq <= last_seq {
                                     out_of_order += 1;
                                 }
@@ -1717,7 +1717,7 @@ async fn sweep(
     for &size in sizes {
         // deterministic, time-ordered TID rkeys so reads can sample the whole repo
         const BASE_US: u64 = 1_600_000_000_000_000;
-        let rkey_of = |i: usize| vlpds::tid::Tid::from_parts(BASE_US + i as u64 * 1000, 0).to_string();
+        let rkey_of = |i: usize| vlsync_atproto::tid::Tid::from_parts(BASE_US + i as u64 * 1000, 0).to_string();
         let reused = if reuse { sweep_reuse(&c, &h, size).await? } else { None };
         let (did, blobs, fill_secs) = if let Some((did, blobs)) = reused {
             eprintln!("== repo of {size} records reused ({did}, {} blobs)", blobs.len());
@@ -2025,19 +2025,21 @@ async fn clone_repo(
     blobs_dir: &str,
 ) -> anyhow::Result<()> {
     let data = std::fs::read(car_path)?;
-    let (roots, blocks) = vlpds::car::read_car(&data)?;
-    let map: std::collections::HashMap<vlpds::cid::Cid, Vec<u8>> =
+    let (roots, blocks) = vlsync_atproto::car::read_car(&data)?;
+    let map: std::collections::HashMap<vlsync_atproto::cid::Cid, Vec<u8>> =
         blocks.iter().map(|(c, b)| (*c, b.to_vec())).collect();
-    let commit = vlpds::cbor::Value::decode(&map[&roots[0]])?;
-    let Some(vlpds::cbor::Value::Link(data_root)) = commit.get("data") else { anyhow::bail!("no data root in commit") };
-    let tree = vlpds::mst::Tree::load_from_blocks(&map, *data_root)?;
+    let commit = vlsync_atproto::cbor::Value::decode(&map[&roots[0]])?;
+    let Some(vlsync_atproto::cbor::Value::Link(data_root)) = commit.get("data") else {
+        anyhow::bail!("no data root in commit")
+    };
+    let tree = vlsync_atproto::mst::Tree::load_from_blocks(&map, *data_root)?;
     let mut records: Vec<(String, String, serde_json::Value)> = Vec::new();
     let mut by_coll: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
     let mut walk_err = None;
     tree.walk(&mut |k, cid| {
         let path = String::from_utf8_lossy(k).to_string();
         let Some((coll, rkey)) = path.split_once('/') else { return };
-        match map.get(&cid).map(|b| vlpds::cbor::Value::decode(b)) {
+        match map.get(&cid).map(|b| vlsync_atproto::cbor::Value::decode(b)) {
             Some(Ok(v)) => {
                 let e = by_coll.entry(coll.to_string()).or_default();
                 e.0 += 1;

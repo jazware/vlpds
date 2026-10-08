@@ -551,7 +551,7 @@ async fn validate_authorization_request(
         Some(h) => {
             let h = h.to_lowercase();
             let h = h.strip_prefix('@').unwrap_or(&h).to_string();
-            if !is_atproto_did(&h) && !super::syntax::valid_handle(&h) {
+            if !is_atproto_did(&h) && !vlsync_atproto::syntax::valid_handle(&h) {
                 return Err(OAuthError::invalid_request(&format!("Invalid login_hint \"{h}\"")));
             }
             Some(h)

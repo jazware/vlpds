@@ -2,13 +2,13 @@
 //! A single node is simply a one-node cluster.
 
 use crate::cluster::{Cluster, ClusterConfig, ShardHost};
-use crate::firehose::Firehose;
 use crate::nodelog::{NodeLog, NodeLogConfig};
-use crate::store::{S3Config, Store};
 use crate::{auth, stats, worker, xrpc};
 use axum::response::IntoResponse;
 use std::sync::Arc;
 use std::time::Duration;
+use vlsync_firehose::firehose::Firehose;
+use vlsync_store::store::{S3Config, Store};
 
 /// No Debug: it holds secrets (tokens, S3/SMTP credentials, KEK config).
 #[derive(Clone)]
@@ -269,8 +269,8 @@ impl Default for Config {
             s3: None,
             prefix: "vlpds".into(),
             inject_latency: None,
-            store_inflight: crate::objlimit::DEFAULT_STATE_INFLIGHT,
-            log_store_inflight: crate::objlimit::DEFAULT_LOG_INFLIGHT,
+            store_inflight: vlsync_store::objlimit::DEFAULT_STATE_INFLIGHT,
+            log_store_inflight: vlsync_store::objlimit::DEFAULT_LOG_INFLIGHT,
             shards: 8,
             workers: 2,
             cache_per_worker: 10_000,
@@ -281,14 +281,14 @@ impl Default for Config {
             max_segment_bytes: 8 << 20,
             log_inflight: crate::nodelog::DEFAULT_LOG_INFLIGHT,
             live_ring_bytes: crate::nodelog::DEFAULT_LIVE_RING_BYTES,
-            firehose_merge_queue_bytes: crate::firehose::DEFAULT_MERGE_QUEUE_BYTES,
+            firehose_merge_queue_bytes: vlsync_firehose::firehose::DEFAULT_MERGE_QUEUE_BYTES,
             firehose_ring_bytes: 64 << 20,
             firehose_threads: 2,
-            firehose_max_lag_bytes: crate::firehose::DEFAULT_MAX_LAG_BYTES,
-            backfill_readahead_bytes: crate::backfill::DEFAULT_READAHEAD_BYTES,
-            backfill_cache_bytes: crate::backfill::DEFAULT_CACHE_BYTES,
-            firehose_max_backfills: crate::firehose::DEFAULT_MAX_BACKFILLS,
-            firehose_max_per_ip: crate::firehose::DEFAULT_MAX_PER_IP,
+            firehose_max_lag_bytes: vlsync_firehose::firehose::DEFAULT_MAX_LAG_BYTES,
+            backfill_readahead_bytes: vlsync_firehose::backfill::DEFAULT_READAHEAD_BYTES,
+            backfill_cache_bytes: vlsync_firehose::backfill::DEFAULT_CACHE_BYTES,
+            firehose_max_backfills: vlsync_firehose::firehose::DEFAULT_MAX_BACKFILLS,
+            firehose_max_per_ip: vlsync_firehose::firehose::DEFAULT_MAX_PER_IP,
             hedge_after: Duration::from_millis(100),
             max_inflight_writes: 20_000,
             max_queued_reads: 20_000,
@@ -380,13 +380,13 @@ pub async fn build(cfg: Config) -> anyhow::Result<Arc<xrpc::App>> {
     // Separate connection pools for the commit log, the control plane and
     // everything else, each bounded (objlimit.rs), so a takeover's burst
     // can't starve lease renewals or exhaust ephemeral ports.
-    use crate::objlimit::{Limits, Reserve};
+    use vlsync_store::objlimit::{Limits, Reserve};
     let log_limits = Limits::new(cfg.log_store_inflight)
-        .with_reserved(Reserve::Writes, crate::objlimit::log_write_permits(cfg.log_inflight));
+        .with_reserved(Reserve::Writes, vlsync_store::objlimit::log_write_permits(cfg.log_inflight));
     let state_limits = Limits::new(cfg.store_inflight);
-    let ctl_limits =
-        Limits::new(crate::objlimit::CTL_PERMITS).with_reserved(Reserve::LeaseWrites, crate::objlimit::LEASE_PERMITS);
-    let store_stats = crate::store_stats::StoreStats::new(&cfg.prefix);
+    let ctl_limits = Limits::new(vlsync_store::objlimit::CTL_PERMITS)
+        .with_reserved(Reserve::LeaseWrites, vlsync_store::objlimit::LEASE_PERMITS);
+    let store_stats = vlsync_store::store_stats::StoreStats::new(&cfg.prefix);
     let (store, state_store, ctl_store) = match &cfg.s3 {
         None => {
             let m = match &cfg.memory_store {
@@ -417,16 +417,16 @@ pub async fn build(cfg: Config) -> anyhow::Result<Arc<xrpc::App>> {
         state_store.limited("state", state_limits),
         ctl_store.limited("ctl", ctl_limits),
     );
-    let firehose = Firehose::new(crate::firehose::Options {
+    let firehose = Firehose::new(vlsync_firehose::firehose::Options {
         ring_bytes: cfg.firehose_ring_bytes,
         max_lag_bytes: cfg.firehose_max_lag_bytes,
         readahead_bytes: cfg.backfill_readahead_bytes,
         backfill_cache_bytes: cfg.backfill_cache_bytes,
         max_backfills: cfg.firehose_max_backfills,
         max_per_ip: cfg.firehose_max_per_ip,
-        write_idle: crate::firehose::DEFAULT_WRITE_IDLE,
-        runtime: (cfg.firehose_threads > 0).then(|| crate::firehose::runtime(cfg.firehose_threads)),
-        max_labelled: crate::firehose::DEFAULT_MAX_LABELLED,
+        write_idle: vlsync_firehose::firehose::DEFAULT_WRITE_IDLE,
+        runtime: (cfg.firehose_threads > 0).then(|| vlsync_firehose::firehose::runtime(cfg.firehose_threads)),
+        max_labelled: vlsync_firehose::firehose::DEFAULT_MAX_LABELLED,
         start_floor: None,
     });
     firehose.set_max_queue_bytes(cfg.firehose_merge_queue_bytes.max(1));
@@ -456,7 +456,7 @@ pub async fn build(cfg: Config) -> anyhow::Result<Arc<xrpc::App>> {
         ..Default::default()
     });
     cc.shards = n;
-    crate::version::init_metrics();
+    vlsync_store::version::init_metrics();
     // before the join, which may fence our own previous incarnation's log
     crate::metrics::init_counters();
     let started = std::time::Instant::now();
@@ -480,7 +480,7 @@ pub async fn build(cfg: Config) -> anyhow::Result<Arc<xrpc::App>> {
         merger_tx.clone(),
     );
     log.live.set_max_bytes(cfg.live_ring_bytes);
-    firehose.set_source(&log.log_id, Some(crate::firehose::Source::Local(log.wm.clone())));
+    firehose.set_source(&log.log_id, Some(vlsync_firehose::firehose::Source::Local(log.wm.clone())));
     *firehose.store.write() = Some(store.clone());
     {
         // never announce a watermark beyond our node lease
@@ -596,7 +596,7 @@ pub async fn build(cfg: Config) -> anyhow::Result<Arc<xrpc::App>> {
         workers,
         partitions: table,
         firehose,
-        tids: crate::tid::TidClock::new(),
+        tids: vlsync_atproto::tid::TidClock::new(),
         public_url: cfg.public_url.clone(),
         handle_domains: Arc::new(crate::handle_domains::HandleDomains::new(&cfg.handle_domain)),
         write_permits: Arc::new(tokio::sync::Semaphore::new(cfg.max_inflight_writes)),
@@ -604,7 +604,7 @@ pub async fn build(cfg: Config) -> anyhow::Result<Arc<xrpc::App>> {
         exports: Arc::new(tokio::sync::Semaphore::new(cfg.max_exports.max(1))),
         imports: xrpc::ImportBudget::new(cfg.import_memory_bytes.unwrap_or(plan.part("import")), cfg.import_wait),
         admin_token: cfg.admin_token.clone(),
-        did_resolver: Arc::new(crate::did_resolver::DidResolver::new(&cfg.plc_url, cfg.dev_mode)),
+        did_resolver: Arc::new(crate::caches::did_resolver(&cfg.plc_url, cfg.dev_mode)),
         http,
         ratelimit: Arc::new(crate::ratelimit::Limiter::new(&cfg)),
         crawlers: Arc::new(xrpc::crawlers::Crawlers::new(&cfg.crawlers, cfg.crawl_interval)),
@@ -638,7 +638,7 @@ pub fn spawn_reporters(app: &Arc<xrpc::App>) {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         loop {
             tick.tick().await;
-            let now = crate::nodelog::seq_floor(crate::tid::now_micros());
+            let now = vlsync_firehose::log::seq_floor(vlsync_atproto::tid::now_micros());
             // one node log: report its watermark lag once
             if let Some(p) = parts.owned().first() {
                 let lag_us = (now - p.wm.get()).max(0) >> 8;
@@ -1169,7 +1169,7 @@ pub async fn shutdown(app: &Arc<xrpc::App>) {
             // Our lease stays (renewals stopped): peers presume us dead and
             // fence our log, as does our own restart (it reads our lease).
             tracing::error!("{e:#}: exiting nonzero without dropping our lease (peers or our restart fence the log)");
-            crate::lifecycle::fail_stop(8, "shutdown_fence");
+            vlsync_store::lifecycle::fail_stop(8, "shutdown_fence");
         }
     }
     // after the shards closed: their last flushes are counted too
@@ -1197,7 +1197,7 @@ mod tests {
             internal_token: internal.into(),
             kek: crate::secrets::KekConfig { local: Some(crate::secrets::KekBytes::random()), ..Default::default() },
             plc: crate::plc::PlcConfig {
-                rotation_key: Some(crate::plc::RotationKey::Key(Arc::new(crate::crypto::Keypair::generate()))),
+                rotation_key: Some(crate::plc::RotationKey::Key(Arc::new(vlsync_atproto::crypto::Keypair::generate()))),
                 ..Default::default()
             },
             ..Config::default()
@@ -1226,7 +1226,7 @@ mod tests {
         let e = prod(&a, &b, &b).check_secrets().unwrap_err();
         assert!(e.to_string().contains("must differ"), "{e}");
         // the MinIO default S3 credentials, and their Debug is redacted
-        let s3 = |k: &str| crate::store::S3Config {
+        let s3 = |k: &str| vlsync_store::store::S3Config {
             endpoint: "http://s3".into(),
             bucket: "b".into(),
             access_key: k.into(),

@@ -4,7 +4,7 @@
 
 use super::admin::require_admin;
 use super::*;
-use crate::firehose::SubscriberView;
+use vlsync_firehose::firehose::SubscriberView;
 
 /// Subscribers in one answer (the counts cover them all).
 const MAX_LISTED: usize = 500;
@@ -68,8 +68,8 @@ fn local(app: &App) -> NodeList {
         recent,
         total,
         backfilling,
-        events_emitted: metrics::FIREHOSE_EVENTS.get(),
-        bytes_sent: metrics::FIREHOSE_SENT_BYTES.get(),
+        events_emitted: vlsync_firehose::metrics::FIREHOSE_EVENTS.get(),
+        bytes_sent: vlsync_firehose::metrics::FIREHOSE_SENT_BYTES.get(),
     }
 }
 

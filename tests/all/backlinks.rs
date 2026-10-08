@@ -53,7 +53,7 @@ async fn check_backlinks(s: &TestServer, did: &str) -> u64 {
 async fn scan_backlinks(s: &TestServer, did: &str) -> Vec<(Vec<u8>, Vec<u8>)> {
     let Ok(p) = s.app.partition(did) else { panic!("shard of {did} not owned") };
     let prefix = vlpds::state::backlink_prefix(did, s.app.repo_gen(did).await.ok().unwrap());
-    let mut it = p.db.scan(prefix.clone()..vlpds::state::prefix_end(&prefix)).await.unwrap();
+    let mut it = p.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await.unwrap();
     let mut out = Vec::new();
     while let Some(kv) = it.next().await.unwrap() {
         out.push((kv.key[prefix.len()..].to_vec(), kv.value.to_vec()));
@@ -392,7 +392,7 @@ async fn reshard_carries_the_index() {
     }
     let admin = |nsid: &str, body: J| s.xrpc.post_owned(nsid, body, Auth::Admin);
     let cl = s.app.cluster.as_deref().unwrap();
-    let slot = vlpds::slots::slot_of(&accts[0].did) as u32;
+    let slot = vlsync_store::slots::slot_of(&accts[0].did) as u32;
     let target = cl.layout().shards.iter().find(|r| r.lo <= slot && slot < r.hi).cloned().unwrap();
     let r =
         admin("vlpds.admin.splitShard", json!({"shard": target.id, "at": (target.lo + target.hi) / 2, "wait": true}))
@@ -405,11 +405,11 @@ async fn reshard_carries_the_index() {
         assert_eq!(&scan_backlinks(&s, &x.did).await, want, "{}: after the split", x.did);
         check_backlinks(&s, &x.did).await;
     }
-    let kids: Vec<vlpds::slots::ShardId> = r["op"]["children"]
+    let kids: Vec<vlsync_store::slots::ShardId> = r["op"]["children"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|c| vlpds::slots::ShardId(c["id"].as_u64().unwrap() as u32))
+        .map(|c| vlsync_store::slots::ShardId(c["id"].as_u64().unwrap() as u32))
         .collect();
     for x in &accts {
         create(&s, x, FOLLOW, rec(FOLLOW, 1), None).await;

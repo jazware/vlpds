@@ -9,7 +9,7 @@ use crate::common::*;
 use crate::mst_lazy::{streamable, Slot};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::collections::{BTreeMap, HashSet};
-use vlpds::mst::Tree;
+use vlsync_atproto::mst::Tree;
 
 const COLLS: [&str; 3] = ["com.example.a", "com.example.bb", "app.example.c"];
 
@@ -17,7 +17,7 @@ const COLLS: [&str; 3] = ["com.example.a", "com.example.bb", "app.example.c"];
 async fn stored_records(s: &TestServer, did: &str) -> BTreeMap<Vec<u8>, (Cid, u64, Vec<u8>)> {
     let Ok(p) = s.app.partition(did) else { panic!("shard not owned") };
     let prefix = vlpds::state::record_prefix(did, s.app.repo_gen(did).await.ok().unwrap());
-    let mut it = p.db.scan(prefix.clone()..vlpds::state::prefix_end(&prefix)).await.unwrap();
+    let mut it = p.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await.unwrap();
     let mut out = BTreeMap::new();
     while let Some(kv) = it.next().await.unwrap() {
         let (cid, b) = vlpds::state::record_value_parts(&kv.value).unwrap();
@@ -45,7 +45,7 @@ fn check_export(
     since: Option<u64>,
     what: &str,
 ) {
-    let (roots, blocks) = vlpds::car::read_car(car).unwrap();
+    let (roots, blocks) = vlsync_atproto::car::read_car(car).unwrap();
     assert_eq!(blocks[0].0, roots[0], "{what}: the commit first");
     let carried = |k: &[u8]| since.is_none_or(|s| recs[k].1 > s);
     let want: Vec<Cid> = std::iter::once(roots[0])
@@ -111,7 +111,7 @@ async fn exports_stream_in_spec_order_with_the_same_blocks() {
             since = r["commit"]["rev"].as_str().unwrap().to_string();
         }
     }
-    let since_rev = vlpds::tid::Tid::parse(&since).unwrap().0;
+    let since_rev = vlsync_atproto::tid::Tid::parse(&since).unwrap().0;
     let recs = stored_records(&s, &a.did).await;
     let full = get_repo(&s, &a.did, None).await;
     let repo = Repo::from_car(&full).unwrap();
@@ -126,7 +126,7 @@ async fn exports_stream_in_spec_order_with_the_same_blocks() {
 
     let Ok(p) = s.app.partition(&a.did) else { panic!("shard not owned") };
     let prefix = vlpds::state::mst_node_prefix(&a.did, s.app.repo_gen(&a.did).await.ok().unwrap());
-    let mut it = p.db.scan(prefix.clone()..vlpds::state::prefix_end(&prefix)).await.unwrap();
+    let mut it = p.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await.unwrap();
     let (mut keys, mut node_bytes) = (Vec::new(), 0);
     while let Some(kv) = it.next().await.unwrap() {
         node_bytes += kv.value.len();
@@ -170,10 +170,10 @@ async fn commit_streams_before_the_tree() {
     let writes: Vec<J> = (0..200).map(|i| json!({"$type": "com.atproto.repo.applyWrites#create", "collection": "com.example.x", "value": {"$type": "com.example.x", "i": i}})).collect();
     s.xrpc.post("com.atproto.repo.applyWrites", &json!({"repo": a.did, "writes": writes}), &a.auth()).await.ok();
     let full = get_repo(&s, &a.did, None).await;
-    let (roots, blocks) = vlpds::car::read_car(&full).unwrap();
+    let (roots, blocks) = vlsync_atproto::car::read_car(&full).unwrap();
     let mut head = Vec::new();
-    vlpds::car::write_header(&mut head, &roots[0]);
-    vlpds::car::write_block(&mut head, &blocks[0].0, blocks[0].1);
+    vlsync_atproto::car::write_header(&mut head, &roots[0]);
+    vlsync_atproto::car::write_block(&mut head, &blocks[0].0, blocks[0].1);
     let url = format!("http://{}/xrpc/com.atproto.sync.getRepo?did={}", s.addr, a.did);
     let mut r = reqwest::get(&url).await.unwrap();
     assert_eq!(r.status(), 200);

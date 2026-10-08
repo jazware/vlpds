@@ -56,7 +56,7 @@ fn export(app: &App) {
 /// Exports at every scrape while the app lives.
 pub fn export_account_totals(app: &Arc<App>) {
     let app = Arc::downgrade(app);
-    metrics::on_render(move || match app.upgrade() {
+    vlsync_store::metrics::on_render(move || match app.upgrade() {
         Some(a) => {
             export(&a);
             true
@@ -91,11 +91,11 @@ pub async fn scan_totals(app: &App) -> anyhow::Result<Totals> {
         let Some(p) = app.partitions.get(range.id) else { continue };
         let snap = p.db.snapshot()?;
         let lo = range.lo as u16;
-        let in_range = |key: &[u8]| state::key_slot(key).is_some_and(|s| (s as u32) < range.hi);
+        let in_range = |key: &[u8]| vlsync_store::keys::key_slot(key).is_some_and(|s| (s as u32) < range.hi);
         let mut accts = state::FamilyScan::new(
             snap.as_ref(),
             state::ACCOUNT_FAMILY,
-            Some(state::slot_family(lo, state::ACCOUNT_FAMILY)),
+            Some(vlsync_store::keys::slot_family(lo, state::ACCOUNT_FAMILY)),
             &opts,
         )
         .await?;
@@ -121,7 +121,7 @@ pub async fn scan_totals(app: &App) -> anyhow::Result<Totals> {
         let mut heads = state::FamilyScan::new(
             snap.as_ref(),
             state::HEAD_FAMILY,
-            Some(state::slot_family(lo, state::HEAD_FAMILY)),
+            Some(vlsync_store::keys::slot_family(lo, state::HEAD_FAMILY)),
             &opts,
         )
         .await?;

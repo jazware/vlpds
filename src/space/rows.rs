@@ -4,10 +4,10 @@
 //! the public `R/` value (`state::record_value`).
 
 use super::lthash::{LtHash, STATE_BYTES};
-use crate::cid::{Cid, CID_BYTES_LEN};
-use crate::tid::Tid;
 use anyhow::{bail, ensure, Context};
 use bytes::{BufMut, Bytes};
+use vlsync_atproto::cid::{Cid, CID_BYTES_LEN};
+use vlsync_atproto::tid::Tid;
 
 struct Reader<'a> {
     b: &'a [u8],
@@ -223,7 +223,7 @@ impl OutboxRow {
 
 /// (DID, space id) of an `sP` (or `sH`) key.
 pub fn did_sid(key: &[u8]) -> Option<(&str, crate::state::SpaceId)> {
-    let body = crate::state::key_body(key).get(3..)?;
+    let body = vlsync_store::keys::key_body(key).get(3..)?;
     let at = body.len().checked_sub(crate::state::SPACE_ID_LEN + 1)?;
     (body[at] == 0).then_some(())?;
     Some((std::str::from_utf8(&body[..at]).ok()?, body[at + 1..].try_into().ok()?))
@@ -232,7 +232,7 @@ pub fn did_sid(key: &[u8]) -> Option<(&str, crate::state::SpaceId)> {
 /// The DID and space id that begin a key with more after them (`sN`'s
 /// service, `sW`'s writer).
 pub fn did_sid_head(key: &[u8]) -> Option<(&str, crate::state::SpaceId)> {
-    let body = crate::state::key_body(key).get(3..)?;
+    let body = vlsync_store::keys::key_body(key).get(3..)?;
     let at = body.iter().position(|b| *b == 0)?;
     let sid = body.get(at + 1..at + 1 + crate::state::SPACE_ID_LEN)?;
     Some((std::str::from_utf8(&body[..at]).ok()?, sid.try_into().ok()?))

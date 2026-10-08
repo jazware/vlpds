@@ -232,6 +232,13 @@ pub fn entries() -> Caps {
     Caps(n)
 }
 
+/// A DID resolver whose document cache is the `did_docs` cache here.
+pub fn did_resolver(plc_url: &str, dev_mode: bool) -> vlsync_atproto::did_resolver::DidResolver {
+    let r = vlsync_atproto::did_resolver::DidResolver::with_cache_cap(plc_url, dev_mode, || cap(Cache::DidDocs));
+    track(Cache::DidDocs, r.doc_cache());
+    r
+}
+
 pub fn refresh_metrics() {
     let n = entries();
     for c in Cache::ALL {

@@ -11,13 +11,13 @@
 
 use super::config::{self, Audit, Doc};
 use super::Limiter;
-use crate::store::Store;
 use object_store::{GetOptions, ObjectStore, PutMode, PutOptions, PutPayload};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use vlsync_store::store::Store;
 
 /// Peers are nudged on every change, so this only bounds staleness after a
 /// lost nudge.

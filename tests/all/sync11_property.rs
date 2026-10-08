@@ -400,7 +400,7 @@ fn validate_stream(
                 *ch = Chain { rev: Some(ev.rev.clone()), data: Some(c.data) };
                 // a #sync resets the repo to what its blocks hold (account
                 // creation's: empty)
-                let tree = vlpds::mst::Tree::load_from_blocks(&ev.blocks, c.data);
+                let tree = vlsync_atproto::mst::Tree::load_from_blocks(&ev.blocks, c.data);
                 let st = state.entry(did.clone()).or_default();
                 st.clear();
                 if let Ok(t) = tree {
@@ -793,10 +793,10 @@ async fn validator_detects_tampering() {
     let ev = frames[idx].commit().unwrap();
     let data = ev.commit_obj().data;
     let mut car = Vec::new();
-    vlpds::car::write_header(&mut car, &ev.commit);
+    vlsync_atproto::car::write_header(&mut car, &ev.commit);
     for (c, b) in &ev.blocks {
         if *c != data || ev.blocks.len() < 3 {
-            vlpds::car::write_block(&mut car, c, b);
+            vlsync_atproto::car::write_block(&mut car, c, b);
         }
     }
     let mut t = frames.clone();
@@ -806,7 +806,7 @@ async fn validator_detects_tampering() {
         "missing proof block not detected"
     );
     // 4. wrong signing key
-    let other = vlpds::crypto::Keypair::generate();
+    let other = vlsync_atproto::crypto::Keypair::generate();
     let mut k2 = HashMap::new();
     k2.insert(a.did.clone(), k256::ecdsa::VerifyingKey::from_sec1_bytes(&other.public_key_sec1()).unwrap());
     assert!(validate_stream(&frames, &k2).0.iter().any(|f| f.contains("signature")), "bad signature not detected");

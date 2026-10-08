@@ -21,10 +21,7 @@
 //! frozen watermark. S3 reads stop at the first missing ordinal or the
 //! fence, so they only deliver the log's gap-free durable prefix.
 
-use crate::firehose::Firehose;
-use crate::nodelog::{read_object, LiveRecv, LogBatch, NodeLog};
-use crate::segment::{self, LogObject};
-use crate::store::Store;
+use crate::nodelog::{LiveRecv, NodeLog};
 use axum::extract::ws::{Message, WebSocket};
 use bytes::{Buf, BufMut, Bytes};
 use futures::{SinkExt, StreamExt};
@@ -32,6 +29,10 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+use vlsync_firehose::firehose::Firehose;
+use vlsync_firehose::log::{read_object, LogBatch};
+use vlsync_store::segment::{self, LogObject};
+use vlsync_store::store::Store;
 
 const HEARTBEAT: Duration = Duration::from_millis(5);
 /// A live log stream (or its connect) silent this long is presumed dead: a
@@ -228,11 +229,11 @@ async fn catch_up(
 ) -> anyhow::Result<bool> {
     let next = match next {
         Some(n) => n,
-        None => next.insert(crate::backfill::seek(store, log_id, floor).await?),
+        None => next.insert(vlsync_firehose::backfill::seek(store, log_id, floor).await?),
     };
     loop {
         match read_object(store, log_id, *next).await? {
-            None => match crate::backfill::first_ordinal(store, log_id).await? {
+            None => match vlsync_firehose::backfill::first_ordinal(store, log_id).await? {
                 // log retention deleted it (we are a whole window behind)
                 Some(first) if first > *next => {
                     tracing::warn!(%log_id, from = *next, to = first, "log pruned ahead of its follower; skipping");
@@ -338,7 +339,7 @@ async fn stream_live(
 /// Skipped rather than failing the stream: a reconnect would only meet it
 /// again.
 fn skip_unknown(log_id: &str, t: u8) {
-    crate::version::format_error("log_stream");
+    vlsync_store::version::format_error("log_stream");
     tracing::warn!(%log_id, message_type = t, "skipping a log stream message of an unknown type (a peer of a newer feature level?)");
 }
 
@@ -360,9 +361,9 @@ async fn next_msg(ws: &mut Ws, log_id: &str, base: &str) -> anyhow::Result<Optio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nodelog::segment_path;
-    use crate::segment::SegmentBuilder;
     use object_store::{ObjectStoreExt, PutPayload};
+    use vlsync_firehose::log::segment_path;
+    use vlsync_store::segment::SegmentBuilder;
 
     /// A batch claiming 4G events in a few bytes is an error, without
     /// reserving room for them first; a real one round-trips.
@@ -387,7 +388,7 @@ mod tests {
 
     async fn put(store: &Store, ord: u64, prefix_end: u64) {
         let mut b = SegmentBuilder::new();
-        b.push(1000 + ord as i64, crate::slots::ShardId(0), 1, |o| o.extend_from_slice(b"f"), &[]);
+        b.push(1000 + ord as i64, vlsync_store::slots::ShardId(0), 1, |o| o.extend_from_slice(b"f"), &[]);
         let mut obj = b.sealed_header("A", ord, prefix_end);
         obj.extend_from_slice(&b.body);
         store.raw.put(&segment_path(store, "A", ord), PutPayload::from(obj)).await.unwrap();
@@ -398,10 +399,10 @@ mod tests {
     #[test]
     fn unknown_message_types_are_skipped() {
         let log_id: Arc<str> = "A".into();
-        let before = crate::metrics::FORMAT_ERRORS.with_label_values(&["log_stream"]).get();
+        let before = vlsync_store::metrics::FORMAT_ERRORS.with_label_values(&["log_stream"]).get();
         assert!(matches!(decode(&log_id, Bytes::from_static(&[7, 1, 2, 3])).unwrap(), StreamMsg::Unknown(7)));
         skip_unknown("A", 7);
-        assert_eq!(crate::metrics::FORMAT_ERRORS.with_label_values(&["log_stream"]).get(), before + 1);
+        assert_eq!(vlsync_store::metrics::FORMAT_ERRORS.with_label_values(&["log_stream"]).get(), before + 1);
         assert!(matches!(decode(&log_id, encode_watermark(42)).unwrap(), StreamMsg::Watermark(42)));
         let b = LogBatch { log_id: log_id.clone(), ordinal: 9, events: vec![(5, Bytes::from_static(b"f"))] };
         let StreamMsg::Batch(back) = decode(&log_id, encode_batch(&b)).unwrap() else { panic!() };

@@ -198,8 +198,8 @@ async fn post_op(State(s): State<Arc<Inner>>, Path(did): Path<String>, body: axu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::Keypair;
     use crate::plc::Plc;
+    use vlsync_atproto::crypto::Keypair;
 
     #[tokio::test]
     async fn mock_directory_round_trip() {
@@ -208,7 +208,7 @@ mod tests {
         let signing = Keypair::generate().did_key();
         let (did, op) = plc.genesis(&signing, "alice.test", "https://pds.example", None).unwrap();
         // a genesis op posted under another DID is refused
-        let other = crate::crypto::random_plc_did();
+        let other = vlsync_atproto::crypto::random_plc_did();
         assert!(matches!(
             plc.client.send(&other, &op, "create").await,
             Err(crate::plc::PlcError::Rejected { status: 400, .. })

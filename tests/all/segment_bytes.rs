@@ -56,7 +56,7 @@ async fn segment_bytes_per_commit() {
     for m in metas.iter().rev().take(50) {
         let data = store.raw.get(&m.location).await.unwrap().bytes().await.unwrap();
         total += data.len();
-        let vlpds::segment::LogObject::Segment(_, entries) = vlpds::segment::parse(data, true, None).unwrap() else {
+        let vlsync_store::segment::LogObject::Segment(_, entries) = vlpds::derived::parse(data, None).unwrap() else {
             continue;
         };
         for e in entries {

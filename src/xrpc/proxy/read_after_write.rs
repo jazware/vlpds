@@ -269,13 +269,13 @@ impl Local {
 }
 
 fn rev_time(rev: u64) -> String {
-    let us = crate::tid::Tid(rev).micros() as i64;
+    let us = vlsync_atproto::tid::Tid(rev).micros() as i64;
     chrono::DateTime::from_timestamp_micros(us).unwrap_or_default().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 fn record_json(bytes: &[u8]) -> Option<J> {
     let mut out = Vec::with_capacity(bytes.len() * 2);
-    crate::cbor::write_json(bytes, &mut out).ok()?;
+    vlsync_atproto::cbor::write_json(bytes, &mut out).ok()?;
     serde_json::from_slice(&out).ok()
 }
 
@@ -316,7 +316,7 @@ async fn records_since(app: &App, did: &str, part: recent_writes::Part, since: u
     }
     let Some(raw) = p.db.get(state::head_key(did)).await? else { return Ok(Vec::new()) };
     let head = state::Head::decode(&raw)?;
-    let nonempty = head.data != *recent_writes::EMPTY_ROOT;
+    let nonempty = head.data != *vlsync_atproto::mst::EMPTY_ROOT;
     if since >= head.rev.0 {
         let read = recent_writes::Read { head: head.rev.0, base: head.rev.0, old_exists: nonempty, recs: Vec::new() };
         recent_writes::fill(did, part, gen, read, since);
@@ -326,7 +326,7 @@ async fn records_since(app: &App, did: &str, part: recent_writes::Part, since: u
     // keeping only the oldest MAX_RECS of them (a max-heap on (rev, path))
     let repo_gen = app.repo_gen(did).await.map_err(|e| anyhow::anyhow!(e.message))?;
     let prefix = state::record_prefix(did, repo_gen);
-    let mut iter = p.db.scan(prefix.clone()..state::prefix_end(&prefix)).await?;
+    let mut iter = p.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await?;
     let mut kept = std::collections::BinaryHeap::<ByRev>::with_capacity(recent_writes::MAX_RECS + 1);
     let (mut above, mut old, mut top) = (0usize, false, head.rev.0);
     while let Some(kv) = iter.next().await? {
@@ -853,7 +853,8 @@ pub(super) async fn proxy(
         }
         return Ok(err.into_response());
     }
-    let Some(rev) = parts.headers.get(REPO_REV).and_then(|v| v.to_str().ok()).and_then(crate::tid::Tid::parse) else {
+    let Some(rev) = parts.headers.get(REPO_REV).and_then(|v| v.to_str().ok()).and_then(vlsync_atproto::tid::Tid::parse)
+    else {
         return Ok(passthrough(parts, body));
     };
     let json = parts.headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).is_none_or(is_json_content_type);
@@ -929,7 +930,7 @@ fn query_params(pq: &str) -> Vec<(String, String)> {
 /// yet (reference `readAfterWriteNotFound`): the thread is built locally,
 /// its parents fetched from the AppView.
 async fn thread_not_found(app: &App, acct: &CachedAcct, did: &str, pq: &str, headers: &HeaderMap) -> Option<Response> {
-    let rev = headers.get(REPO_REV)?.to_str().ok().and_then(crate::tid::Tid::parse)?;
+    let rev = headers.get(REPO_REV)?.to_str().ok().and_then(vlsync_atproto::tid::Tid::parse)?;
     let params = query_params(pq);
     let param = |k: &str| params.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
     let (host, coll, rkey) = at_uri_parts(param("uri")?)?;

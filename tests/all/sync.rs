@@ -178,8 +178,8 @@ async fn get_repo_since_returns_diff() {
     // Applying the diff on top of the old block set yields the full new repo.
     let mut merged = full.blocks.clone();
     merged.extend(diff.blocks.clone());
-    let tree =
-        vlpds::mst::Tree::load_from_blocks(&merged, diff.commit().data).expect("diff + old blocks = complete tree");
+    let tree = vlsync_atproto::mst::Tree::load_from_blocks(&merged, diff.commit().data)
+        .expect("diff + old blocks = complete tree");
     let mut n = 0;
     tree.walk(&mut |_, _| n += 1);
     assert_eq!(n, 21);
@@ -222,7 +222,7 @@ async fn record_non_inclusion_proof() {
     let refs = make_posts(&s, &a, 30, &mut model).await;
     let key = s.signing_key(&a.did).await;
     // a fresh TID rkey that doesn't exist, and a deleted one
-    let missing = vlpds::tid::TidClock::new().next().to_string();
+    let missing = vlsync_atproto::tid::TidClock::new().next().to_string();
     s.xrpc
         .post(
             "com.atproto.repo.deleteRecord",
@@ -259,7 +259,7 @@ async fn get_blocks() {
         )
         .await;
     assert_eq!(resp.status, 200, "{}", resp.text());
-    let (_, blocks) = vlpds::car::read_car(&resp.body).unwrap();
+    let (_, blocks) = vlsync_atproto::car::read_car(&resp.body).unwrap();
     let got: std::collections::HashSet<String> = blocks.iter().map(|(c, _)| c.to_string()).collect();
     for c in [&r1.cid, &r2.cid, &commit] {
         assert!(got.contains(c), "getBlocks returned {c}");

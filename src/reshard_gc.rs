@@ -15,8 +15,6 @@
 
 use crate::cluster::Assignment;
 use crate::metrics;
-use crate::slots::{Layout, ShardId};
-use crate::store::Store;
 use futures::StreamExt;
 use object_store::path::Path;
 use object_store::ObjectStoreExt;
@@ -26,6 +24,8 @@ use slatedb::{Db, VersionedManifest};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use vlsync_store::slots::{Layout, ShardId};
+use vlsync_store::store::Store;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -551,7 +551,7 @@ mod tests {
     type OwnedDbs = Arc<Mutex<Vec<(ShardId, Arc<Db>)>>>;
 
     fn k(slot: u16, rest: &str) -> Vec<u8> {
-        crate::state::slot_family(slot, rest.as_bytes())
+        vlsync_store::keys::slot_family(slot, rest.as_bytes())
     }
 
     async fn put_json<T: serde::Serialize>(store: &Store, rel: &str, v: &T) {
@@ -562,10 +562,11 @@ mod tests {
             .unwrap();
     }
 
-    fn layout(shards: &[(u32, u32, u32)], next_id: u32, op: Option<crate::slots::Reshard>) -> Layout {
+    fn layout(shards: &[(u32, u32, u32)], next_id: u32, op: Option<vlsync_store::slots::Reshard>) -> Layout {
         let mut l = Layout::uniform(1);
         l.version = 2;
-        l.shards = shards.iter().map(|&(id, lo, hi)| crate::slots::ShardRange { id: ShardId(id), lo, hi }).collect();
+        l.shards =
+            shards.iter().map(|&(id, lo, hi)| vlsync_store::slots::ShardRange { id: ShardId(id), lo, hi }).collect();
         l.next_id = ShardId(next_id);
         l.op_seq = 1;
         l.op = op;
@@ -683,7 +684,7 @@ mod tests {
         let keys = parent(&store, ShardId(0), 400).await;
         put_json(&store, "assign/0000000000", &Assignment { frozen: Some(1), ..Default::default() }).await;
         // the op is still pending: nothing is touched
-        let op = crate::slots::Reshard {
+        let op = vlsync_store::slots::Reshard {
             id: 1,
             parents: vec![ShardId(0)],
             children: vec![],
@@ -1031,7 +1032,7 @@ mod tests {
         assert!(!g.dir_pass().await.unwrap().skipped);
         assert!(g.dir_pass().await.unwrap().skipped);
         // the split is planned: nothing touched, nothing skipped
-        let op = crate::slots::Reshard {
+        let op = vlsync_store::slots::Reshard {
             id: 1,
             parents: vec![ShardId(0)],
             children: vec![],

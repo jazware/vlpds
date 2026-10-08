@@ -62,7 +62,7 @@ async fn get_shard_layout(State(app): AppState, Auth(creds): Auth) -> XResult<Js
 
 #[derive(Deserialize)]
 struct SplitIn {
-    shard: crate::slots::ShardId,
+    shard: vlsync_store::slots::ShardId,
     at: Option<u32>,
     #[serde(default)]
     wait: bool,
@@ -71,8 +71,8 @@ struct SplitIn {
 
 #[derive(Deserialize)]
 struct MergeIn {
-    left: crate::slots::ShardId,
-    right: crate::slots::ShardId,
+    left: vlsync_store::slots::ShardId,
+    right: vlsync_store::slots::ShardId,
     #[serde(default)]
     wait: bool,
     actor: Option<String>,
@@ -318,7 +318,7 @@ pub(super) async fn create_invites(
             return Err(invalid_request(format!("{d} is not a served handle domain")));
         }
     }
-    let now = crate::events::now_rfc3339();
+    let now = vlsync_atproto::events::now_rfc3339();
     for code in codes {
         let inv = InviteCode {
             code: code.clone(),
@@ -403,7 +403,7 @@ pub(super) async fn release_invite_use(app: &App, claim: InviteClaim) {
 }
 
 pub(super) async fn record_invite_use(app: &App, claim: &InviteClaim, did: &str) -> XResult<()> {
-    let used_at = crate::events::now_rfc3339();
+    let used_at = vlsync_atproto::events::now_rfc3339();
     let found = update_invite(app, &claim.code, |inv| {
         // a retried request mustn't list the account twice
         if inv.uses.iter().any(|u| u.used_by == did) {
@@ -472,7 +472,7 @@ pub(super) async fn set_subject_takedown(app: &App, did: &str, name: &str, val: 
 /// (`at://{authority}/space/{type}/{skey}/{did}/{collection}/{rkey}`)
 /// `space/{sid}/{collection}/{rkey}`.
 pub(super) fn record_takedown_name(uri: &str, did: &str) -> XResult<String> {
-    if let Some(u) = super::syntax::parse_space_uri(uri) {
+    if let Some(u) = vlsync_atproto::syntax::parse_space_uri(uri) {
         let (author, collection, rkey) = u.record.ok_or_else(|| invalid_request("not a space record uri"))?;
         if author != did {
             return Err(invalid_request("invalid at-uri"));
@@ -485,7 +485,7 @@ pub(super) fn record_takedown_name(uri: &str, did: &str) -> XResult<String> {
 
 /// The account a record subject's URI names: a space record's author.
 fn record_uri_did(uri: &str) -> Option<&str> {
-    if let Some(u) = super::syntax::parse_space_uri(uri) {
+    if let Some(u) = vlsync_atproto::syntax::parse_space_uri(uri) {
         return u.record.map(|(author, _, _)| author);
     }
     uri.strip_prefix("at://").and_then(|r| r.split('/').next()).filter(|d| d.starts_with("did:"))
@@ -587,7 +587,7 @@ impl SearchQ {
             Some(c) => {
                 let (p, d) = c.split_once(':').ok_or_else(|| invalid_request("Malformed cursor"))?;
                 let slot = p.parse::<u32>().map_err(|_| invalid_request("Malformed cursor"))?;
-                if d.is_empty() || crate::slots::slot_of(d) as u32 != slot {
+                if d.is_empty() || vlsync_store::slots::slot_of(d) as u32 != slot {
                     return Err(invalid_request("Malformed cursor"));
                 }
                 Some(d.to_string())
@@ -603,12 +603,12 @@ impl SearchQ {
 pub(super) async fn search_accounts_local(
     app: &App,
     q: &SearchQ,
-) -> XResult<(Vec<AccountHit>, Vec<crate::slots::ShardId>)> {
+) -> XResult<(Vec<AccountHit>, Vec<vlsync_store::slots::ShardId>)> {
     let (limit, email, after) = q.parsed()?;
     let layout = app.partitions.layout();
     let mut owned = app.partitions.owned();
     owned.sort_by_key(|p| layout.range_of(p.id).map_or(u32::MAX, |r| r.lo));
-    let ids: Vec<crate::slots::ShardId> = owned.iter().map(|p| p.id).collect();
+    let ids: Vec<vlsync_store::slots::ShardId> = owned.iter().map(|p| p.id).collect();
     let start = after.as_deref().map(|d| [state::account_key(d), vec![0]].concat());
     let mut out = Vec::new();
     for p in owned {
@@ -648,7 +648,7 @@ async fn search_accounts(State(app): AppState, Auth(creds): Auth, Query(q): Quer
         query.push(("cursor", c.clone()));
     }
     let g = super::internal::gather(&app, "/internal/v1/admin/searchAccounts", &query).await;
-    let mut covered: std::collections::HashSet<crate::slots::ShardId> = owned.into_iter().collect();
+    let mut covered: std::collections::HashSet<vlsync_store::slots::ShardId> = owned.into_iter().collect();
     for r in g.replies {
         covered.extend(r.owned);
         hits.extend(serde_json::from_value::<Vec<AccountHit>>(r.body["accounts"].clone()).unwrap_or_default());
@@ -658,7 +658,7 @@ async fn search_accounts(State(app): AppState, Auth(creds): Auth, Query(q): Quer
     hits.truncate(limit);
     let cursor = (hits.len() == limit).then(|| hits.last().map(|h| format!("{}:{}", h.slot, h.did))).flatten();
     // slots before the cursor's are done; only shards past it can be missing
-    let from = after.map(|d| crate::slots::slot_of(&d) as u32).unwrap_or(0);
+    let from = after.map(|d| vlsync_store::slots::slot_of(&d) as u32).unwrap_or(0);
     let mut res = json!({"accounts": hits.into_iter().map(|h| h.view).collect::<Vec<_>>()});
     if let Some(c) = cursor {
         res["cursor"] = json!(c);
@@ -675,10 +675,10 @@ pub(super) fn partial_fields(
     res: &mut J,
     unreachable: Vec<String>,
     unsupported: Vec<String>,
-    covered: &std::collections::HashSet<crate::slots::ShardId>,
+    covered: &std::collections::HashSet<vlsync_store::slots::ShardId>,
     from: u32,
 ) {
-    let missing: Vec<crate::slots::ShardId> = app
+    let missing: Vec<vlsync_store::slots::ShardId> = app
         .partitions
         .layout()
         .shards
@@ -870,7 +870,7 @@ fn parse_subject(s: &J) -> XResult<Subject> {
         "com.atproto.admin.defs#repoRef" => Ok(Subject::Repo(field("did")?)),
         "com.atproto.repo.strongRef" => {
             let uri = field("uri")?;
-            if let Some(u) = super::syntax::parse_space_uri(&uri).filter(|u| u.record.is_none()) {
+            if let Some(u) = vlsync_atproto::syntax::parse_space_uri(&uri).filter(|u| u.record.is_none()) {
                 let did = u.authority.to_string();
                 return Ok(Subject::Space { uri: format!("at://{did}/space/{}/{}", u.space_type, u.skey), did });
             }
@@ -1196,9 +1196,9 @@ impl InviteCodesQ {
 pub(super) async fn invite_codes_local(
     app: &App,
     q: &InviteCodesQ,
-) -> XResult<(Vec<InviteCode>, Vec<crate::slots::ShardId>)> {
+) -> XResult<(Vec<InviteCode>, Vec<vlsync_store::slots::ShardId>)> {
     let (usage, limit, after) = q.parsed()?;
-    let owned: Vec<crate::slots::ShardId> = app.partitions.owned().iter().map(|p| p.id).collect();
+    let owned: Vec<vlsync_store::slots::ShardId> = app.partitions.owned().iter().map(|p| p.id).collect();
     let mut all: Vec<(InviteKey, InviteCode)> = scan_private_routing(app, "_invite:")
         .await?
         .into_iter()
@@ -1223,7 +1223,7 @@ async fn get_invite_codes(State(app): AppState, Auth(creds): Auth, Query(q): Que
         query.push(("cursor", c.clone()));
     }
     let g = super::internal::gather(&app, "/internal/v1/admin/inviteCodes", &query).await;
-    let mut covered: std::collections::HashSet<crate::slots::ShardId> = owned.into_iter().collect();
+    let mut covered: std::collections::HashSet<vlsync_store::slots::ShardId> = owned.into_iter().collect();
     for r in g.replies {
         covered.extend(r.owned);
         let codes = serde_json::from_value::<Vec<InviteCode>>(r.body["codes"].clone()).unwrap_or_default();
@@ -1342,7 +1342,7 @@ const BULK_EXISTS_CONCURRENCY: usize = 64;
 async fn bulk_create(State(app): AppState, headers: HeaderMap, Json(inp): Json<BulkCreateIn>) -> XResult<Json<J>> {
     use futures::StreamExt;
     let tok = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "));
-    if !tok.is_some_and(|t| crate::auth::token_eq(&app.admin_token, t)) {
+    if !tok.is_some_and(|t| vlsync_atproto::xrpc::token_eq(&app.admin_token, t)) {
         return Err(XrpcError::auth("admin token required"));
     }
     if !(app.config.dev_mode || app.config.allow_bulk_create) {
@@ -1405,7 +1405,7 @@ async fn bulk_create(State(app): AppState, headers: HeaderMap, Json(inp): Json<B
             signing_pubkey,
             // a request's accounts share one hash (Argon2id is ~20 ms each)
             password_hash: password_hash.clone(),
-            created_at: crate::events::now_rfc3339(),
+            created_at: vlsync_atproto::events::now_rfc3339(),
             ..Default::default()
         };
         let mut recs = Vec::with_capacity(n as usize);
@@ -1463,7 +1463,7 @@ async fn bulk_password_hash(password: Option<String>) -> XResult<String> {
         None => return Ok(BULK_RANDOM_PASSWORD_HASH.clone()),
     };
     if let Some((p, h)) = LAST.lock().as_ref() {
-        if crate::auth::token_eq(p, &pw) {
+        if vlsync_atproto::xrpc::token_eq(p, &pw) {
             return Ok(h.clone());
         }
     }
@@ -1482,13 +1482,13 @@ static BULK_RANDOM_PASSWORD_HASH: std::sync::LazyLock<String> =
 /// Answers carry `scanned` and `layoutVersion`, so the CLI can check that
 /// the union of the nodes' answers covers the layout (a shard moving
 /// between two nodes' calls is otherwise skipped by both).
-fn scan_set(app: &App, only: &Option<Vec<crate::slots::ShardId>>) -> (Vec<Arc<Partition>>, J) {
+fn scan_set(app: &App, only: &Option<Vec<vlsync_store::slots::ShardId>>) -> (Vec<Arc<Partition>>, J) {
     let mut parts = app.partitions.owned();
     if let Some(only) = only {
         parts.retain(|p| only.contains(&p.id));
     }
     parts.sort_by_key(|p| p.id);
-    let ids: Vec<crate::slots::ShardId> = parts.iter().map(|p| p.id).collect();
+    let ids: Vec<vlsync_store::slots::ShardId> = parts.iter().map(|p| p.id).collect();
     (parts, json!({"scanned": ids, "layoutVersion": app.partitions.layout().version}))
 }
 
@@ -1511,7 +1511,7 @@ async fn accounts_of(parts: &[Arc<Partition>]) -> XResult<Vec<Account>> {
 struct RotatePlcIn {
     #[serde(default)]
     dry_run: bool,
-    shards: Option<Vec<crate::slots::ShardId>>,
+    shards: Option<Vec<vlsync_store::slots::ShardId>>,
     actor: Option<String>,
 }
 
@@ -1533,8 +1533,12 @@ async fn rotate_plc_keys(
     let inp = body.map(|Json(b)| b).unwrap_or_default();
     let dry = inp.dry_run;
     let (parts, coverage) = scan_set(&app, &inp.shards);
-    let dids: Vec<String> =
-        accounts_of(&parts).await?.into_iter().map(|a| a.did).filter(|d| crate::plc::valid_plc_did(d)).collect();
+    let dids: Vec<String> = accounts_of(&parts)
+        .await?
+        .into_iter()
+        .map(|a| a.did)
+        .filter(|d| vlsync_atproto::plc::valid_plc_did(d))
+        .collect();
     let accounts = dids.len();
     let results: Vec<(String, Result<crate::plc::KeyRotation, crate::plc::PlcError>)> = futures::stream::iter(dids)
         .map(|did| {
@@ -1599,7 +1603,7 @@ async fn rotate_plc_keys(
 struct EnsureRecoveryIn {
     #[serde(default)]
     dry_run: bool,
-    shards: Option<Vec<crate::slots::ShardId>>,
+    shards: Option<Vec<vlsync_store::slots::ShardId>>,
     /// DIDs started per second (each is a directory read, plus a submit
     /// when the key is added).
     per_second: Option<f64>,
@@ -1636,8 +1640,12 @@ async fn ensure_recovery_key(
     let period = std::time::Duration::from_secs_f64(1.0 / per_second);
     let next = Arc::new(tokio::sync::Mutex::new(tokio::time::Instant::now()));
     let (parts, coverage) = scan_set(&app, &inp.shards);
-    let dids: Vec<String> =
-        accounts_of(&parts).await?.into_iter().map(|a| a.did).filter(|d| crate::plc::valid_plc_did(d)).collect();
+    let dids: Vec<String> = accounts_of(&parts)
+        .await?
+        .into_iter()
+        .map(|a| a.did)
+        .filter(|d| vlsync_atproto::plc::valid_plc_did(d))
+        .collect();
     let accounts = dids.len();
     let results: Vec<(String, Result<crate::plc::RecoveryKeyChange, crate::plc::PlcError>)> =
         futures::stream::iter(dids)
@@ -1725,7 +1733,7 @@ struct RewrapIn {
     /// decrypt each).
     #[serde(default)]
     check_versions: bool,
-    shards: Option<Vec<crate::slots::ShardId>>,
+    shards: Option<Vec<vlsync_store::slots::ShardId>>,
     actor: Option<String>,
 }
 

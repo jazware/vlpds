@@ -1,63 +1,24 @@
-//! Outbound HTTP clients, one per role, each built once and shared so
-//! connections are reused (DESIGN.md "HTTP"): [`PeerClient`] (node to
-//! node), [`public`] (operator-configured upstreams), [`proxy`] and [`h1`]
-//! (the AppView proxy), and [`guarded`] (URLs derived from untrusted input).
+//! The PDS's outbound HTTP clients, one per role, each built once and shared
+//! so connections are reused (DESIGN.md "HTTP"): [`PeerClient`] (node to
+//! node), [`dedicated`] (key material), and [`proxy`] and [`h1`] (the
+//! AppView proxy). vlsync-atproto's `http` has the shared ones: `public`
+//! (operator-configured upstreams) and `guarded` (URLs derived from
+//! untrusted input).
 //!
 //! No client follows redirects: forwarded and proxied responses go back to
 //! the caller as they are, and a redirect from a user-controlled host could
 //! point anywhere.
 
-use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
-
-const USER_AGENT: &str = concat!("vlpds/", env!("CARGO_PKG_VERSION"));
+use vlsync_atproto::http::{base, outbound, outbound_no_read_timeout};
 
 /// reqwest multiplexes every request to a host over ONE h2 connection;
 /// several spread the connection driver's work over threads and keep one
 /// stalled connection from black-holing every forward.
 pub const DEFAULT_PEER_CONNECTIONS: usize = 4;
-
-fn base(role: &'static str) -> reqwest::ClientBuilder {
-    reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .tcp_nodelay(true)
-        .tcp_keepalive(Duration::from_secs(30))
-        .redirect(reqwest::redirect::Policy::none())
-        .connector_layer(CountConnects(role))
-}
-
-/// `max_idle` must cover the steady-state concurrency per host: a busy
-/// HTTP/1.1 upstream beyond it opens and closes a connection per request.
-fn outbound(role: &'static str, max_idle: usize) -> reqwest::ClientBuilder {
-    outbound_no_read_timeout(role, max_idle).read_timeout(Duration::from_secs(30))
-}
-
-/// reqwest re-arms the read timeout for every body frame, and every tokio
-/// timer operation takes the runtime's one timer-wheel lock: callers that
-/// bound their requests themselves skip it.
-fn outbound_no_read_timeout(role: &'static str, max_idle: usize) -> reqwest::ClientBuilder {
-    base(role)
-        .connect_timeout(Duration::from_secs(5))
-        .pool_max_idle_per_host(max_idle)
-        // below the 90-120 s idle close of common load balancers/CDNs, so we
-        // close first instead of racing a reused socket the server dropped
-        .pool_idle_timeout(Duration::from_secs(60))
-        .http2_keep_alive_interval(Duration::from_secs(20))
-        .http2_keep_alive_timeout(Duration::from_secs(10))
-        .http2_adaptive_window(true)
-}
-
-/// Operator-configured upstreams. Callers set per-request deadlines.
-pub fn public() -> &'static reqwest::Client {
-    static C: LazyLock<reqwest::Client> = LazyLock::new(|| {
-        // the AppView proxy runs ~100-500 requests in flight to one host
-        outbound("public", 1024).build().expect("reqwest client")
-    });
-    &C
-}
 
 /// An operator-configured upstream holding key material (Vault) with its
 /// own pool, optionally also trusting `ca_pem` (PEM certificates) for a
@@ -312,7 +273,7 @@ pub mod h1 {
         host: &Host,
         permit: OwnedSemaphorePermit,
     ) -> Result<SendRequest<Body>, BoxError> {
-        crate::metrics::HTTP_CLIENT_CONNECTS.with_label_values(&[role]).inc();
+        vlsync_atproto::http::HTTP_CLIENT_CONNECTS.with_label_values(&[role]).inc();
         let authority = &*host.authority;
         let connect = async {
             let mut last = None;
@@ -346,7 +307,7 @@ pub mod h1 {
         let host = self::host(authority);
         let h = req.headers_mut();
         h.insert(http::header::HOST, http::HeaderValue::from_str(authority)?);
-        h.entry(http::header::USER_AGENT).or_insert(http::HeaderValue::from_static(USER_AGENT));
+        h.entry(http::header::USER_AGENT).or_insert(http::HeaderValue::from_static(vlsync_atproto::http::user_agent()));
         h.entry(http::header::ACCEPT).or_insert(http::HeaderValue::from_static("*/*"));
         // a request body still uploading when the response ends keeps its
         // connection busy: such a connection is not pooled (PooledBody)
@@ -688,78 +649,6 @@ pub mod stall {
     }
 }
 
-/// The one client for destinations taken from untrusted input (DID
-/// documents, handles, OAuth client metadata, `atproto-proxy`). Every
-/// request URL passes [`crate::did_resolver::check_outbound_url`] (https
-/// only, no non-public IP literals: the resolver never sees those), and DNS
-/// names resolve through [`PublicOnlyResolver`], whose vetted addresses are
-/// the ones connected to, so a rebinding answer can't slip in between check
-/// and connect. Redirects aren't followed and no system proxy is used (it
-/// would resolve the name itself). Dev mode (`--dev-mode`, tests) allows
-/// http and any address. Callers bound the response size and overall time.
-#[derive(Clone, Copy, Debug)]
-pub struct Guarded {
-    dev_mode: bool,
-    fanout: bool,
-}
-
-pub fn guarded(dev_mode: bool) -> Guarded {
-    Guarded { dev_mode, fanout: false }
-}
-
-/// [`guarded`] on a pool of its own for Spaces write notifications to
-/// registered services: kept-alive connections to the same few syncers
-/// (HTTP/2 where their ALPN offers it), apart from the one-off fetches.
-pub fn guarded_fanout(dev_mode: bool) -> Guarded {
-    Guarded { dev_mode, fanout: true }
-}
-
-impl Guarded {
-    pub fn request(&self, method: reqwest::Method, url: &str) -> Result<reqwest::RequestBuilder, String> {
-        let u = reqwest::Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
-        crate::did_resolver::check_outbound_url(&u, self.dev_mode)?;
-        let client = match self.fanout {
-            true => fanout_client(self.dev_mode),
-            false => guarded_client(self.dev_mode),
-        };
-        Ok(client.request(method, u))
-    }
-
-    pub fn get(&self, url: &str) -> Result<reqwest::RequestBuilder, String> {
-        self.request(reqwest::Method::GET, url)
-    }
-}
-
-fn guarded_client(dev_mode: bool) -> &'static reqwest::Client {
-    static STRICT: LazyLock<reqwest::Client> = LazyLock::new(|| {
-        outbound("guarded", 32).no_proxy().dns_resolver(Arc::new(PublicOnlyResolver)).build().expect("reqwest client")
-    });
-    static DEV: LazyLock<reqwest::Client> =
-        LazyLock::new(|| outbound("guarded", 32).no_proxy().build().expect("reqwest client"));
-    if dev_mode {
-        &DEV
-    } else {
-        &STRICT
-    }
-}
-
-fn fanout_client(dev_mode: bool) -> &'static reqwest::Client {
-    static STRICT: LazyLock<reqwest::Client> = LazyLock::new(|| {
-        outbound("space_fanout", 64)
-            .no_proxy()
-            .dns_resolver(Arc::new(PublicOnlyResolver))
-            .build()
-            .expect("reqwest client")
-    });
-    static DEV: LazyLock<reqwest::Client> =
-        LazyLock::new(|| outbound("space_fanout", 64).no_proxy().build().expect("reqwest client"));
-    if dev_mode {
-        &DEV
-    } else {
-        &STRICT
-    }
-}
-
 /// Node-to-node client: h2 over peer mTLS, `n` clients (one connection
 /// each) per peer origin, picked round-robin. Each origin's TLS config checks
 /// that the server's certificate names the node the cluster expects there.
@@ -824,7 +713,7 @@ pub fn split_origin(url: &str) -> (&str, &str) {
 /// Trusts no CA, so every request fails.
 fn refusing() -> &'static reqwest::Client {
     static C: LazyLock<reqwest::Client> = LazyLock::new(|| {
-        let tls = rustls::ClientConfig::builder_with_provider(crate::peer_tls::provider())
+        let tls = rustls::ClientConfig::builder_with_provider(vlsync_atproto::http::tls_provider())
             .with_protocol_versions(&[&rustls::version::TLS13])
             .expect("TLS 1.3 with the ring provider")
             .with_root_certificates(rustls::RootCertStore::empty())
@@ -940,157 +829,9 @@ fn peer_builder() -> reqwest::ClientBuilder {
         .timeout(Duration::from_secs(15))
 }
 
-/// SSRF guard: a hostname can't be used to reach internal services.
-struct PublicOnlyResolver;
-
-impl reqwest::dns::Resolve for PublicOnlyResolver {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let host = name.as_str().to_string();
-        Box::pin(async move {
-            let addrs = public_addrs(&host).await?;
-            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
-        })
-    }
-}
-
-async fn public_addrs(host: &str) -> Result<Vec<SocketAddr>, Box<dyn std::error::Error + Send + Sync>> {
-    let addrs: Vec<SocketAddr> =
-        tokio::net::lookup_host((host, 0)).await?.filter(|a| crate::did_resolver::is_public_ip(a.ip())).collect();
-    if addrs.is_empty() {
-        return Err(format!("{host} did not resolve to a public unicast address").into());
-    }
-    Ok(addrs)
-}
-
-/// `vlpds_http_client_connects_total{role}`: reuse regressions show up.
-#[derive(Clone)]
-struct CountConnects(&'static str);
-
-impl<S> tower::Layer<S> for CountConnects {
-    type Service = Counted<S>;
-    fn layer(&self, inner: S) -> Counted<S> {
-        Counted { inner, role: self.0 }
-    }
-}
-
-#[derive(Clone)]
-struct Counted<S> {
-    inner: S,
-    role: &'static str,
-}
-
-impl<S: tower::Service<R>, R> tower::Service<R> for Counted<S> {
-    type Response = S::Response;
-    type Error = S::Error;
-    type Future = S::Future;
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), S::Error>> {
-        self.inner.poll_ready(cx)
-    }
-    fn call(&mut self, req: R) -> S::Future {
-        crate::metrics::HTTP_CLIENT_CONNECTS.with_label_values(&[self.role]).inc();
-        self.inner.call(req)
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-
-    /// A loopback listener counting the connections it accepts.
-    async fn counting_listener() -> (u16, Arc<AtomicUsize>) {
-        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = l.local_addr().unwrap().port();
-        let n = Arc::new(AtomicUsize::new(0));
-        let seen = n.clone();
-        tokio::spawn(async move {
-            while let Ok((s, _)) = l.accept().await {
-                seen.fetch_add(1, Ordering::SeqCst);
-                drop(s);
-            }
-        });
-        (port, n)
-    }
-
-    #[tokio::test]
-    async fn guarded_refuses_private_hosts() {
-        let (port, accepted) = counting_listener().await;
-        // refused before any connection: a non-https scheme, loopback names,
-        // and non-public IP literals in every spelling the URL parser reads
-        let local = [
-            "http://example.com",
-            "ftp://example.com",
-            "file:///etc/passwd",
-            "https://localhost:{port}",
-            "https://LOCALHOST.:{port}",
-            "https://a.b.localhost:{port}",
-            "https://127.0.0.1:{port}",
-            "https://127.0.0.1.:{port}",
-            "https://127.1:{port}",
-            "https://2130706433:{port}",
-            "https://0x7f000001:{port}",
-            "https://0x7f.1:{port}",
-            "https://0177.0.0.1:{port}",
-            "https://[::1]:{port}",
-            "https://[::ffff:127.0.0.1]:{port}",
-            "https://[::ffff:7f00:1]:{port}",
-            "https://[64:ff9b::7f00:1]:{port}",
-            "https://[2002:7f00:1::]:{port}",
-            "https://0.0.0.0:{port}",
-            "https://169.254.169.254/latest/meta-data/",
-            "https://[fd00:ec2::254]/latest/meta-data/",
-            "https://[fe80::1%25en0]/",
-            "https://10.0.0.1/",
-            "https://172.16.0.1/",
-            "https://192.168.1.1/",
-            "https://100.64.0.1/",
-            "https://224.0.0.1/",
-            "https://255.255.255.255/",
-        ];
-        for u in local {
-            let u = u.replace("{port}", &port.to_string());
-            let e = guarded(false).get(&u).unwrap_err();
-            assert!(
-                e.contains("non-unicast") || e.contains("Forbidden protocol") || e.contains("invalid URL"),
-                "{u}: {e}"
-            );
-        }
-        // a public address passes the URL check (nothing is sent here)
-        assert!(guarded(false).get("https://8.8.8.8/x").is_ok());
-        assert!(guarded(false).get("https://example.com/x").is_ok());
-
-        // a DNS name resolving to loopback, past the URL check: the strict
-        // client's resolver refuses it, and the vetted addresses are the ones
-        // connected to, so no answer can change between check and connect
-        let url = format!("http://localhost:{port}/.well-known/atproto-did");
-        let e = guarded_client(false).get(&url).send().await.unwrap_err();
-        assert!(e.is_connect(), "{e:?}");
-        assert!(format!("{e:?}").contains("public unicast"), "{e:?}");
-        assert!(public_addrs("localhost").await.is_err());
-        assert_eq!(accepted.load(Ordering::SeqCst), 0);
-
-        // dev mode reaches it
-        let _ = tokio::time::timeout(Duration::from_secs(2), guarded(true).get(&url).unwrap().send()).await;
-        assert_eq!(accepted.load(Ordering::SeqCst), 1);
-    }
-
-    /// A redirect from an untrusted host comes back as the response; its
-    /// target (an internal service here) is never contacted.
-    #[tokio::test]
-    async fn guarded_never_follows_redirects() {
-        let (internal, hits) = counting_listener().await;
-        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let front = format!("http://{}/.well-known/did.json", l.local_addr().unwrap());
-        let to = format!("http://127.0.0.1:{internal}/metrics");
-        let router = axum::Router::new().fallback(move || {
-            let to = to.clone();
-            async move { (axum::http::StatusCode::FOUND, [(axum::http::header::LOCATION, to)]) }
-        });
-        tokio::spawn(async move { axum::serve(l, router).await.unwrap() });
-        let r = guarded(true).get(&front).unwrap().send().await.unwrap();
-        assert_eq!(r.status(), 302);
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(hits.load(Ordering::SeqCst), 0);
-    }
 
     #[test]
     fn origins_and_bulk_paths() {
@@ -1114,7 +855,7 @@ pub(crate) mod tests {
         let router = axum::Router::new().route("/", axum::routing::get(|| async { "ok" }));
         let url = format!("{}/", tls_peer(&ca, "server", router).await);
         let peers = PeerClient::new(3, ca.node("client"));
-        let count = || crate::metrics::HTTP_CLIENT_CONNECTS.with_label_values(&["peer"]).get();
+        let count = || vlsync_atproto::http::HTTP_CLIENT_CONNECTS.with_label_values(&["peer"]).get();
         let before = count();
         for _ in 0..60 {
             let r = peers.get(&url).send().await.unwrap();
@@ -1164,7 +905,7 @@ pub(crate) mod tests {
     }
 
     fn h1_connects(role: &str) -> u64 {
-        crate::metrics::HTTP_CLIENT_CONNECTS.with_label_values(&[role]).get()
+        vlsync_atproto::http::HTTP_CLIENT_CONNECTS.with_label_values(&[role]).get()
     }
 
     /// Sends a GET on a new OS thread and reads its body to the end on

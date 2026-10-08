@@ -40,7 +40,7 @@ async fn ref_refresh_token_revoked_after_grace_period() {
     s.app
         .put_private(
             &a.did,
-            vec![vlpds::segment::Mutation {
+            vec![vlsync_store::segment::Mutation {
                 key: vlpds::state::private_key(&a.did, &name).into(),
                 val: Some(serde_json::to_vec(&st).unwrap().into()),
             }],

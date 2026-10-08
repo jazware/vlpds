@@ -366,7 +366,7 @@ mod tests {
             assert!(verify(&to_map(&h), None).is_err(), "{params}");
         }
 
-        let k256 = crate::crypto::Keypair::generate().did_key();
+        let k256 = vlsync_atproto::crypto::Keypair::generate().did_key();
         assert!(verify(&to_map(&signed(&sk, &did, AUTHORIZATION, Some(AUDIENCE))), Some(&k256))
             .unwrap_err()
             .0

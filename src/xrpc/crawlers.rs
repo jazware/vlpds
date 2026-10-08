@@ -355,7 +355,7 @@ fn node_id(app: &App) -> String {
 /// Asks each relay once, concurrently; never fails as a whole.
 async fn send(app: &App, relays: &[String]) -> Vec<(String, RelayStatus)> {
     let hostname = super::sync::public_hostname(&app.config.public_url);
-    let client = crate::http::public();
+    let client = vlsync_atproto::http::public();
     let node = node_id(app);
     futures::future::join_all(relays.iter().map(|relay| {
         let (hostname, node) = (hostname.clone(), node.clone());

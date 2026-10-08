@@ -42,7 +42,7 @@ async fn dpop_proof_replay_refused_after_owner_change() {
     // a key whose proofs are claimed on a; requests go through b
     let key = loop {
         let k = DpopKey::new();
-        let p = vlpds::slots::shard_of(&format!("oauth:jkt:{}", k.jkt()), SHARDS);
+        let p = vlsync_store::slots::shard_of(&format!("oauth:jkt:{}", k.jkt()), SHARDS);
         if a.app.partitions.get(p).is_some() {
             break k;
         }
@@ -92,7 +92,7 @@ async fn claims_are_persisted_and_expired_ones_collected() {
     let rows = |app: Arc<vlpds::xrpc::App>| async move {
         let p = app.partition(routing).ok().unwrap();
         let prefix = vlpds::state::private_key(routing, vlpds::oauth::util::REPLAY_ROW);
-        let mut it = p.db.scan(prefix.clone()..vlpds::state::prefix_end(&prefix)).await.unwrap();
+        let mut it = p.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await.unwrap();
         let mut n = 0;
         while it.next().await.unwrap().is_some() {
             n += 1;

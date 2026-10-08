@@ -6,7 +6,7 @@ use crate::common::*;
 async fn revocation_rows(s: &TestServer, did: &str) -> Vec<String> {
     let p = s.app.partition(did).ok().unwrap();
     let prefix = vlpds::state::private_key(did, "sec/rvk/");
-    let mut it = p.db.scan(prefix.clone()..vlpds::state::prefix_end(&prefix)).await.unwrap();
+    let mut it = p.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await.unwrap();
     let mut out = Vec::new();
     while let Some(kv) = it.next().await.unwrap() {
         out.push(String::from_utf8_lossy(&kv.key[prefix.len()..]).to_string());

@@ -398,7 +398,7 @@ async fn asset(State(app): AppState, uri: axum::http::Uri) -> Response {
 /// `/internal/v1/cluster`.
 async fn cluster_status(State(app): AppState, Auth(creds): Auth) -> XResult<Json<J>> {
     super::admin::require_admin(&creds)?;
-    let owned: Vec<crate::slots::ShardId> = app.partitions.owned().iter().map(|p| p.id).collect();
+    let owned: Vec<vlsync_store::slots::ShardId> = app.partitions.owned().iter().map(|p| p.id).collect();
     let durable = app.log.durable_ordinal.load(Ordering::Acquire);
     let durable = (durable != u64::MAX).then_some(durable);
     let sources: Vec<J> = {
@@ -409,8 +409,8 @@ async fn cluster_status(State(app): AppState, Auth(creds): Auth) -> XResult<Json
             .iter()
             .map(|(log, src)| {
                 let (wm, local) = match src {
-                    crate::firehose::Source::Local(w) => (w.get(), true),
-                    crate::firehose::Source::Remote(a) => (a.load(Ordering::Acquire), false),
+                    vlsync_firehose::firehose::Source::Local(w) => (w.get(), true),
+                    vlsync_firehose::firehose::Source::Remote(a) => (a.load(Ordering::Acquire), false),
                 };
                 json!({"log": log.to_string(), "watermark": wm.to_string(), "local": local})
             })
@@ -435,7 +435,7 @@ async fn cluster_status(State(app): AppState, Auth(creds): Auth) -> XResult<Json
             "sources": sources,
         },
         "fencedLogs": {},
-        "time": crate::tid::now_micros() / 1000,
+        "time": vlsync_atproto::tid::now_micros() / 1000,
     });
     let Some(c) = &app.cluster else {
         return Ok(Json(out));
@@ -505,7 +505,7 @@ async fn cluster_status(State(app): AppState, Auth(creds): Auth) -> XResult<Json
 async fn feature_levels(c: &crate::cluster::Cluster, nodes: &[crate::cluster::NodeLease]) -> J {
     let (v, error) = match c.read_version().await {
         Ok(Some((v, _))) => (Some(v), None),
-        Ok(None) => (None, Some(format!("{} is missing", crate::version::OBJECT))),
+        Ok(None) => (None, Some(format!("{} is missing", vlsync_store::version::OBJECT))),
         Err(e) => (c.cluster_version(), Some(format!("{e:#}"))),
     };
     let revs: std::collections::BTreeSet<&str> = nodes.iter().map(|l| l.rev.as_str()).collect();
@@ -519,7 +519,7 @@ async fn feature_levels(c: &crate::cluster::Cluster, nodes: &[crate::cluster::No
         "active": active,
         "target": v.as_ref().and_then(|v| v.target),
         "history": v.as_ref().map(|v| v.history.clone()).unwrap_or_default(),
-        "binary": {"min": c.cfg.levels.min, "max": c.cfg.levels.max, "rev": crate::version::build_rev()},
+        "binary": {"min": c.cfg.levels.min, "max": c.cfg.levels.max, "rev": crate::build::rev()},
         "mixedBuilds": revs.len() > 1,
         "revs": revs,
         "finalizable": finalizable,

@@ -24,15 +24,15 @@ async fn segments_stored_compressed() {
     let (mut zstd, mut stored, mut raw) = (0, 0u64, 0u64);
     for m in &metas {
         let data = store.raw.get(&m.location).await.unwrap().bytes().await.unwrap();
-        let Some((h, hl)) = vlpds::segment::parse_header(&data).unwrap() else { continue };
-        if h.codec == vlpds::segment::CODEC_ZSTD {
+        let Some((h, hl)) = vlsync_store::segment::parse_header(&data).unwrap() else { continue };
+        if h.codec == vlsync_store::segment::CODEC_ZSTD {
             zstd += 1;
         }
         stored += data.len() as u64;
         raw += (hl + h.body_len as usize) as u64;
-        let decoded = vlpds::segment::decode(data).unwrap();
+        let decoded = vlsync_store::segment::decode(data).unwrap();
         assert_eq!(decoded.len(), hl + h.body_len as usize);
-        assert!(matches!(vlpds::segment::parse(decoded, true, None).unwrap(), vlpds::segment::LogObject::Segment(..)));
+        assert!(matches!(vlpds::derived::parse(decoded, None).unwrap(), vlsync_store::segment::LogObject::Segment(..)));
     }
     assert!(zstd > 0 && stored < raw, "{zstd} compressed segments, {stored} B stored for {raw} B");
     let head = Cid::parse(last.unwrap().commit_cid.as_deref().unwrap()).unwrap();

@@ -417,7 +417,7 @@ async fn smtps_with_auth_and_a_private_ca() {
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
     let key = rustls_pki_types::PrivateKeyDer::from_pem_slice(leaf.key_pem.as_bytes()).unwrap();
-    let server = rustls::ServerConfig::builder_with_provider(vlpds::peer_tls::provider())
+    let server = rustls::ServerConfig::builder_with_provider(vlsync_atproto::http::tls_provider())
         .with_safe_default_protocol_versions()
         .unwrap()
         .with_no_client_auth()

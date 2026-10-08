@@ -17,9 +17,9 @@
 //! the issuer's key once more, bypassing its cache, and retries if the key
 //! changed (rotation); [`SpaceToken::verify_signature`] is one attempt.
 
-use crate::xrpc::syntax;
 use base64::Engine;
 use serde_json::Value as J;
+use vlsync_atproto::syntax;
 
 pub const CLOCK_SKEW_SECS: i64 = 5;
 pub const CREDENTIAL_MAX_AGE_SECS: i64 = 3600;
@@ -345,9 +345,9 @@ const B64_OUT: base64::engine::GeneralPurpose = base64::engine::general_purpose:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::Keypair;
     use crate::space::vectors::VECTORS;
     use sha2::Digest;
+    use vlsync_atproto::crypto::Keypair;
 
     const SPACE: &str = "at://did:example:space/space/app.bsky.group/test";
     const USER: &str = "did:example:alice";

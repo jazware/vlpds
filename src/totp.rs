@@ -13,11 +13,12 @@
 use crate::auth::ct_eq;
 use crate::state::{self, Account};
 use crate::xrpc::mfa::{self, Mfa};
-use crate::xrpc::{App, XrpcError};
+use crate::xrpc::App;
 use axum::http::StatusCode;
 use bytes::Bytes;
 use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
+use vlsync_atproto::xrpc::XrpcError;
 
 pub const STEP_SECS: u64 = 30;
 pub const DIGITS: u32 = 6;
@@ -106,7 +107,7 @@ pub fn code_for_step(secret: &[u8], step: u64) -> String {
 }
 
 pub fn now_secs() -> u64 {
-    crate::tid::now_micros() / 1_000_000
+    vlsync_atproto::tid::now_micros() / 1_000_000
 }
 
 /// The matched step, if within ±SKEW of `now` and after `after_step`.
@@ -132,12 +133,12 @@ pub fn generate_secret() -> Vec<u8> {
 
 /// Uppercase, no padding: what authenticator apps expect.
 pub fn base32_encode(b: &[u8]) -> String {
-    crate::cid::base32_encode(b).to_ascii_uppercase()
+    vlsync_atproto::cid::base32_encode(b).to_ascii_uppercase()
 }
 
 pub fn base32_decode(s: &str) -> Option<Vec<u8>> {
     let norm: String = s.chars().filter(|c| !c.is_whitespace() && *c != '=').collect::<String>().to_ascii_lowercase();
-    crate::cid::base32_decode(&norm)
+    vlsync_atproto::cid::base32_decode(&norm)
 }
 
 fn uri_encode(s: &str) -> String {

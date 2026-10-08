@@ -697,7 +697,7 @@ impl Syncer {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
         let (did, base) = (format!("did:web:127.0.0.1%3A{}", addr.port()), format!("http://{addr}"));
-        let key = vlpds::crypto::Keypair::generate();
+        let key = vlsync_atproto::crypto::Keypair::generate();
         let doc = json!({
             "@context": ["https://www.w3.org/ns/did/v1", "https://w3id.org/security/multikey/v1"],
             "id": did,

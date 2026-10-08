@@ -19,15 +19,15 @@ use super::lthash::LtHash;
 use super::rows::{
     AppAccess, HeadRow, MemberRow, NotifyRow, OpAction, OpRow, OutboxRow, Policy, SeqRow, SpaceRow, WriterRow,
 };
-use crate::cid::Cid;
-use crate::segment::Mutation;
 use crate::state::{self, SpaceId, SpaceListed};
-use crate::tid::{self, Tid};
 use crate::worker::WriteError;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use vlsync_atproto::cid::Cid;
+use vlsync_atproto::tid::{self, Tid};
+use vlsync_store::segment::Mutation;
 
 pub const MAX_WRITES: usize = 200;
 
@@ -250,7 +250,7 @@ impl PathRec {
     pub fn from_value(v: &[u8]) -> anyhow::Result<PathRec> {
         let (cid, bytes) = state::record_value_parts(v)?;
         let mut blobs = Vec::new();
-        crate::xrpc::blob_refs(&crate::cbor::Value::decode(bytes)?, &mut blobs);
+        vlsync_atproto::cbor::blob_refs(&vlsync_atproto::cbor::Value::decode(bytes)?, &mut blobs);
         Ok(PathRec { cid, blobs })
     }
 
@@ -490,7 +490,7 @@ pub async fn fetch(db: &slatedb::Db, did: &str, need: SpaceNeed) -> anyhow::Resu
         if row.is_none() {
             for fam in [state::SPACE_RECORD_FAMILY, state::SPACE_BLOB_FAMILY, state::SPACE_OPLOG_FAMILY] {
                 let prefix = state::space_prefix(fam, did, &sid);
-                if db.scan(prefix.clone()..state::prefix_end(&prefix)).await?.next().await?.is_some() {
+                if db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await?.next().await?.is_some() {
                     f.unswept.push(sid);
                     break;
                 }
@@ -512,7 +512,7 @@ pub async fn fetch(db: &slatedb::Db, did: &str, need: SpaceNeed) -> anyhow::Resu
         }
         let prefix = state::space_prefix(state::SPACE_SEQ_FAMILY, did, &sid);
         let opts = slatedb::config::ScanOptions::default().with_order(slatedb::IterationOrder::Descending);
-        let mut it = db.scan_with_options(prefix.clone()..state::prefix_end(&prefix), &opts).await?;
+        let mut it = db.scan_with_options(prefix.clone()..vlsync_store::keys::prefix_end(&prefix), &opts).await?;
         let max = it.next().await?.and_then(|kv| super::rows::seq_rev(&kv.key));
         f.hosts.push((sid, uri, row, max));
     }
@@ -725,7 +725,7 @@ pub fn write(
         hash: head.hash.clone(),
         records: head.records,
         created: head.created,
-        shard: crate::slots::ShardId(0),
+        shard: vlsync_store::slots::ShardId(0),
         epoch: 0,
     };
     // A delivered rev's row goes only while its space's head is held and
@@ -934,8 +934,15 @@ pub fn import_commit(
         muts.push(put(state::space_outbox_key(did, &sid), o.encode()));
         (Some(o), None)
     };
-    let head =
-        DurableSpaceHead { uri: uri.clone(), rev, hash, records, created, shard: crate::slots::ShardId(0), epoch: 0 };
+    let head = DurableSpaceHead {
+        uri: uri.clone(),
+        rev,
+        hash,
+        records,
+        created,
+        shard: vlsync_store::slots::ShardId(0),
+        epoch: 0,
+    };
     Ok(BuiltWrite { muts, rev, head, notify, sequenced, results: Vec::new() })
 }
 
@@ -1215,7 +1222,7 @@ mod tests {
                 .muts
                 .iter()
                 .filter(|m| {
-                    let body = state::key_body(&m.key);
+                    let body = vlsync_store::keys::key_body(&m.key);
                     body.starts_with(state::SPACE_BLOB_FAMILY) || body.starts_with(state::SPACE_BLOB_CID_FAMILY)
                 })
                 .map(|m| (m.key.to_vec(), m.val.is_some()))
@@ -1264,7 +1271,7 @@ mod tests {
     fn path_rec_reads_blob_refs_from_the_stored_value() {
         let blob = Cid::raw(b"img");
         let rec = serde_json::json!({"$type": "com.example.post", "img": {"$type": "blob", "ref": {"$link": blob.to_string()}, "mimeType": "image/png", "size": 3}});
-        let v = crate::cbor::Value::from_json(&rec).unwrap();
+        let v = vlsync_atproto::cbor::Value::from_json(&rec).unwrap();
         let mut bytes = Vec::new();
         v.encode(&mut bytes);
         let cid = Cid::dag_cbor(&bytes);

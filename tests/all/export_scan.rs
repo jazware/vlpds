@@ -75,7 +75,7 @@ async fn prefetch_splits_give_same_bytes() {
     assert!(repo.entries().len() > 2000 && diff.len() < full.len(), "{} records", repo.entries().len());
     let Ok(p) = s.app.partition(&a.did) else { panic!("shard not owned") };
     let prefix = vlpds::state::mst_node_prefix(&a.did, s.app.repo_gen(&a.did).await.ok().unwrap());
-    let mut it = p.db.scan(prefix.clone()..vlpds::state::prefix_end(&prefix)).await.unwrap();
+    let mut it = p.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await.unwrap();
     let mut keys = Vec::new();
     let mut node_bytes = 0;
     while let Some(kv) = it.next().await.unwrap() {

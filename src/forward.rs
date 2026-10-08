@@ -180,7 +180,7 @@ fn query_target(query: Option<&str>, admin: bool) -> (Option<String>, Option<Str
 
 /// A space record's account is its author, not the space's authority.
 fn uri_did(uri: &str) -> Option<&str> {
-    if let Some(u) = crate::xrpc::syntax::parse_space_uri(uri) {
+    if let Some(u) = vlsync_atproto::syntax::parse_space_uri(uri) {
         return Some(u.record.map_or(u.authority, |(author, _, _)| author));
     }
     uri.strip_prefix("at://")?.split('/').next().filter(|d| d.starts_with("did:"))
@@ -484,7 +484,7 @@ fn space_host_method(nsid: &str) -> bool {
 /// body of a POST); without one (createSpace), the caller's.
 #[allow(clippy::result_large_err)]
 async fn space_host_target(req: Request) -> Result<(Request, Option<String>), Response> {
-    let authority = |space: &str| crate::xrpc::syntax::parse_space_uri(space).map(|s| s.authority.to_string());
+    let authority = |space: &str| vlsync_atproto::syntax::parse_space_uri(space).map(|s| s.authority.to_string());
     if req.method() != Method::POST {
         let space = req.uri().query().unwrap_or("").split('&').find_map(|kv| {
             let (k, v) = kv.split_once('=')?;

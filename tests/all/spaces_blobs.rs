@@ -65,7 +65,7 @@ async fn blob_rows(s: &TestServer, did: &str) -> usize {
     let mut n = 0;
     for fam in [vlpds::state::SPACE_BLOB_FAMILY, vlpds::state::SPACE_BLOB_CID_FAMILY] {
         let prefix = vlpds::state::space_did_prefix(fam, did);
-        let mut it = p.db.scan(prefix.clone()..vlpds::state::prefix_end(&prefix)).await.unwrap();
+        let mut it = p.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await.unwrap();
         while it.next().await.unwrap().is_some() {
             n += 1;
         }

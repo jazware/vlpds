@@ -43,8 +43,8 @@ fn q<'a>(space: &'a str, repo: &'a str, rkey: &'a str) -> [(&'a str, &'a str); 4
 /// The moderation service's DID and key, registered on `net`'s directory
 /// (its genesis op computed up front, so the hosts can be configured with
 /// the DID before the directory has it).
-fn mod_service() -> (vlpds::crypto::Keypair, J, String) {
-    let key = vlpds::crypto::Keypair::generate();
+fn mod_service() -> (vlsync_atproto::crypto::Keypair, J, String) {
+    let key = vlsync_atproto::crypto::Keypair::generate();
     let op = json!({
         "type": "plc_operation",
         "rotationKeys": [key.did_key()],
@@ -65,7 +65,7 @@ struct Ops {
     space: String,
     rkey: String,
     cid: String,
-    mod_key: vlpds::crypto::Keypair,
+    mod_key: vlsync_atproto::crypto::Keypair,
     mod_did: String,
     pds_did: String,
 }
@@ -163,7 +163,7 @@ async fn non_operators_are_refused_and_unaudited() {
         .ok();
     let app_pw =
         s.create_session(did, ap["password"].as_str().unwrap()).await.ok()["accessJwt"].as_str().unwrap().to_string();
-    let other = vlpds::crypto::Keypair::generate();
+    let other = vlsync_atproto::crypto::Keypair::generate();
     let not_mod = Auth::Bearer(
         vlpds::auth::service_auth_jwt(&other, &o.alice.did, &o.pds_did, Some(GET_SPACE_RECORD), 60).unwrap(),
     );

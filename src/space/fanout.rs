@@ -37,10 +37,10 @@
 use super::host::Forward;
 use super::repo::Sequenced;
 use crate::state::SpaceId;
-use crate::tid::Tid;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
+use vlsync_atproto::tid::Tid;
 
 /// Jobs waiting for each dispatcher.
 pub const QUEUE: usize = 4096;
@@ -472,7 +472,7 @@ impl Fanout {
                     _ => break Sent::Lost,
                 }
                 attempts += 1;
-                if q.f.expires <= crate::tid::now_micros() {
+                if q.f.expires <= vlsync_atproto::tid::now_micros() {
                     crate::metrics::space_fanout_dropped("expired");
                     self.prune(&a, &q.f.uri, q.f.service.clone());
                     break Sent::Lost;

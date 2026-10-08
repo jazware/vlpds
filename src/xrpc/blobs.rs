@@ -34,7 +34,7 @@ pub(super) fn blob_path(app: &App, did: &str, cid: impl std::fmt::Display) -> ob
 /// next upload or sweep repeats) rather than a row without one.
 pub(super) const STORED: &str = "blob/";
 
-pub(super) fn stored(did: &str, cid: &str, present: bool) -> crate::segment::Mutation {
+pub(super) fn stored(did: &str, cid: &str, present: bool) -> vlsync_store::segment::Mutation {
     super::server::pmut(did, &format!("{STORED}{cid}"), present.then(Vec::new))
 }
 
@@ -42,7 +42,7 @@ pub(super) fn stored(did: &str, cid: &str, present: bool) -> crate::segment::Mut
 pub(super) async fn count_stored<R: slatedb::DbReadOps + ?Sized>(db: &R, did: &str) -> anyhow::Result<u64> {
     let lo = state::private_key(did, STORED);
     let opts = slatedb::config::ScanOptions { read_ahead_bytes: 1 << 20, max_fetch_tasks: 2, ..Default::default() };
-    let mut iter = db.scan_with_options(lo.clone()..state::prefix_end(&lo), &opts).await?;
+    let mut iter = db.scan_with_options(lo.clone()..vlsync_store::keys::prefix_end(&lo), &opts).await?;
     let mut n = 0;
     while iter.next().await?.is_some() {
         n += 1;
@@ -188,7 +188,7 @@ impl Upload<'_> {
                 }
             }
         }
-        let cid = Cid { codec: crate::cid::CODEC_RAW, digest: hasher.finalize().into() };
+        let cid = Cid { codec: vlsync_atproto::cid::CODEC_RAW, digest: hasher.finalize().into() };
         Ok((cid, size))
     }
 
@@ -372,7 +372,8 @@ async fn publicly_referenced(app: &App, did: &str, cid: &str) -> XResult<bool> {
     let mut gen = app.repo_gen(did).await?;
     loop {
         let prefix = [state::blob_ref_prefix(did, gen).as_slice(), cid.as_bytes(), b"\0"].concat();
-        let mut iter = p.db.scan(prefix.clone()..state::prefix_end(&prefix)).await.map_err(XrpcError::from_err)?;
+        let mut iter =
+            p.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await.map_err(XrpcError::from_err)?;
         if iter.next().await.map_err(XrpcError::from_err)?.is_some() {
             return Ok(true);
         }
@@ -395,7 +396,7 @@ pub struct SpaceBlobAccounts {
 }
 
 /// A partition's identity on this node: its shard, epoch and open DB.
-type PartitionKey = (crate::slots::ShardId, u64, usize);
+type PartitionKey = (vlsync_store::slots::ShardId, u64, usize);
 
 /// Accounts held; a miss costs one prefix scan.
 const SPACE_BLOB_ACCOUNTS: usize = 16 * 1024;
@@ -416,7 +417,8 @@ impl SpaceBlobAccounts {
             return Ok(has);
         }
         let prefix = state::space_blob_cid_did_prefix(did);
-        let mut iter = p.db.scan(prefix.clone()..state::prefix_end(&prefix)).await.map_err(XrpcError::from_err)?;
+        let mut iter =
+            p.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await.map_err(XrpcError::from_err)?;
         let has = iter.next().await.map_err(XrpcError::from_err)?.is_some();
         self.inner.lock().put(did.into(), (key, has));
         Ok(has)
@@ -436,7 +438,8 @@ impl SpaceBlobAccounts {
 async fn space_referenced(app: &App, did: &str, cid: &str) -> XResult<bool> {
     let p = app.partition(did)?;
     let prefix = state::space_blob_cid_prefix(did, cid);
-    let mut iter = p.db.scan(prefix.clone()..state::prefix_end(&prefix)).await.map_err(XrpcError::from_err)?;
+    let mut iter =
+        p.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await.map_err(XrpcError::from_err)?;
     Ok(iter.next().await.map_err(XrpcError::from_err)?.is_some())
 }
 
@@ -474,10 +477,10 @@ async fn referenced_blobs_at(
     let prefix = state::blob_ref_prefix(did, gen);
     let lo = match cursor {
         // skip every key of the cursor cid: b/{did}\0{cursor}\0...
-        Some(c) => state::prefix_end(&[prefix.as_slice(), c.as_bytes(), b"\0"].concat()),
+        Some(c) => vlsync_store::keys::prefix_end(&[prefix.as_slice(), c.as_bytes(), b"\0"].concat()),
         None => prefix.clone(),
     };
-    let mut iter = p.db.scan(lo..state::prefix_end(&prefix)).await.map_err(XrpcError::from_err)?;
+    let mut iter = p.db.scan(lo..vlsync_store::keys::prefix_end(&prefix)).await.map_err(XrpcError::from_err)?;
     let mut out: Vec<(String, String)> = Vec::new();
     while let Some(kv) = iter.next().await.map_err(XrpcError::from_err)? {
         let rest = String::from_utf8_lossy(&kv.key[prefix.len()..]).into_owned();
@@ -516,9 +519,11 @@ async fn list_blobs(
     Query(q): Query<ListBlobsQ>,
 ) -> XResult<Json<J>> {
     let since = match q.since.as_deref() {
-        Some(s) => {
-            Some(crate::tid::Tid::parse(s).ok_or_else(|| XrpcError::bad("InvalidRequest", "since must be a TID"))?.0)
-        }
+        Some(s) => Some(
+            vlsync_atproto::tid::Tid::parse(s)
+                .ok_or_else(|| XrpcError::bad("InvalidRequest", "since must be a TID"))?
+                .0,
+        ),
         None => None,
     };
     let limit = super::extract::limit_param(q.limit, 500, 1, 1000)?;
@@ -624,10 +629,10 @@ async fn space_referenced_blobs(
     let p = app.partition(did)?;
     let prefix = state::space_blob_cid_did_prefix(did);
     let lo = match cursor {
-        Some(c) => state::prefix_end(&[prefix.as_slice(), c.as_bytes(), b"\0"].concat()),
+        Some(c) => vlsync_store::keys::prefix_end(&[prefix.as_slice(), c.as_bytes(), b"\0"].concat()),
         None => prefix.clone(),
     };
-    let mut iter = p.db.scan(lo..state::prefix_end(&prefix)).await.map_err(XrpcError::from_err)?;
+    let mut iter = p.db.scan(lo..vlsync_store::keys::prefix_end(&prefix)).await.map_err(XrpcError::from_err)?;
     let mut out: Vec<(String, String)> = Vec::new();
     while let Some(kv) = iter.next().await.map_err(XrpcError::from_err)? {
         let rest = &kv.key[prefix.len()..];
@@ -738,7 +743,7 @@ fn quarantine_path(app: &App, did: &str, cid: &str) -> object_store::path::Path 
 /// it, and the generation it left be swept since.
 async fn referenced(p: &Partition, did: &str, cid: &str) -> anyhow::Result<bool> {
     let sc = state::space_blob_cid_prefix(did, cid);
-    if p.db.scan(sc.clone()..state::prefix_end(&sc)).await?.next().await?.is_some() {
+    if p.db.scan(sc.clone()..vlsync_store::keys::prefix_end(&sc)).await?.next().await?.is_some() {
         return Ok(true);
     }
     let gens = || async {
@@ -751,7 +756,7 @@ async fn referenced(p: &Partition, did: &str, cid: &str) -> anyhow::Result<bool>
     loop {
         for g in std::iter::once(at.0).chain(at.1) {
             let prefix = [state::blob_ref_prefix(did, g).as_slice(), cid.as_bytes(), b"\0"].concat();
-            let mut iter = p.db.scan(prefix.clone()..state::prefix_end(&prefix)).await?;
+            let mut iter = p.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await?;
             if iter.next().await?.is_some() {
                 return Ok(true);
             }

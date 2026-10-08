@@ -21,7 +21,7 @@ fn fast() -> Option<vlpds::retention::Config> {
 }
 
 /// Ordinals of `log`'s objects in the store.
-async fn ordinals(store: &vlpds::store::Store, log: &str) -> Vec<u64> {
+async fn ordinals(store: &vlsync_store::store::Store, log: &str) -> Vec<u64> {
     use futures::StreamExt;
     let prefix = Path::from(format!("{}/log/{log}", store.prefix));
     store
@@ -135,7 +135,7 @@ async fn prune_while_subscribers_backfill() {
     let mut late = s.subscribe(Some(0)).await;
     let first = late.next(FH_TIMEOUT).await.expect("a frame");
     assert_eq!((first.kind(), first.str("name")), ("#info", Some("OutdatedCursor")));
-    assert!(vlpds::retention::retained_floor(&store).await.unwrap() > 0);
+    assert!(vlsync_firehose::log::retained_floor(&store).await.unwrap() > 0);
     // state is untouched by log retention
     for p in [&posts[0], &posts[59], posts.last().unwrap()] {
         s.get_record(&a.did, p.collection(), p.rkey()).await.ok();
@@ -161,7 +161,7 @@ async fn node_with(
 }
 
 /// Waits until `log` holds exactly `want` (a dead log retired to its fence).
-async fn wait_for_objects(store: &vlpds::store::Store, log: &str, want: &[u64]) {
+async fn wait_for_objects(store: &vlsync_store::store::Store, log: &str, want: &[u64]) {
     let r = eventually(Duration::from_secs(15), || async { (ordinals(store, log).await == want).then_some(()) }).await;
     assert!(r.is_some(), "log {log}: {:?}, want {want:?}", ordinals(store, log).await);
 }
@@ -184,10 +184,10 @@ async fn dead_log_pruned_after_takeover() {
     let vs = b.app.store.clone();
     vlpds::server::shutdown(&a.app).await;
     wait_until("b takes a's shards", Duration::from_secs(15), || owned(&b) >= 8).await;
-    let (fence, fenced) = vlpds::nodelog::first_free(&vs, &a_log).await.unwrap();
+    let (fence, fenced) = vlsync_firehose::log::first_free(&vs, &a_log).await.unwrap();
     assert!(fenced, "a fenced its own log on shutdown");
     wait_for_objects(&vs, &a_log, &[fence]).await;
-    let reports = vlpds::retention::read_reports(&vs).await.unwrap();
+    let reports = vlsync_firehose::log::read_reports(&vs).await.unwrap();
     assert!(!reports.contains_key(&a_log), "a's report went with its log");
     assert!(reports.get(b.app.log.log_id.as_ref()).is_some_and(|r| r.opened.len() == 8));
     // b serves everything a wrote, and keeps writing
@@ -228,7 +228,7 @@ async fn restart_after_pruning() {
         second.get_record(&acct.did, p.collection(), p.rkey()).await.ok();
     }
     second.post(&acct, "after restart").await;
-    let (fence, fenced) = vlpds::nodelog::first_free(&vs, &old_log).await.unwrap();
+    let (fence, fenced) = vlsync_firehose::log::first_free(&vs, &old_log).await.unwrap();
     assert!(fenced);
     wait_for_objects(&vs, &old_log, &[fence]).await;
 }
@@ -255,7 +255,7 @@ async fn fence_deleted_then_takeover_replays() {
     vlpds::server::shutdown(&a.app).await;
     wait_until("b takes a's shards", Duration::from_secs(15), || owned(&b) >= 8).await;
     wait_for_objects(&vs, &a_log, &[]).await;
-    assert!(!vlpds::backfill::list_logs(&vs).await.unwrap().contains(&a_log), "a's log left log/");
+    assert!(!vlsync_firehose::backfill::list_logs(&vs).await.unwrap().contains(&a_log), "a's log left log/");
     for (i, acct) in accounts.iter().enumerate() {
         posts.push((acct.did.clone(), b.post(acct, &format!("on b {i}")).await));
     }
@@ -315,7 +315,7 @@ impl PruneRace {
     async fn prune(&self, p: Prune) -> object_store::Result<()> {
         use futures::StreamExt;
         use object_store::ObjectStoreExt;
-        let rep = vlpds::retention::Report { pruned_seq: p.floor, ..Default::default() };
+        let rep = vlsync_firehose::log::Report { pruned_seq: p.floor, ..Default::default() };
         self.inner().put(&p.report, serde_json::to_vec(&rep).unwrap().into()).await?;
         let doomed: Vec<Path> = self
             .inner()
@@ -439,9 +439,10 @@ async fn pruning_below_the_cursor_under_a_seek_is_not_outdated() {
     assert!(all.iter().all(|f| f.kind() != "#info"), "nothing pruned yet");
     let seqs: Vec<i64> = all.iter().filter_map(|f| f.seq()).collect();
     let vs = s.app.store.clone();
-    let (fence, fenced) = vlpds::nodelog::first_free(&vs, &dead).await.unwrap();
+    let (fence, fenced) = vlsync_firehose::log::first_free(&vs, &dead).await.unwrap();
     assert!(fenced);
-    let vlpds::nodelog::Head::Segment(h) = vlpds::nodelog::read_head(&vs, &dead, fence - 1).await.unwrap() else {
+    let vlsync_firehose::log::Head::Segment(h) = vlsync_firehose::log::read_head(&vs, &dead, fence - 1).await.unwrap()
+    else {
         panic!("no segment before the fence")
     };
     let dead_last = h.last_seq;
@@ -449,7 +450,8 @@ async fn pruning_below_the_cursor_under_a_seek_is_not_outdated() {
     let cursor = *seqs.iter().filter(|&&q| q > dead_last).nth(10).unwrap();
     // the live log's segments wholly at or below the cursor
     let (mut below, mut live_floor) = (0, 0);
-    while let vlpds::nodelog::Head::Segment(h) = vlpds::nodelog::read_head(&vs, &live, below).await.unwrap() {
+    while let vlsync_firehose::log::Head::Segment(h) = vlsync_firehose::log::read_head(&vs, &live, below).await.unwrap()
+    {
         if h.last_seq > cursor {
             break;
         }
@@ -458,7 +460,7 @@ async fn pruning_below_the_cursor_under_a_seek_is_not_outdated() {
     }
     assert!(below > 1, "the live log has segments below the cursor");
     let prune = |log: &str, below: u64, floor: i64| Prune {
-        trigger: vlpds::nodelog::segment_path(&vs, log, 0),
+        trigger: vlsync_firehose::log::segment_path(&vs, log, 0),
         log: Path::from(format!("{}/log/{log}", vs.prefix)),
         below,
         report: Path::from(format!("{}/retain/{log}-pruner", vs.prefix)),
@@ -467,7 +469,7 @@ async fn pruning_below_the_cursor_under_a_seek_is_not_outdated() {
     race.armed.lock().extend([prune(&dead, fence, dead_last), prune(&live, below, live_floor)]);
 
     let frames = frames_to(&s, cursor, &acct.did, &head).await;
-    assert!(vlpds::retention::retained_floor(&vs).await.unwrap() <= cursor);
+    assert!(vlsync_firehose::log::retained_floor(&vs).await.unwrap() <= cursor);
     let kinds: Vec<&str> = frames.iter().map(|f| f.kind()).collect();
     assert!(!kinds.contains(&"#info"), "OutdatedCursor inside the window: {kinds:?}");
     assert_eq!(race.fired.load(std::sync::atomic::Ordering::SeqCst), 2, "both logs were pruned under the seek");
@@ -567,9 +569,9 @@ async fn cursors_inside_the_window_through_restarts_and_reshards() {
         tokio::spawn(async move {
             let (mut probes, mut events) = (0usize, 0usize);
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                let now = vlpds::tid::now_micros();
-                let cursor = vlpds::nodelog::seq_floor(now - AGE.as_micros() as u64);
-                let target = vlpds::nodelog::seq_floor(now);
+                let now = vlsync_atproto::tid::now_micros();
+                let cursor = vlsync_firehose::log::seq_floor(now - AGE.as_micros() as u64);
+                let target = vlsync_firehose::log::seq_floor(now);
                 let mut sub =
                     Sub::connect(&format!("ws://{addr}/xrpc/com.atproto.sync.subscribeRepos?cursor={cursor}")).await;
                 let (frames, done) = sub
@@ -588,8 +590,8 @@ async fn cursors_inside_the_window_through_restarts_and_reshards() {
                 let mut prev: std::collections::HashMap<String, String> = Default::default();
                 for f in &frames {
                     if f.kind() == "#info" {
-                        let floor = vlpds::retention::retained_floor(&app.store).await.unwrap();
-                        let age = Duration::from_micros(vlpds::tid::now_micros() - (cursor >> 8) as u64);
+                        let floor = vlsync_firehose::log::retained_floor(&app.store).await.unwrap();
+                        let age = Duration::from_micros(vlsync_atproto::tid::now_micros() - (cursor >> 8) as u64);
                         panic!("OutdatedCursor for a cursor {AGE:?} old at connect, {age:?} now (window {WINDOW:?}); floor - cursor = {:?}", Duration::from_micros(((floor - cursor).max(0) >> 8) as u64));
                     }
                     let Some(seq) = f.seq() else { continue };
@@ -646,8 +648,9 @@ async fn cursors_inside_the_window_through_restarts_and_reshards() {
     let (writes, acked) = writer.await.unwrap();
     let (probes, events) = prober.await.unwrap();
     b.take().unwrap().kill(true).await;
-    let floor = vlpds::retention::retained_floor(&a.app.store).await.unwrap();
-    let retried = ["seek", "pruned"].map(|r| vlpds::metrics::FIREHOSE_BACKFILL_RETRIES.with_label_values(&[r]).get());
+    let floor = vlsync_firehose::log::retained_floor(&a.app.store).await.unwrap();
+    let retried =
+        ["seek", "pruned"].map(|r| vlsync_firehose::metrics::FIREHOSE_BACKFILL_RETRIES.with_label_values(&[r]).get());
     eprintln!("{writes} writes ({acked} acked), {probes} probes ({events} frames), {retried:?} seeks/backfills overtaken by retention, retained floor {floor}");
     assert!(probes > 20 && floor > 0, "retention ran under the probes");
 }

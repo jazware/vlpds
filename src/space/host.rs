@@ -8,10 +8,10 @@
 
 use super::rows::NotifyRow;
 use crate::state::{self, SpaceId};
-use crate::tid::Tid;
 use crate::xrpc::App;
 use serde_json::{json, Value as J};
 use std::time::Duration;
+use vlsync_atproto::tid::Tid;
 
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_RESPONSE: usize = 64 << 10;
@@ -30,7 +30,7 @@ pub async fn resolve_service_endpoint(app: &App, service: &str) -> Option<String
         Some((d, f)) => (d, Some(f)),
         None => (service, None),
     };
-    if !crate::xrpc::syntax::valid_did(did) {
+    if !vlsync_atproto::syntax::valid_did(did) {
         return None;
     }
     let doc = match app.did_resolver.resolve(did).await {
@@ -41,10 +41,10 @@ pub async fn resolve_service_endpoint(app: &App, service: &str) -> Option<String
         }
     };
     let ep = match fragment {
-        Some("atproto_space_host") => crate::did_resolver::service_endpoint(&doc, "atproto_space_host")
-            .or_else(|| crate::did_resolver::service_endpoint(&doc, "atproto_pds")),
-        Some(f) => crate::did_resolver::service_endpoint(&doc, f),
-        None => crate::did_resolver::service_endpoint(&doc, "atproto_pds"),
+        Some("atproto_space_host") => vlsync_atproto::did_resolver::service_endpoint(&doc, "atproto_space_host")
+            .or_else(|| vlsync_atproto::did_resolver::service_endpoint(&doc, "atproto_pds")),
+        Some(f) => vlsync_atproto::did_resolver::service_endpoint(&doc, f),
+        None => vlsync_atproto::did_resolver::service_endpoint(&doc, "atproto_pds"),
     };
     ep.filter(|e| e.len() <= MAX_ENDPOINT)
 }
@@ -60,7 +60,7 @@ pub(crate) fn http_error(what: &str, e: reqwest::Error) -> String {
 #[allow(clippy::too_many_arguments)]
 async fn call(
     app: &App,
-    client: crate::http::Guarded,
+    client: vlsync_atproto::http::Guarded,
     iss: &str,
     service: &str,
     endpoint: &str,
@@ -113,7 +113,7 @@ pub async fn check_user_access(
     if let Some(c) = client_id {
         q.push(("clientId", c));
     }
-    let client = crate::http::guarded(app.config.dev_mode);
+    let client = vlsync_atproto::http::guarded(app.config.dev_mode);
     match call(app, client, authority, managing_app, &endpoint, lxm, reqwest::Method::GET, &q, None).await {
         Ok((200, body)) => body["authorized"] == J::Bool(true),
         Ok((status, _)) => {
@@ -140,8 +140,8 @@ pub const MAX_REGISTRATIONS_PER_AUTHORITY: usize = 1024;
 pub async fn authority_registrations(app: &App, authority: &str, stop_at: usize) -> anyhow::Result<usize> {
     let p = app.partition(authority).map_err(|e| anyhow::anyhow!("{}", e.message))?;
     let prefix = state::space_did_prefix(state::SPACE_NOTIFY_FAMILY, authority);
-    let mut it = p.db.scan(prefix.clone()..state::prefix_end(&prefix)).await?;
-    let now = crate::tid::now_micros();
+    let mut it = p.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await?;
+    let now = vlsync_atproto::tid::now_micros();
     let mut n = 0;
     while let Some(kv) = it.next().await? {
         if NotifyRow::decode(&kv.value)?.expires > now {
@@ -164,8 +164,8 @@ pub async fn registrations(
     let p = app.partition(authority).map_err(|e| anyhow::anyhow!("{}", e.message))?;
     let prefix = state::space_prefix(state::SPACE_NOTIFY_FAMILY, authority, sid);
     let opts = slatedb::config::ScanOptions::default();
-    let mut it = p.db.scan_with_options(prefix.clone()..state::prefix_end(&prefix), &opts).await?;
-    let now = crate::tid::now_micros();
+    let mut it = p.db.scan_with_options(prefix.clone()..vlsync_store::keys::prefix_end(&prefix), &opts).await?;
+    let now = vlsync_atproto::tid::now_micros();
     let (mut live, mut expired) = (Vec::new(), Vec::new());
     while let Some(kv) = it.next().await? {
         let service = std::str::from_utf8(&kv.key[prefix.len()..])?.to_string();
@@ -213,7 +213,7 @@ pub async fn forward(app: &App, f: &Forward, prev: Option<Tid>) -> &'static str 
     if let Some(p) = prev {
         body["prevSpaceRev"] = json!(p.to_string());
     }
-    let client = crate::http::guarded_fanout(app.config.dev_mode);
+    let client = vlsync_atproto::http::guarded_fanout(app.config.dev_mode);
     let post = reqwest::Method::POST;
     match call(app, client, &f.authority, &f.service, &f.endpoint, lxm, post, &[], Some(&body)).await {
         Ok((s, _)) if (200..300).contains(&s) => "ok",
@@ -239,7 +239,7 @@ pub async fn notify_space_deleted(app: &App, authority: &str, uri: &str, service
     let lxm = "com.atproto.space.notifySpaceDeleted";
     let body = json!({"space": uri});
     for (service, row) in services {
-        let client = crate::http::guarded_fanout(app.config.dev_mode);
+        let client = vlsync_atproto::http::guarded_fanout(app.config.dev_mode);
         let r =
             call(app, client, authority, &service, &row.endpoint, lxm, reqwest::Method::POST, &[], Some(&body)).await;
         match r {
@@ -273,7 +273,8 @@ pub async fn check_served_hash(
 ) -> Result<(), String> {
     use p256::ecdsa::signature::Signer;
     let doc = app.did_resolver.resolve(writer).await.map_err(|e| format!("could not resolve the writer: {e:?}"))?;
-    let endpoint = crate::did_resolver::service_endpoint(&doc, "atproto_pds").ok_or("the writer names no PDS")?;
+    let endpoint =
+        vlsync_atproto::did_resolver::service_endpoint(&doc, "atproto_pds").ok_or("the writer names no PDS")?;
     let (key, _) = crate::xrpc::proxy::account_key_status(app, authority).await.map_err(|e| e.message)?;
     let holder = <p256::ecdsa::SigningKey as p256::elliptic_curve::Generate>::generate();
     let mut mk = vec![0x80, 0x24];
@@ -286,7 +287,7 @@ pub async fn check_served_hash(
         expires_in_secs: Some(60),
         ..Default::default()
     };
-    let now = crate::tid::now_micros() as i64 / 1_000_000;
+    let now = vlsync_atproto::tid::now_micros() as i64 / 1_000_000;
     let jti = super::token::new_jti();
     let cred = super::token::encode(super::token::TokenType::Credential, &mint, "ES256K", now, &jti, |b| {
         Ok::<_, std::convert::Infallible>(key.sign(b))
@@ -299,7 +300,7 @@ pub async fn check_served_hash(
     use base64::Engine;
     let sig = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
     let url = format!("{}/xrpc/com.atproto.space.getLatestCommit", endpoint.trim_end_matches('/'));
-    let mut r = crate::http::guarded(app.config.dev_mode)
+    let mut r = vlsync_atproto::http::guarded(app.config.dev_mode)
         .request(reqwest::Method::GET, &url)?
         .query(&[("space", space), ("repo", writer)])
         .header(reqwest::header::AUTHORIZATION, authorization)
@@ -345,7 +346,7 @@ pub async fn check_served_hash(
     }
     let ctx = super::commit::CommitCtx { space, author: writer, rev: &rev };
     let signed_by = |doc: &J| {
-        crate::did_resolver::signing_key_multibase(doc)
+        vlsync_atproto::did_resolver::signing_key_multibase(doc)
             .is_some_and(|mb| super::commit::verify(&commit, &ctx, &format!("did:key:{mb}")))
     };
     if signed_by(&doc) {

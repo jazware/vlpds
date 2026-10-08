@@ -7,14 +7,14 @@
 //! runtime thread. The worker's own pass uses [`CachedOnly`], which fails
 //! with `MstError::NotLoaded` instead of reading.
 
-use crate::cid::{Cid, CODEC_DAG_CBOR};
 use crate::metrics;
-use crate::mst::{Entry, LeafEncoder, MstError, Node, MAX_DEPTH};
 use crate::mst_lazy::{Key, Source};
 use crate::state;
 use slatedb::DbReadOps;
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
+use vlsync_atproto::cid::{Cid, CODEC_DAG_CBOR};
+use vlsync_atproto::mst::{Entry, LeafEncoder, MstError, Node, MAX_DEPTH};
 
 type Result<T> = std::result::Result<T, MstError>;
 
@@ -267,7 +267,7 @@ fn record_range(did: &str, gen: u64, lo: Option<&[u8]>, hi: Option<&[u8]>) -> st
     };
     let end = match hi {
         Some(hi) => [&prefix[..], hi].concat(),
-        None => state::prefix_end(&prefix),
+        None => vlsync_store::keys::prefix_end(&prefix),
     };
     start..end
 }
@@ -287,7 +287,8 @@ async fn scan_records<R: DbReadOps + Sync + ?Sized>(
     out: &mut Vec<(Key, Cid)>,
 ) -> Result<()> {
     let plen = state::record_prefix(did, gen).len();
-    let mut it = state::BatchedScan::new(db.scan(record_range(did, gen, lo, hi)).await.map_err(store_err)?);
+    let mut it =
+        vlsync_store::keys::BatchedScan::new(db.scan(record_range(did, gen, lo, hi)).await.map_err(store_err)?);
     while let Some(kv) = it.next().await.map_err(store_err)? {
         out.push(record_entry(plen, &kv)?);
     }
@@ -337,7 +338,7 @@ pub struct ScanSource<'a, N: Source> {
     pub nodes: N,
     rt: &'a tokio::runtime::Handle,
     prefix_len: usize,
-    iter: RefCell<state::BatchedScan>,
+    iter: RefCell<vlsync_store::keys::BatchedScan>,
     /// The record read past the last range's end.
     peeked: RefCell<Option<(Key, Cid)>>,
     done: Cell<bool>,
@@ -354,13 +355,13 @@ impl<'a, N: Source> ScanSource<'a, N> {
     ) -> Result<Self> {
         let prefix = state::record_prefix(did, gen);
         let iter = rt
-            .block_on(db.scan_with_options(prefix.clone()..state::prefix_end(&prefix), &read_ahead_opts()))
+            .block_on(db.scan_with_options(prefix.clone()..vlsync_store::keys::prefix_end(&prefix), &read_ahead_opts()))
             .map_err(store_err)?;
         Ok(ScanSource {
             nodes,
             rt,
             prefix_len: prefix.len(),
-            iter: RefCell::new(state::BatchedScan::new(iter)),
+            iter: RefCell::new(vlsync_store::keys::BatchedScan::new(iter)),
             peeked: RefCell::new(None),
             done: Cell::new(false),
         })
@@ -604,13 +605,15 @@ async fn scan_nodes<R: DbReadOps + Sync + ?Sized>(
 ) -> anyhow::Result<(Prefetched, bool)> {
     let mut out = Prefetched::default();
     let prefix = state::mst_node_prefix(did, gen);
-    let mut it = state::BatchedScan::new(db.scan_with_options(prefix.clone()..state::prefix_end(&prefix), opts).await?);
+    let mut it = vlsync_store::keys::BatchedScan::new(
+        db.scan_with_options(prefix.clone()..vlsync_store::keys::prefix_end(&prefix), opts).await?,
+    );
     let mut complete = true;
     while let Some(kv) = it.next().await? {
         let Ok(digest) = <[u8; 32]>::try_from(&kv.key[prefix.len()..]) else { continue };
         let b = &kv.value[..];
         // a node misplaced by a bad first key only changes what is let go
-        let h1 = split && crate::mst::first_key_height(b) == Some(1);
+        let h1 = split && vlsync_atproto::mst::first_key_height(b) == Some(1);
         if h1 && out.h1_dropped {
             continue;
         }
@@ -834,7 +837,7 @@ mod tests {
         for (c, b) in &nodes {
             db.put(state::mst_node_key(did, 0, c), b).await.unwrap();
         }
-        let h1 = nodes.values().filter(|b| crate::mst::first_key_height(b) == Some(1)).count();
+        let h1 = nodes.values().filter(|b| vlsync_atproto::mst::first_key_height(b) == Some(1)).count();
         assert!(h1 > nodes.len() / 2, "{h1} of {} nodes at height 1", nodes.len());
         let mem = MemStore { records: recs.iter().cloned().collect(), ..Default::default() };
         let opts = read_ahead_opts();

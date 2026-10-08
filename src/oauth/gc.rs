@@ -135,7 +135,7 @@ pub struct SweepStats {
 /// Where each partition's scan resumes.
 #[derive(Default)]
 pub struct Sweeper {
-    cursors: HashMap<crate::slots::ShardId, Vec<u8>>,
+    cursors: HashMap<vlsync_store::slots::ShardId, Vec<u8>>,
 }
 
 impl Sweeper {
@@ -167,7 +167,7 @@ impl Sweeper {
                     break;
                 }
                 examined += 1;
-                let rest = String::from_utf8_lossy(&crate::state::key_body(&kv.key)[fam.len()..]);
+                let rest = String::from_utf8_lossy(&vlsync_store::keys::key_body(&kv.key)[fam.len()..]);
                 let Some((routing, name)) = rest.split_once('\0') else {
                     continue;
                 };

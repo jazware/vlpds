@@ -134,10 +134,10 @@ impl ServerKey {
 
     /// Hedged and verified before it is returned, as commit signatures are
     /// (src/crypto.rs). Err: failed twice.
-    pub fn sign(&self, typ: &str, payload: &J) -> Result<String, crate::crypto::SignatureFault> {
-        use crate::crypto::{fault, record_fault, Purpose, SignatureFault};
+    pub fn sign(&self, typ: &str, payload: &J) -> Result<String, vlsync_atproto::crypto::SignatureFault> {
         use p256::ecdsa::signature::RandomizedSigner;
         use p256::elliptic_curve::{common::getrandom::SysRng, rand_core::UnwrapErr};
+        use vlsync_atproto::crypto::{fault, record_fault, Purpose, SignatureFault};
         let header = json!({"alg": "ES256", "typ": typ, "kid": self.kid});
         let input =
             format!("{}.{}", b64u(serde_json::to_vec(&header).unwrap()), b64u(serde_json::to_vec(payload).unwrap()));
@@ -424,10 +424,10 @@ mod tests {
     /// re-signed, two fail.
     #[test]
     fn server_key_faults_are_caught() {
-        use crate::crypto::fault::{inject, Fault};
+        use vlsync_atproto::crypto::fault::{inject, Fault};
         let a = ServerKey::derive("fault-test");
         let id = a.sk.verifying_key().to_sec1_point(true);
-        let failures = || crate::metrics::SIGNATURE_VERIFY_FAILURES.with_label_values(&["oauth_token"]).get();
+        let failures = || vlsync_atproto::crypto::SIGNATURE_VERIFY_FAILURES.with_label_values(&["oauth_token"]).get();
         let before = failures();
         inject(id.as_bytes(), Fault::Signature, 1);
         let t = a.sign("at+jwt", &json!({"sub": "x"})).unwrap();

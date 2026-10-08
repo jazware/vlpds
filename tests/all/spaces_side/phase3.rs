@@ -140,12 +140,12 @@ pub fn verify_repo_car(
     did_key: &str,
     expect_values: bool,
 ) -> Result<VerifiedRepo, String> {
-    let (roots, blocks) = vlpds::car::read_car(car).map_err(|e| format!("not a CAR: {e:#}"))?;
+    let (roots, blocks) = vlsync_atproto::car::read_car(car).map_err(|e| format!("not a CAR: {e:#}"))?;
     if roots.len() != 2 {
         return Err(format!("expected 2 car roots (commit, index), got {}", roots.len()));
     }
     for (c, b) in &blocks {
-        if !vlpds::car::block_matches(c, b) {
+        if !vlsync_atproto::car::block_matches(c, b) {
             return Err(format!("block {c} doesn't hash to its CID"));
         }
     }
@@ -205,7 +205,7 @@ pub fn commit_block(c: &SignedCommit) -> Vec<u8> {
 /// The index block: path -> CID, canonical (length-first) key order.
 pub fn index_block(entries: &[(String, Cid)]) -> Vec<u8> {
     let mut m: Vec<(String, Value)> = entries.iter().map(|(p, c)| (p.clone(), Value::Link(*c))).collect();
-    m.sort_by(|a, b| vlpds::cbor::key_cmp(&a.0, &b.0));
+    m.sort_by(|a, b| vlsync_atproto::cbor::key_cmp(&a.0, &b.0));
     Value::Map(m).to_cbor()
 }
 
@@ -213,19 +213,19 @@ pub fn index_block(entries: &[(String, Cid)]) -> Vec<u8> {
 /// test can make a block lie about its CID).
 pub fn write_car(roots: &[Cid], blocks: &[(Cid, Vec<u8>)]) -> Vec<u8> {
     let mut h = Vec::new();
-    vlpds::cbor::write_map_head(&mut h, 2);
-    vlpds::cbor::write_text(&mut h, "roots");
-    vlpds::cbor::write_array_head(&mut h, roots.len());
+    vlsync_atproto::cbor::write_map_head(&mut h, 2);
+    vlsync_atproto::cbor::write_text(&mut h, "roots");
+    vlsync_atproto::cbor::write_array_head(&mut h, roots.len());
     for r in roots {
-        vlpds::cbor::write_cid(&mut h, r);
+        vlsync_atproto::cbor::write_cid(&mut h, r);
     }
-    vlpds::cbor::write_text(&mut h, "version");
-    vlpds::cbor::write_uint(&mut h, 1);
+    vlsync_atproto::cbor::write_text(&mut h, "version");
+    vlsync_atproto::cbor::write_uint(&mut h, 1);
     let mut out = Vec::new();
-    vlpds::car::write_varint(&mut out, h.len() as u64);
+    vlsync_atproto::car::write_varint(&mut out, h.len() as u64);
     out.extend_from_slice(&h);
     for (c, b) in blocks {
-        vlpds::car::write_block(&mut out, c, b);
+        vlsync_atproto::car::write_block(&mut out, c, b);
     }
     out
 }
@@ -292,13 +292,13 @@ impl RepoBuilder {
     }
 
     /// Signed over `set` (normally [`Self::set`]) with `key`.
-    pub fn build_with(&self, key: &vlpds::crypto::Keypair, set: &LtHash) -> BuiltCar {
+    pub fn build_with(&self, key: &vlsync_atproto::crypto::Keypair, set: &LtHash) -> BuiltCar {
         let ctx = CommitCtx { space: &self.space, author: &self.author, rev: &self.rev };
         let commit =
             commit::sign(set, &ctx, rand::random(), |b| Ok::<_, std::convert::Infallible>(key.sign(b))).unwrap();
         let cb = commit_block(&commit);
         let mut entries: Vec<(String, Cid)> = self.records.iter().map(|(p, (c, _))| (p.clone(), *c)).collect();
-        entries.sort_by(|a, b| vlpds::cbor::key_cmp(&a.0, &b.0));
+        entries.sort_by(|a, b| vlsync_atproto::cbor::key_cmp(&a.0, &b.0));
         let ib = index_block(&entries);
         let records = entries.iter().map(|(p, c)| (p.clone(), *c, self.records[p].1.clone())).collect();
         BuiltCar {
@@ -311,13 +311,13 @@ impl RepoBuilder {
         }
     }
 
-    pub fn build(&self, key: &vlpds::crypto::Keypair) -> BuiltCar {
+    pub fn build(&self, key: &vlsync_atproto::crypto::Keypair) -> BuiltCar {
         self.build_with(key, &self.set())
     }
 }
 
 /// The account's repo signing key, read the way the server reads it.
-pub async fn account_key(s: &TestServer, did: &str) -> Arc<vlpds::crypto::Keypair> {
+pub async fn account_key(s: &TestServer, did: &str) -> Arc<vlsync_atproto::crypto::Keypair> {
     let a = s.app.account(did).await.ok().expect("an account here");
     s.app.secrets.account_signing_key(&a).await.expect("its signing key")
 }

@@ -21,9 +21,9 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-pub use vlpds::cbor::Value;
-pub use vlpds::cid::Cid;
-use vlpds::mst::Tree;
+pub use vlsync_atproto::cbor::Value;
+pub use vlsync_atproto::cid::Cid;
+use vlsync_atproto::mst::Tree;
 
 mod cluster;
 #[allow(unused_imports)]
@@ -40,7 +40,7 @@ pub const PASSWORD: &str = "hunter2-password";
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Held by tests that set or depend on the process-wide active feature
-/// level (`vlpds::version::active`, what writers emit).
+/// level (`vlsync_store::version::active`, what writers emit).
 pub static ACTIVE_LEVEL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Unique, valid handle label (lowercase alnum), e.g. "alice3k9x".
@@ -115,7 +115,7 @@ pub fn peer_client() -> &'static vlpds::http::PeerClient {
 
 /// Config of a PDS (`did:web:pds.test`) registering DIDs with the PLC
 /// directory at `plc_url` under `rotation`.
-pub fn use_plc(c: &mut vlpds::server::Config, plc_url: String, rotation: Arc<vlpds::crypto::Keypair>) {
+pub fn use_plc(c: &mut vlpds::server::Config, plc_url: String, rotation: Arc<vlsync_atproto::crypto::Keypair>) {
     c.plc_url = plc_url;
     c.service_did = "did:web:pds.test".into();
     c.plc = vlpds::plc::PlcConfig { rotation_key: Some(vlpds::plc::RotationKey::Key(rotation)), ..Default::default() };
@@ -142,7 +142,7 @@ impl TestServer {
 
     /// A PDS (`did:web:pds.test`) registering DIDs with the PLC directory at
     /// `plc_url` under `rotation`.
-    pub async fn spawn_plc(plc_url: &str, rotation: Arc<vlpds::crypto::Keypair>) -> TestServer {
+    pub async fn spawn_plc(plc_url: &str, rotation: Arc<vlsync_atproto::crypto::Keypair>) -> TestServer {
         let plc_url = plc_url.to_string();
         Self::spawn_with(move |c| use_plc(c, plc_url, rotation)).await
     }
@@ -338,7 +338,7 @@ impl TestServer {
     /// firehose has settled up to it (events at or below it are never sent
     /// to a subscriber with this cursor; everything above it is).
     pub async fn settled_now(&self) -> i64 {
-        let clock = vlpds::nodelog::seq_floor(vlpds::tid::now_micros()) - 1;
+        let clock = vlsync_firehose::log::seq_floor(vlsync_atproto::tid::now_micros()) - 1;
         let target = self.app.log.wm.get().max(clock);
         let deadline = tokio::time::Instant::now() + FH_TIMEOUT;
         while self.app.firehose.position() < target {
@@ -981,7 +981,7 @@ impl CommitEvt {
             Some(Value::Bytes(x)) => x.clone(),
             _ => anyhow::bail!("#commit without blocks"),
         };
-        let (roots, blocks) = vlpds::car::read_car(&blocks_raw)?;
+        let (roots, blocks) = vlsync_atproto::car::read_car(&blocks_raw)?;
         let ops = match b.get("ops") {
             Some(Value::Array(a)) => a
                 .iter()
@@ -1067,7 +1067,7 @@ impl SyncEvt {
             Some(Value::Bytes(x)) => x.clone(),
             _ => anyhow::bail!("#sync without blocks"),
         };
-        let (roots, blocks) = vlpds::car::read_car(&raw)?;
+        let (roots, blocks) = vlsync_atproto::car::read_car(&raw)?;
         Ok(SyncEvt {
             seq: match b.get("seq") {
                 Some(Value::Int(i)) => *i,
@@ -1157,7 +1157,7 @@ pub struct Repo {
 
 impl Repo {
     pub fn from_car(b: &[u8]) -> anyhow::Result<Repo> {
-        let (roots, blocks) = vlpds::car::read_car(b)?;
+        let (roots, blocks) = vlsync_atproto::car::read_car(b)?;
         let order = blocks.iter().map(|(c, _)| *c).collect();
         Ok(Repo {
             root: *roots.first().ok_or_else(|| anyhow::anyhow!("CAR without root"))?,
@@ -1189,7 +1189,7 @@ impl Repo {
     /// Every block's CID matches its content hash.
     pub fn check_block_hashes(&self) -> anyhow::Result<()> {
         for (c, b) in &self.blocks {
-            let want = if c.codec == vlpds::cid::CODEC_RAW { Cid::raw(b) } else { Cid::dag_cbor(b) };
+            let want = if c.codec == vlsync_atproto::cid::CODEC_RAW { Cid::raw(b) } else { Cid::dag_cbor(b) };
             anyhow::ensure!(*c == want, "block {c} hashes to {want}");
         }
         Ok(())
@@ -1384,7 +1384,7 @@ pub async fn age_email_token(s: &TestServer, did: &str, purpose: &str, ms: u64) 
     s.app
         .put_private(
             did,
-            vec![vlpds::segment::Mutation {
+            vec![vlsync_store::segment::Mutation {
                 key: vlpds::state::private_key(did, &name).into(),
                 val: Some(serde_json::to_vec(&rec).unwrap().into()),
             }],
@@ -1529,7 +1529,7 @@ pub fn rand_cbor(rng: &mut impl rand::Rng, depth: usize) -> Value {
                     m.push((k, rand_cbor(rng, depth + 1)));
                 }
             }
-            m.sort_by(|a, b| vlpds::cbor::key_cmp(&a.0, &b.0));
+            m.sort_by(|a, b| vlsync_atproto::cbor::key_cmp(&a.0, &b.0));
             Value::Map(m)
         }
     }

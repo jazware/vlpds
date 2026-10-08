@@ -4034,16 +4034,14 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slate-metrics"
 version = "0.1.0"
+source = "git+https://github.com/jazware/vlsync?rev=7b4b0303b6974974263fcdcfbb93182e141fbc7c#7b4b0303b6974974263fcdcfbb93182e141fbc7c"
 dependencies = [
- "object_store",
  "parking_lot",
  "prometheus",
  "serde",
- "serde_json",
- "slatedb",
- "slatedb-common",
  "tokio",
  "tracing",
+ "vlsync-slatedb",
 ]
 
 [[package]]
@@ -4898,7 +4896,6 @@ dependencies = [
  "sha2 0.11.0",
  "shrike",
  "slate-metrics",
- "slatedb",
  "thiserror 2.0.21",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
@@ -4911,8 +4908,98 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-segmentation",
+ "vlsync-atproto",
+ "vlsync-firehose",
+ "vlsync-slatedb",
+ "vlsync-store",
  "x509-parser",
  "zeroize",
+ "zstd",
+]
+
+[[package]]
+name = "vlsync-atproto"
+version = "0.1.0"
+source = "git+https://github.com/jazware/vlsync?rev=7b4b0303b6974974263fcdcfbb93182e141fbc7c#7b4b0303b6974974263fcdcfbb93182e141fbc7c"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.23.1",
+ "bs58",
+ "chrono",
+ "futures",
+ "hex",
+ "parking_lot",
+ "prometheus",
+ "rand 0.8.8",
+ "reqwest",
+ "rustls",
+ "secp256k1",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+ "tokio",
+ "tower",
+ "tracing",
+ "vlsync-store",
+ "zeroize",
+]
+
+[[package]]
+name = "vlsync-firehose"
+version = "0.1.0"
+source = "git+https://github.com/jazware/vlsync?rev=7b4b0303b6974974263fcdcfbb93182e141fbc7c#7b4b0303b6974974263fcdcfbb93182e141fbc7c"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "futures",
+ "hyper",
+ "hyper-util",
+ "object_store",
+ "parking_lot",
+ "prometheus",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "vlsync-atproto",
+ "vlsync-store",
+]
+
+[[package]]
+name = "vlsync-slatedb"
+version = "0.1.0"
+source = "git+https://github.com/jazware/vlsync?rev=7b4b0303b6974974263fcdcfbb93182e141fbc7c#7b4b0303b6974974263fcdcfbb93182e141fbc7c"
+dependencies = [
+ "slatedb",
+ "slatedb-common",
+]
+
+[[package]]
+name = "vlsync-store"
+version = "0.1.0"
+source = "git+https://github.com/jazware/vlsync?rev=7b4b0303b6974974263fcdcfbb93182e141fbc7c#7b4b0303b6974974263fcdcfbb93182e141fbc7c"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "futures",
+ "object_store",
+ "parking_lot",
+ "prometheus",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tikv-jemalloc-ctl",
+ "tokio",
+ "tracing",
+ "vlsync-slatedb",
  "zstd",
 ]
 

@@ -11,7 +11,7 @@
 
 use crate::common::*;
 use std::sync::Arc;
-use vlpds::version::Window;
+use vlsync_store::version::Window;
 
 const SHARDS: u32 = 4;
 
@@ -49,7 +49,7 @@ async fn cluster_status_shows_levels_and_a_raise_waits_for_every_node() {
         (n("fl-a")["maxLevel"].as_u64(), n("fl-b")["maxLevel"].as_u64(), n("fl-b")["seenLevel"].as_u64()),
         (Some(1), Some(2), Some(1))
     );
-    assert_eq!(n("fl-a")["rev"], json!(vlpds::version::build_rev()));
+    assert_eq!(n("fl-a")["rev"], json!(vlpds::build::rev()));
 
     // a raise to 2 from the node that can run it: fl-a can't, so nothing changes
     let r = b.xrpc.post("vlpds.admin.setFeatureLevel", &json!({"level": 2}), &Auth::Admin).await;

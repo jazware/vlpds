@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use vlpds::cbor::key_cmp;
+use vlsync_atproto::cbor::key_cmp;
 
 fn env_or<T: std::str::FromStr>(k: &str, d: T) -> T {
     std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
@@ -82,7 +82,7 @@ fn record(h: u64, i: usize) -> (&'static str, Vec<u8>) {
 
 /// A streamable-order CAR of `n` records.
 pub(crate) fn repo_car(seed: u64, n: usize) -> Vec<u8> {
-    let mut tree = vlpds::mst::Tree::new();
+    let mut tree = vlsync_atproto::mst::Tree::new();
     let mut blocks: HashMap<Cid, Vec<u8>> = HashMap::with_capacity(n + n / 3);
     let mut t = 0x1_7000_0000_0000u64 + (mix(seed) & 0xffff_ffff);
     for i in 0..n {
@@ -106,7 +106,7 @@ pub(crate) fn repo_car(seed: u64, n: usize) -> Vec<u8> {
     ];
     f.sort_by(|a, b| key_cmp(&a.0, &b.0));
     let commit = Value::Map(f).to_cbor();
-    vlpds::car_order::write_car((Cid::dag_cbor(&commit), &commit), data, &blocks).unwrap()
+    vlsync_atproto::car_order::write_car((Cid::dag_cbor(&commit), &commit), data, &blocks).unwrap()
 }
 
 /// The sum over a metric family's series, 0 if it doesn't exist.

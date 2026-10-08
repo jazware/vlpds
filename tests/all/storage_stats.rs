@@ -24,7 +24,7 @@ async fn listed(s: &TestServer) -> BTreeMap<String, (i64, i64)> {
     let mut l = s.app.store.raw.list(Some(&store));
     while let Some(m) = l.next().await {
         let m = m.unwrap();
-        let c = vlpds::objstats::component(&s.app.store.prefix, m.location.as_ref());
+        let c = vlsync_store::objstats::component(&s.app.store.prefix, m.location.as_ref());
         let e = out.entry(c.to_string()).or_default();
         e.0 += 1;
         e.1 += m.size as i64;

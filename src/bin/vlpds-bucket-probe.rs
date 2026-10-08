@@ -3,7 +3,7 @@
 //!   vlpds-bucket-probe --s3-endpoint https://s3.us-east-1.amazonaws.com \
 //!       --s3-bucket my-bucket [--prefix p] [--ops 200] [--concurrency 4] [--json out.json]
 //!
-//! Uses the node's client (`vlpds::store::Store::s3`: same HTTP pool, timeouts,
+//! Uses the node's client (`vlsync_store::store::Store::s3`: same HTTP pool, timeouts,
 //! path-style addressing) and the node's `VLPDS_S3_*` env vars (credentials
 //! also as `VLPDS_S3_{ACCESS,SECRET}_KEY_FILE`). Everything is
 //! written under a fresh `vlpds-probe/<random>/` prefix (or `--prefix`, which
@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use vlpds::cluster::if_match;
-use vlpds::store::{S3Config, Store};
+use vlsync_store::store::{S3Config, Store};
 
 #[derive(Parser)]
 #[command(
@@ -696,10 +696,10 @@ async fn main() {
 
 async fn run(mut args: Args) -> anyhow::Result<bool> {
     if let Some(p) = &args.s3_access_key_file {
-        args.s3_access_key = vlpds::secret_file::read("s3-access-key-file", p)?;
+        args.s3_access_key = vlsync_store::secret_file::read("s3-access-key-file", p)?;
     }
     if let Some(p) = &args.s3_secret_key_file {
-        args.s3_secret_key = vlpds::secret_file::read("s3-secret-key-file", p)?;
+        args.s3_secret_key = vlsync_store::secret_file::read("s3-secret-key-file", p)?;
     }
     let cfg = S3Config {
         endpoint: args.s3_endpoint.clone(),

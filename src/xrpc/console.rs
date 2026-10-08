@@ -59,7 +59,7 @@ fn node_id(app: &App) -> String {
 }
 
 fn now_ms() -> u64 {
-    crate::tid::now_micros() / 1000
+    vlsync_atproto::tid::now_micros() / 1000
 }
 
 fn bad(message: impl Into<String>) -> XrpcError {
@@ -294,14 +294,14 @@ async fn locked_dids(app: &App, f: Filter) -> XResult<std::collections::HashSet<
 async fn local_accounts(app: &App, q: &AccountsQ) -> XResult<J> {
     let pq = q.parsed()?;
     let owned = app.partitions.owned();
-    let ids: Vec<crate::slots::ShardId> = owned.iter().map(|p| p.id).collect();
+    let ids: Vec<vlsync_store::slots::ShardId> = owned.iter().map(|p| p.id).collect();
     if let Some(d) = whole_did(&pq) {
         let mut out = Vec::new();
         if let Ok(p) = app.partition(d) {
             if let Some(v) = p.db.get(state::account_key(d)).await.map_err(XrpcError::from_err)? {
                 let a: Account = serde_json::from_slice(&v).map_err(XrpcError::from_err)?;
                 let row = account_row(app, &p, &a).await?;
-                out.push(json!({"slot": crate::slots::slot_of(d), "did": d, "row": row}));
+                out.push(json!({"slot": vlsync_store::slots::slot_of(d), "did": d, "row": row}));
             }
         }
         return Ok(json!({"owned": ids, "accounts": out, "resumeAt": null}));
@@ -318,7 +318,7 @@ async fn local_accounts(app: &App, q: &AccountsQ) -> XResult<J> {
     let after = match q.cursor.as_deref().filter(|c| !c.is_empty()) {
         Some(c) => {
             let (slot, d) = split_cursor(c)?;
-            if crate::slots::slot_of(&d) as u64 != slot {
+            if vlsync_store::slots::slot_of(&d) as u64 != slot {
                 return Err(bad("Malformed cursor"));
             }
             Some(d)
@@ -334,7 +334,7 @@ async fn local_accounts(app: &App, q: &AccountsQ) -> XResult<J> {
         while let Some(kv) = iter.next().await.map_err(XrpcError::from_err)? {
             let Ok(a) = serde_json::from_slice::<Account>(&kv.value) else { continue };
             examined += 1;
-            let slot = crate::slots::slot_of(&a.did);
+            let slot = vlsync_store::slots::slot_of(&a.did);
             if pq.q.as_deref().is_none_or(|q| matches_q(q, &a)) {
                 let row = account_row(app, &p, &a).await?;
                 if passes(pq.filter, &row, &locked) {
@@ -438,7 +438,7 @@ fn local_counts(app: &App) -> J {
 
 /// Sums each node's counts. Approximate while a shard's totals are loading,
 /// a node didn't answer, or some shard has no owner.
-fn sum_counts(app: &App, bodies: &[J], covered: &std::collections::HashSet<crate::slots::ShardId>) -> J {
+fn sum_counts(app: &App, bodies: &[J], covered: &std::collections::HashSet<vlsync_store::slots::ShardId>) -> J {
     let mut sum = [0i64; COUNT_KEYS.len()];
     let mut approximate = false;
     for b in bodies {
@@ -473,7 +473,7 @@ fn query_pairs(q: &AccountsQ) -> Vec<(&'static str, String)> {
 }
 
 fn row_rev(r: &J) -> u64 {
-    r["rev"].as_str().and_then(crate::tid::Tid::parse).map_or(0, |t| t.0)
+    r["rev"].as_str().and_then(vlsync_atproto::tid::Tid::parse).map_or(0, |t| t.0)
 }
 
 async fn list_accounts(State(app): AppState, Auth(creds): Auth, Query(q): Query<AccountsQ>) -> XResult<Json<J>> {
@@ -491,7 +491,7 @@ async fn list_accounts(State(app): AppState, Auth(creds): Auth, Query(q): Query<
     let mut mine = local_accounts(&app, &q).await?;
     mine["counts"] = local_counts(&app);
     let g = internal::gather(&app, "/internal/v1/console/accounts", &query_pairs(&q)).await;
-    let mut covered: std::collections::HashSet<crate::slots::ShardId> =
+    let mut covered: std::collections::HashSet<vlsync_store::slots::ShardId> =
         serde_json::from_value(mine["owned"].clone()).unwrap_or_default();
     let mut bodies = vec![mine];
     let (unreachable, unsupported) = (g.unreachable, g.unsupported);
@@ -879,17 +879,17 @@ struct RepoOpsQ {
 /// Events a listRepoOps call looks at before giving up on finding `limit`.
 const OPS_SCAN_BUDGET: usize = 2_000_000;
 
-fn cid_str(v: Option<&crate::cbor::ValueRef>) -> Option<String> {
+fn cid_str(v: Option<&vlsync_atproto::cbor::ValueRef>) -> Option<String> {
     match v {
-        Some(crate::cbor::ValueRef::Link(c)) => Some(c.to_string()),
+        Some(vlsync_atproto::cbor::ValueRef::Link(c)) => Some(c.to_string()),
         _ => None,
     }
 }
 
 /// The account's own events in the firehose ring, as the console lists them.
-fn decode_event(seq: i64, kind: crate::firehose::FrameKind, frame: &[u8]) -> Option<J> {
-    use crate::cbor::ValueRef;
-    use crate::firehose::FrameKind;
+fn decode_event(seq: i64, kind: vlsync_firehose::firehose::FrameKind, frame: &[u8]) -> Option<J> {
+    use vlsync_atproto::cbor::ValueRef;
+    use vlsync_firehose::firehose::FrameKind;
     let (_, n) = ValueRef::decode_prefix(frame).ok()?;
     let body = ValueRef::decode(&frame[n..]).ok()?;
     let s = |k: &str| body.get(k).and_then(|v| v.as_str()).map(String::from);
@@ -947,7 +947,7 @@ async fn list_repo_ops(State(app): AppState, Auth(creds): Auth, Query(q): Query<
             for (seq, frame) in b.events.iter().rev() {
                 scanned += 1;
                 oldest = Some(*seq);
-                let m = crate::firehose::frame_meta(frame);
+                let m = vlsync_firehose::firehose::frame_meta(frame);
                 if m.did == Some(target) {
                     if let Some(e) = decode_event(*seq, m.kind, frame) {
                         out.push(e);
@@ -1104,7 +1104,7 @@ async fn indexed_lockouts(app: &App) -> XResult<(Vec<(String, &'static str, u64)
             .await
             .map_err(XrpcError::from_err)?;
         while let Some(kv) = it.next().await.map_err(XrpcError::from_err)? {
-            let body = &state::key_body(&kv.key)[state::LOCKOUT_FAMILY.len()..];
+            let body = &vlsync_store::keys::key_body(&kv.key)[state::LOCKOUT_FAMILY.len()..];
             let parsed = body.iter().rposition(|b| *b == 0).and_then(|i| {
                 let did = std::str::from_utf8(&body[..i]).ok()?;
                 let factor = super::mfa::lockout_factor(&body[i + 1..])?;
@@ -1162,7 +1162,7 @@ async fn local_lockouts(app: &App) -> XResult<Vec<J>> {
         }));
     }
     for (p, key) in junk {
-        let _ = super::write_private_local(&p, vec![crate::segment::Mutation { key, val: None }]).await;
+        let _ = super::write_private_local(&p, vec![vlsync_store::segment::Mutation { key, val: None }]).await;
     }
     Ok(out)
 }
@@ -1257,8 +1257,8 @@ async fn get_config(State(app): AppState, Auth(creds): Auth) -> XResult<Json<J>>
     }
     Ok(Json(json!({
         "node": node_id(&app),
-        "version": crate::version::version(),
-        "rev": crate::version::build_rev(),
+        "version": crate::build::version(),
+        "rev": crate::build::rev(),
         "settings": crate::config_report::settings(),
         "recorded": !crate::config_report::settings().is_empty(),
         "stored": stored,

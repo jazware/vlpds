@@ -469,7 +469,7 @@ fn parse_client_id(id: &str, dev_mode: bool) -> Result<ClientIdKind, OAuthError>
 /// mode), no redirects, size-capped.
 async fn fetch_json(url: &str, dev_mode: bool, max_bytes: usize) -> Result<J, String> {
     use futures::StreamExt;
-    let resp = crate::http::guarded(dev_mode)
+    let resp = vlsync_atproto::http::guarded(dev_mode)
         .get(url)?
         .header("accept", "application/json")
         .timeout(FETCH_TIMEOUT)

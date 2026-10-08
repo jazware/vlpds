@@ -19,12 +19,8 @@
 //! fail-stops. Objects past the fence are garbage no reader ever reaches.
 //! DESIGN.md "Pipelined segment PUTs" has the argument.
 
-use crate::events::Frame;
 use crate::metrics;
-use crate::segment::{self, LogObject, Mutation, SegmentBuilder};
-use crate::slots::ShardId;
 use crate::stats::STATS;
-use crate::store::Store;
 use bytes::Bytes;
 use object_store::path::Path;
 use object_store::{ObjectStoreExt, PutMode, PutOptions, PutPayload};
@@ -35,6 +31,11 @@ use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+use vlsync_atproto::events::Frame;
+use vlsync_firehose::log::{check_header, segment_path, seq_floor, LogBatch, Watermark};
+use vlsync_store::segment::{self, LogObject, Mutation, SegmentBuilder};
+use vlsync_store::slots::ShardId;
+use vlsync_store::store::Store;
 
 pub type AckFn = Box<dyn FnOnce(Result<(), Arc<anyhow::Error>>) + Send>;
 
@@ -65,14 +66,6 @@ pub struct LogEntry {
     pub enqueued: Instant,
     /// The sequencer appends the slot's totals row (or delta row) to `muts`.
     pub totals: Option<crate::totals::Delta>,
-}
-
-/// Durable, ordered events from one log, handed to the firehose merger.
-#[derive(Clone)]
-pub struct LogBatch {
-    pub log_id: Arc<str>,
-    pub ordinal: u64,
-    pub events: Vec<(i64, Bytes)>,
 }
 
 pub const DEFAULT_LIVE_RING_BYTES: usize = 128 << 20;
@@ -188,78 +181,6 @@ impl Drop for LiveSub {
 }
 
 pub const DEFAULT_LOG_INFLIGHT: usize = 4;
-
-pub fn seq_floor(now_us: u64) -> i64 {
-    (now_us as i64) << 8
-}
-
-/// The highest seq <= `v` carrying `writer` in its low byte: as `assigned`, it
-/// makes the next seq (>= it + 256) exceed `v` and keep the writer byte.
-fn own_seq_at_or_below(v: i64, writer: u8) -> i64 {
-    let wr = writer as i64;
-    if v & 0xff >= wr {
-        (v & !0xff) | wr
-    } else {
-        ((v & !0xff) - 256) | wr
-    }
-}
-
-/// Every event with seq <= `get()` is durable and has been handed to the merger.
-pub struct Watermark {
-    writer: u8,
-    inner: Mutex<(i64, i64)>, // (assigned, durable)
-    cap: std::sync::atomic::AtomicI64,
-}
-
-impl Watermark {
-    pub fn new(writer: u8, last: i64) -> Watermark {
-        Watermark {
-            writer,
-            inner: Mutex::new((own_seq_at_or_below(last, writer), last)),
-            cap: std::sync::atomic::AtomicI64::new(i64::MAX),
-        }
-    }
-
-    /// Time-based, strictly increasing; the low byte is this node's writer id
-    /// (unique among live nodes), so seqs are unique across logs.
-    pub fn assign(&self) -> i64 {
-        let mut w = self.inner.lock();
-        let now = seq_floor(crate::tid::now_micros()) | self.writer as i64;
-        let seq = now.max(w.0 + 256);
-        w.0 = seq;
-        seq
-    }
-
-    pub fn set_durable(&self, seq: i64) {
-        self.inner.lock().1 = seq;
-    }
-
-    pub fn idle(&self) -> bool {
-        let w = self.inner.lock();
-        w.0 <= w.1
-    }
-
-    pub fn get(&self) -> i64 {
-        let mut w = self.inner.lock();
-        if w.0 > w.1 {
-            return w.1;
-        }
-        let v = w.1.max(seq_floor(crate::tid::now_micros()) - 1).min(self.cap.load(Ordering::Acquire).max(w.1));
-        if v > w.1 {
-            // Idle: we advertise the clock. Record it, so a later seq can't land
-            // at or below it if the wall clock steps back (assign() is
-            // max(now, last + 256)); the merger would drop such events as late.
-            w.0 = w.0.max(own_seq_at_or_below(v, self.writer));
-            w.1 = v;
-        }
-        v
-    }
-
-    /// Never announce beyond our node lease: a successor's seqs start after it.
-    pub fn set_lease_expiry(&self, expiry_us: u64) {
-        self.cap.store(seq_floor(expiry_us), Ordering::Release);
-    }
-}
 
 /// A shard this node applies into.
 pub struct ShardSink {
@@ -508,7 +429,7 @@ impl SegmentFeed {
     fn durable(&self, ordinal: u64, put_secs: f64, stored_bytes: usize) {
         let mut r = self.ring.lock();
         if let Some(s) = r.iter_mut().rev().find(|s| s.ordinal == ordinal) {
-            s.durable_at = Some(crate::tid::now_micros() / 1000);
+            s.durable_at = Some(vlsync_atproto::tid::now_micros() / 1000);
             s.put_ms = Some(put_secs * 1000.0);
             s.stored_bytes = stored_bytes as u64;
         }
@@ -518,105 +439,6 @@ impl SegmentFeed {
     pub fn since(&self, since_ms: u64) -> Vec<SegmentInfo> {
         self.ring.lock().iter().filter(|s| s.sealed_at >= since_ms).cloned().collect()
     }
-}
-
-pub fn segment_path(store: &Store, log_id: &str, ordinal: u64) -> Path {
-    Path::from(format!("{}/log/{}/{:012}.seg", store.prefix, log_id, ordinal))
-}
-
-/// What occupies one ordinal of a log.
-#[derive(Debug)]
-pub enum Head {
-    Missing,
-    Fence,
-    Segment(segment::SegHeader),
-}
-
-/// Errs unless a segment header names the log and ordinal it was read from.
-pub fn check_header(h: &segment::SegHeader, log_id: &str, ordinal: u64) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        h.log_id == log_id && h.ordinal == ordinal,
-        "log object {log_id}/{ordinal} has header {}/{}",
-        h.log_id,
-        h.ordinal
-    );
-    Ok(())
-}
-
-/// The header of the object at `log_id/ordinal`, via one small range GET.
-pub async fn read_head(store: &Store, log_id: &str, ordinal: u64) -> anyhow::Result<Head> {
-    use object_store::{GetOptions, GetRange};
-    let opts = GetOptions { range: Some(GetRange::Bounded(0..4096)), ..Default::default() };
-    let data = match store.raw.get_opts(&segment_path(store, log_id, ordinal), opts).await {
-        Ok(r) => r.bytes().await?,
-        Err(object_store::Error::NotFound { .. }) => return Ok(Head::Missing),
-        Err(e) => return Err(e.into()),
-    };
-    let Some((h, _)) = segment::parse_header(&data)? else { return Ok(Head::Fence) };
-    check_header(&h, log_id, ordinal)?;
-    Ok(Head::Segment(h))
-}
-
-/// The object at `log_id/ordinal`, parsed without muts (None = missing).
-pub async fn read_object(store: &Store, log_id: &str, ordinal: u64) -> anyhow::Result<Option<LogObject>> {
-    let data = match store.raw.get(&segment_path(store, log_id, ordinal)).await {
-        Ok(r) => r.bytes().await?,
-        Err(object_store::Error::NotFound { .. }) => return Ok(None),
-        Err(e) => return Err(e.into()),
-    };
-    let obj = segment::parse(data, false, None)?;
-    if let LogObject::Segment(h, _) = &obj {
-        check_header(h, log_id, ordinal)?;
-    }
-    Ok(Some(obj))
-}
-
-/// The first ordinal below segment `h` that isn't a segment (missing, or a
-/// fence), or None if `h` is inside its log's gap-free prefix. Only
-/// [h.prefix_end, h.ordinal) needs probing (at most K - 1 small GETs): the
-/// writer had every ordinal below prefix_end durable when it sealed `h`.
-/// A segment past a hole is garbage (never acked: acks are in order), and
-/// past a fence it can only be a zombie's. Ordinals below `floor` (the
-/// lowest still stored: retention prunes a log's head) aren't probed.
-pub async fn prefix_hole(store: &Store, h: &segment::SegHeader, floor: u64) -> anyhow::Result<Option<u64>> {
-    for ord in h.prefix_end.max(floor)..h.ordinal {
-        if !matches!(read_head(store, &h.log_id, ord).await?, Head::Segment(_)) {
-            return Ok(Some(ord));
-        }
-    }
-    Ok(None)
-}
-
-/// The end of `log_id`'s durable prefix: its first ordinal that isn't a
-/// segment, and whether a fence is there already. Every segment below it
-/// exists; everything above it is garbage (or, on a live log, not acked yet).
-/// Probes the highest segment's header and its prefix_end window, so it
-/// costs one LIST plus a few small GETs however long the log is.
-pub async fn first_free(store: &Store, log_id: &str) -> anyhow::Result<(u64, bool)> {
-    use futures::StreamExt;
-    let prefix = Path::from(format!("{}/log/{}", store.prefix, log_id));
-    let mut listed = Vec::new();
-    let mut list = store.raw.list(Some(&prefix));
-    while let Some(meta) = list.next().await {
-        if let Some(ord) =
-            meta?.location.filename().and_then(|f| f.strip_suffix(".seg")).and_then(|f| f.parse::<u64>().ok())
-        {
-            listed.push(ord);
-        }
-    }
-    listed.sort_unstable();
-    // the highest segment: everything listed above it is a fence (or gone).
-    // With none (retention pruned a dead log down to its fence) the end is
-    // the lowest object left.
-    let mut free = listed.first().copied().unwrap_or(0);
-    for &ord in listed.iter().rev() {
-        if let Head::Segment(h) = read_head(store, log_id, ord).await? {
-            free = prefix_hole(store, &h, listed[0]).await?.unwrap_or(ord + 1);
-            break;
-        }
-    }
-    let fenced = matches!(read_head(store, log_id, free).await?, Head::Fence);
-    Ok((free, fenced))
 }
 
 pub fn encode_marker(log_id: &str, ordinal: u64) -> Vec<u8> {
@@ -637,7 +459,7 @@ pub fn decode_marker(b: &[u8]) -> anyhow::Result<(String, u64)> {
         (b.len() == 10 + n).then_some((id, ord))
     })();
     parsed.ok_or_else(|| {
-        crate::version::format_error("applied_marker");
+        vlsync_store::version::format_error("applied_marker");
         anyhow::anyhow!("malformed applied marker ({} bytes)", b.len())
     })
 }
@@ -655,7 +477,7 @@ impl NodeLog {
         inflight: usize,
         merger_tx: mpsc::UnboundedSender<LogBatch>,
     ) -> Arc<NodeLog> {
-        let wm = Arc::new(Watermark::new(cfg.writer, seq_floor(crate::tid::now_micros())));
+        let wm = Arc::new(Watermark::new(cfg.writer, seq_floor(vlsync_atproto::tid::now_micros())));
         let (tx, rx) = mpsc::channel(64 * 1024);
         let (fin_tx, fin_rx) = mpsc::channel(4);
         let live = LiveRing::new(DEFAULT_LIVE_RING_BYTES);
@@ -670,11 +492,11 @@ impl NodeLog {
             hedge_after: cfg.hedge_after,
         };
         // critical: a panic in either fail-stops the node (lifecycle.rs)
-        tokio::spawn(crate::lifecycle::critical(
+        tokio::spawn(vlsync_store::lifecycle::critical(
             "log_sequencer",
             run_sequencer(store, seq_cfg, cfg.lease_ok.clone(), wm.clone(), sinks.clone(), rx, fin_tx, feed.clone()),
         ));
-        tokio::spawn(crate::lifecycle::critical(
+        tokio::spawn(vlsync_store::lifecycle::critical(
             "log_finalizer",
             run_finalizer(
                 log_id.clone(),
@@ -955,7 +777,7 @@ async fn run_sequencer(
                 Some(Err(e)) if e.is_cancelled() => return,
                 Some(Err(e)) => {
                     tracing::error!(%log_id, "segment upload task failed: {e}; exiting");
-                    crate::lifecycle::fail_stop(2, "segment_upload");
+                    vlsync_store::lifecycle::fail_stop(2, "segment_upload");
                 }
                 None => {}
             },
@@ -981,7 +803,7 @@ async fn run_sequencer(
             if let Some(ok) = &lease_ok {
                 if !ok() {
                     tracing::error!(%log_id, "node lease lapsed before segment PUT: fail-stop");
-                    crate::lifecycle::fail_stop(5, "lease_lapsed");
+                    vlsync_store::lifecycle::fail_stop(5, "lease_lapsed");
                 }
             }
             let o = std::mem::replace(&mut open, Open::new(&log_id));
@@ -1002,7 +824,7 @@ async fn run_sequencer(
                 last_seq: last_seq.to_string(),
                 bytes: o.seg.len() as u64,
                 stored_bytes: 0,
-                sealed_at: crate::tid::now_micros() / 1000,
+                sealed_at: vlsync_atproto::tid::now_micros() / 1000,
                 durable_at: None,
                 put_ms: None,
             });
@@ -1168,11 +990,11 @@ async fn upload(store: &Store, log_id: &str, ordinal: u64, data: Bytes, hedge_af
                 }
                 Conflict::Fenced => {
                     tracing::error!(log_id, ordinal, "our log was fenced by a successor: fail-stop");
-                    crate::lifecycle::fail_stop(3, "fenced");
+                    vlsync_store::lifecycle::fail_stop(3, "fenced");
                 }
                 Conflict::Other => {
                     tracing::error!(log_id, ordinal, "segment ordinal taken by another writer: fail-stop");
-                    crate::lifecycle::fail_stop(3, "ordinal_taken");
+                    vlsync_store::lifecycle::fail_stop(3, "ordinal_taken");
                 }
                 Conflict::Missing => {
                     // S3 answers 409 (mapped to AlreadyExists) on conditional
@@ -1300,7 +1122,7 @@ async fn run_finalizer(
         for (shard, r) in futures::future::join_all(writes).await {
             if let Err(e) = r {
                 tracing::error!(shard = shard.0, "state apply failed: {e}; exiting");
-                crate::lifecycle::fail_stop(4, "state_apply");
+                vlsync_store::lifecycle::fail_stop(4, "state_apply");
             }
         }
         let _ = STATS.apply_us.lock().record(t.elapsed().as_micros().max(1) as u64);
@@ -1315,7 +1137,7 @@ async fn run_finalizer(
         if let Some(ok) = &lease_ok {
             if !ok() {
                 tracing::error!(%log_id, "node lease lapsed before ack: fail-stop");
-                crate::lifecycle::fail_stop(5, "lease_lapsed");
+                vlsync_store::lifecycle::fail_stop(5, "lease_lapsed");
             }
         }
         wm.set_durable(s.last_seq);
@@ -1432,7 +1254,7 @@ pub async fn replay_many(store: &Store, shards: &[(ShardId, &Db, &[Span])]) -> a
             // these spans still need (DESIGN.md "Log retention"), but never
             // past a resume point: the shard's next entries may be right
             // after its marker.
-            let head = crate::backfill::first_ordinal(store, &log_id).await?;
+            let head = vlsync_firehose::backfill::first_ordinal(store, &log_id).await?;
             if let Some((_, from, span)) =
                 resumes.iter().find(|(l, from, _)| *l == log_id && head.is_none_or(|h| h > *from))
             {
@@ -1475,7 +1297,7 @@ pub async fn replay_many(store: &Store, shards: &[(ShardId, &Db, &[Span])]) -> a
                 // The end of the log is only legitimate past every closed span:
                 // a closed span's end is the fence ordinal.
                 let seg = match obj? {
-                    Some(data) => match segment::parse(data, true, None)? {
+                    Some(data) => match crate::derived::parse(data, None)? {
                         LogObject::Segment(h, entries) => Some((h, entries)),
                         LogObject::Fence { .. } => None,
                     },
@@ -1536,7 +1358,8 @@ pub async fn replay_many(store: &Store, shards: &[(ShardId, &Db, &[Span])]) -> a
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::segment::SegmentBuilder;
+    use vlsync_firehose::log::{first_free, prefix_hole, read_head, Head};
+    use vlsync_store::segment::SegmentBuilder;
 
     fn seg_bytes(log: &str, ord: u64, shard: ShardId, epoch: u64, key: &str) -> Vec<u8> {
         let mut b = SegmentBuilder::new();
@@ -1597,13 +1420,13 @@ mod tests {
     async fn malformed_applied_marker_is_an_error() {
         assert_eq!(decode_marker(&encode_marker("A.1", 7)).unwrap(), ("A.1".to_string(), 7));
         let good = encode_marker("A", 1);
-        let before = crate::metrics::FORMAT_ERRORS.with_label_values(&["applied_marker"]).get();
+        let before = vlsync_store::metrics::FORMAT_ERRORS.with_label_values(&["applied_marker"]).get();
         let trailing = [good.as_slice(), b"x".as_slice()].concat();
         let bads: [&[u8]; 4] = [&good[..good.len() - 1], &trailing, b"", b"\x00\x09abc"];
         for bad in bads {
             assert!(decode_marker(bad).is_err(), "{bad:?}");
         }
-        assert!(crate::metrics::FORMAT_ERRORS.with_label_values(&["applied_marker"]).get() >= before + 4);
+        assert!(vlsync_store::metrics::FORMAT_ERRORS.with_label_values(&["applied_marker"]).get() >= before + 4);
         let store = Store::memory(None);
         let shard = ShardId(70_008);
         put_seg(&store, "A", 0, shard, 1, "a0").await;
@@ -1651,37 +1474,6 @@ mod tests {
         store.raw.put(&p, PutPayload::from(seg_bytes("A", 1, shard, 1, "a1"))).await.unwrap();
         assert_eq!(replay_many(&store, &[(shard, &db, &history)]).await.unwrap(), 2);
         assert!(db.get(b"a2").await.unwrap().is_some());
-    }
-
-    /// An idle watermark advertises the clock; after the clock steps back,
-    /// new seqs must still land above what was advertised.
-    #[test]
-    fn idle_watermark_is_monotonic_across_clock_steps() {
-        let writer = 9u8;
-        let wm = Watermark::new(writer, seq_floor(crate::tid::now_micros()));
-        let advertised = wm.get();
-        assert!(wm.idle());
-        crate::tid::set_test_skew_us(-5_000_000);
-        let seq = wm.assign();
-        crate::tid::set_test_skew_us(0);
-        assert!(seq > advertised, "seq {seq} <= advertised watermark {advertised}");
-        assert_eq!(seq & 0xff, writer as i64);
-        assert!(!wm.idle());
-        assert!(wm.get() < seq);
-        wm.set_durable(seq);
-        assert!(wm.get() >= seq);
-        // a log started with the clock ahead of its first seq keeps the writer byte
-        let wm = Watermark::new(writer, seq_floor(crate::tid::now_micros() + 1_000_000));
-        assert_eq!(wm.assign() & 0xff, writer as i64);
-        // the bump keeps the writer byte under a lease cap that ends in 0x00
-        let wm = Watermark::new(writer, 0);
-        wm.set_lease_expiry(crate::tid::now_micros() - 1_000_000);
-        let capped = wm.get();
-        assert!(wm.idle());
-        crate::tid::set_test_skew_us(-60_000_000);
-        let seq = wm.assign();
-        crate::tid::set_test_skew_us(0);
-        assert!(seq > capped && seq & 0xff == writer as i64);
     }
 
     #[tokio::test]
@@ -1988,7 +1780,7 @@ mod tests {
         // replay: the dead span ends at the fence; an open span stops at the hole
         let fresh = |name: &'static str| {
             let s = Store { prefix: name.into(), ..store.clone() };
-            async move { crate::partition::open_db(&s, crate::slots::ShardId(3), None).await.unwrap() }
+            async move { crate::partition::open_db(&s, vlsync_store::slots::ShardId(3), None).await.unwrap() }
         };
         for (name, end) in [("r1", Some(1)), ("r2", None)] {
             let db = fresh(name).await;
@@ -2001,14 +1793,14 @@ mod tests {
         }
         // backfill and seek stop at the fence
         let (tx, mut rx) = mpsc::channel(64);
-        crate::backfill::backfill(&store, 0, i64::MAX, &tx).await.unwrap();
+        vlsync_firehose::backfill::backfill(&store, 0, i64::MAX, &tx).await.unwrap();
         drop(tx);
         let mut n = 0;
         while rx.recv().await.is_some() {
             n += 1;
         }
         assert_eq!(n, 1, "only segment 0's event is served");
-        assert_eq!(crate::backfill::seek(&store, "L", i64::MAX - 1).await.unwrap(), 1);
+        assert_eq!(vlsync_firehose::backfill::seek(&store, "L", i64::MAX - 1).await.unwrap(), 1);
     }
 
     /// Single-log throughput, K = 1 vs K = 4, 25 ms (sigma 0.5) injected PUT

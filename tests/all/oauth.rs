@@ -919,7 +919,7 @@ async fn resource_dpop_checks() {
     // per request; HA notes in src/oauth/mod.rs)
     let part = s.app.partition(&acct.did).ok().unwrap();
     let prefix = vlpds::state::private_key(&acct.did, vlpds::oauth::util::REPLAY_ROW);
-    let mut rows = part.db.scan(prefix.clone()..vlpds::state::prefix_end(&prefix)).await.unwrap();
+    let mut rows = part.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await.unwrap();
     assert!(rows.next().await.unwrap().is_none(), "resource-request DPoP claim persisted");
     // stale iat, wrong typ
     let ath = b64(Sha256::digest(&access));
@@ -1224,7 +1224,7 @@ async fn include_permission_set() {
     let acct = s.app.account(&publisher.did).await.ok().unwrap();
     let rec = vlpds::oauth::lexicon::verify_record_proof(&car, &publisher.did, &acct.signing_pubkey, &path).unwrap();
     assert_eq!(rec["id"], nsid);
-    let other = vlpds::crypto::Keypair::generate();
+    let other = vlsync_atproto::crypto::Keypair::generate();
     assert!(vlpds::oauth::lexicon::verify_record_proof(&car, &publisher.did, &other.public_multibase(), &path).is_err());
 
     let key = DpopKey::new();

@@ -63,7 +63,7 @@ async fn admin_listings_scatter_gather_across_nodes() {
     // email-prefix search from any node, paged 2 at a time, sees all 9 in
     // (slot, did) order (layout-independent) with no duplicates
     let prefix = tag.to_ascii_lowercase();
-    let slot = |d: &str| vlpds::slots::slot_of(d);
+    let slot = |d: &str| vlsync_store::slots::slot_of(d);
     for s in [&a, &b, &c] {
         let (got, pages) = all_pages(s, "com.atproto.admin.searchAccounts", "accounts", &[("email", &prefix)], 2).await;
         let dids: Vec<String> = got.iter().map(|v| v["did"].as_str().unwrap().to_string()).collect();

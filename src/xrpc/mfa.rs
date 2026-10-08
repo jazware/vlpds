@@ -26,7 +26,7 @@ pub const EMAIL_LOCK: &str = "email_code";
 /// while the row is locked, deleted when it's written unlocked or deleted.
 /// An entry that outlived its row (expired, or the account went) is
 /// dropped when the listing finds it so.
-pub(super) fn lockout_index(routing: &str, name: &str, val: Option<&Bytes>) -> Option<crate::segment::Mutation> {
+pub(super) fn lockout_index(routing: &str, name: &str, val: Option<&Bytes>) -> Option<vlsync_store::segment::Mutation> {
     let factor = match name {
         ROW => FACTOR_LOCK,
         super::email2fa::LOCKOUT_NAME => EMAIL_LOCK,
@@ -39,7 +39,7 @@ pub(super) fn lockout_index(routing: &str, name: &str, val: Option<&Bytes>) -> O
     };
     let key = state::lockout_key(routing, factor).into();
     let locked = until > crate::totp::now_secs();
-    Some(crate::segment::Mutation { key, val: locked.then(|| Bytes::copy_from_slice(&until.to_be_bytes())) })
+    Some(vlsync_store::segment::Mutation { key, val: locked.then(|| Bytes::copy_from_slice(&until.to_be_bytes())) })
 }
 
 /// The factor named in a lockout index key's body, after the DID.
@@ -94,7 +94,7 @@ impl Mfa {
 
 /// `xxxx-xxxx-xxxx-xxxx`, base32: 80 bits.
 fn new_code() -> String {
-    let s = crate::cid::base32_encode(&rand::random::<[u8; 10]>());
+    let s = vlsync_atproto::cid::base32_encode(&rand::random::<[u8; 10]>());
     format!("{}-{}-{}-{}", &s[..4], &s[4..8], &s[8..12], &s[12..16])
 }
 

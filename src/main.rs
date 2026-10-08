@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::time::Duration;
 use vlpds::server::{self, Config};
-use vlpds::store::S3Config;
+use vlsync_store::store::S3Config;
 
 #[cfg(feature = "jemalloc")]
 #[global_allocator]
@@ -198,12 +198,12 @@ struct Args {
     /// Object-store requests in flight on the state client (SlateDB, blobs,
     /// account indexes); more queue for a permit. The pool keeps as many
     /// connections idle, so they are reused, never churned.
-    #[arg(long, env = "VLPDS_STORE_INFLIGHT", default_value_t = vlpds::objlimit::DEFAULT_STATE_INFLIGHT)]
+    #[arg(long, env = "VLPDS_STORE_INFLIGHT", default_value_t = vlsync_store::objlimit::DEFAULT_STATE_INFLIGHT)]
     store_inflight: usize,
     /// Object-store reads in flight on the log client (replay, firehose
     /// backfill, peer followers, retention). Segment PUTs have their own
     /// permits: max(64, 4 x --log-inflight).
-    #[arg(long, env = "VLPDS_LOG_STORE_INFLIGHT", default_value_t = vlpds::objlimit::DEFAULT_LOG_INFLIGHT)]
+    #[arg(long, env = "VLPDS_LOG_STORE_INFLIGHT", default_value_t = vlsync_store::objlimit::DEFAULT_LOG_INFLIGHT)]
     log_store_inflight: usize,
     /// Byte budget of the node log's live ring of sealed segments (MiB); a
     /// peer follower that falls behind it catches up from S3.
@@ -230,11 +230,11 @@ struct Args {
     backfill_cache_mb: usize,
     /// Cursor backfills running at once; more wait for a slot. Read-ahead
     /// memory is at most this x --backfill-readahead-mb.
-    #[arg(long, env = "VLPDS_FIREHOSE_MAX_BACKFILLS", default_value_t = vlpds::firehose::DEFAULT_MAX_BACKFILLS)]
+    #[arg(long, env = "VLPDS_FIREHOSE_MAX_BACKFILLS", default_value_t = vlsync_firehose::firehose::DEFAULT_MAX_BACKFILLS)]
     firehose_max_backfills: usize,
     /// subscribeRepos connections per client IP (IPv6: per /64; behind
     /// --trusted-proxies, the forwarded client); more get 429 (0 = no cap).
-    #[arg(long, env = "VLPDS_FIREHOSE_MAX_PER_IP", default_value_t = vlpds::firehose::DEFAULT_MAX_PER_IP)]
+    #[arg(long, env = "VLPDS_FIREHOSE_MAX_PER_IP", default_value_t = vlsync_firehose::firehose::DEFAULT_MAX_PER_IP)]
     firehose_max_per_ip: usize,
     /// getRepo exports streaming at once; more wait up to 10 s for a slot,
     /// then get 503.
@@ -310,7 +310,7 @@ struct Args {
     /// Log segment body compression: zstd level (0 = store segments
     /// uncompressed). Level 1 stores real commits ~2x smaller for ~4-6 µs
     /// of CPU per commit (DESIGN.md "Log compression").
-    #[arg(long, env = "VLPDS_LOG_COMPRESSION", default_value_t = vlpds::segment::DEFAULT_ZSTD_LEVEL, allow_hyphen_values = true)]
+    #[arg(long, env = "VLPDS_LOG_COMPRESSION", default_value_t = vlsync_store::segment::DEFAULT_ZSTD_LEVEL, allow_hyphen_values = true)]
     log_compression: i32,
     /// SlateDB GC: SSTs no manifest or checkpoint references are deleted
     /// once this old (from creation; e.g. 10m, 1h). Guards SSTs not yet in
@@ -1061,7 +1061,7 @@ fn admin_main(args: AdminArgs) -> anyhow::Result<()> {
 fn admin_token(token: &Option<String>, file: &Option<std::path::PathBuf>) -> anyhow::Result<String> {
     match (token, file) {
         (Some(t), _) => Ok(t.clone()),
-        (None, Some(p)) => vlpds::secret_file::read("admin-token-file", p),
+        (None, Some(p)) => vlsync_store::secret_file::read("admin-token-file", p),
         (None, None) => Ok(server::DEV_ADMIN_TOKEN.to_string()),
     }
 }
@@ -1069,7 +1069,7 @@ fn admin_token(token: &Option<String>, file: &Option<std::path::PathBuf>) -> any
 /// Replaces each secret given as a file with the file's contents, before
 /// anything reads the plain fields.
 fn read_secret_files(args: &mut Args) -> anyhow::Result<()> {
-    use vlpds::secret_file::{read, resolve};
+    use vlsync_store::secret_file::{read, resolve};
     resolve("jwt-secret-file", &args.jwt_secret_file, &mut args.jwt_secret)?;
     resolve("admin-token-file", &args.admin_token_file, &mut args.admin_token)?;
     resolve("internal-token-file", &args.internal_token_file, &mut args.internal_token)?;
@@ -1122,6 +1122,7 @@ fn effective_secret(a: &Args, id: &str) -> Option<String> {
 }
 
 fn main() -> anyhow::Result<()> {
+    vlsync_atproto::http::set_user_agent(concat!("vlpds/", env!("CARGO_PKG_VERSION")));
     match std::env::args().nth(1).as_deref() {
         Some("admin") => return admin_main(AdminArgs::parse_from(std::env::args().skip(1))),
         Some("dashboards") => return dashboards_main(DashboardsArgs::parse_from(std::env::args().skip(1))),
@@ -1131,7 +1132,7 @@ fn main() -> anyhow::Result<()> {
     let matches = cmd.clone().get_matches();
     let mut args = <Args as clap::FromArgMatches>::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     if args.generate_did_key {
-        let key = vlpds::crypto::Keypair::generate();
+        let key = vlsync_atproto::crypto::Keypair::generate();
         println!("private key (hex): {}", hex::encode(key.to_bytes().as_slice()));
         println!("did:key: {}", key.did_key());
         return Ok(());
@@ -1139,7 +1140,7 @@ fn main() -> anyhow::Result<()> {
     read_secret_files(&mut args)?;
     vlpds::config_report::record(vlpds::config_report::from_matches(&cmd, &matches, |id| effective_secret(&args, id)));
     init_logging(args.log_format)?;
-    vlpds::lifecycle::install_panic_hook();
+    vlsync_store::lifecycle::install_panic_hook();
     raise_nofile_limit();
     let node_id = args.node_id.clone().unwrap_or_else(|| "single".into());
     let exit_state = match (args.exit_state_file.as_str(), args.cache_dir.as_str()) {
@@ -1147,8 +1148,8 @@ fn main() -> anyhow::Result<()> {
         ("", dir) => Some(std::path::Path::new(dir).join(format!("vlpds-exit-{node_id}.json"))),
         (f, _) => Some(std::path::PathBuf::from(f)),
     };
-    vlpds::lifecycle::init(exit_state);
-    let rev = vlpds::version::build_rev().to_string();
+    vlsync_store::lifecycle::init(exit_state);
+    let rev = vlpds::build::rev().to_string();
     vlpds::metrics::BUILD_INFO
         .with_label_values(&[node_id.as_str(), rev.as_str(), if vlpds::profiling::ENABLED { "1" } else { "0" }])
         .set(1);
@@ -1162,8 +1163,8 @@ fn main() -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(io_threads).enable_all().build()?;
     let r = rt.block_on(run(args));
     match &r {
-        Ok(()) => vlpds::lifecycle::record_exit(0, "clean"),
-        Err(_) => vlpds::lifecycle::record_exit(1, "error"),
+        Ok(()) => vlsync_store::lifecycle::record_exit(0, "clean"),
+        Err(_) => vlsync_store::lifecycle::record_exit(1, "error"),
     }
     r
 }
@@ -1253,7 +1254,7 @@ async fn wrap_plc_rotation_key(args: &Args) -> anyhow::Result<()> {
     std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
     let t = input.trim();
     let key = if t.is_empty() {
-        std::sync::Arc::new(vlpds::crypto::Keypair::generate())
+        std::sync::Arc::new(vlsync_atproto::crypto::Keypair::generate())
     } else if t.starts_with("vw1.") {
         vlpds::plc::RotationKey::Wrapped(t.to_string()).load(&secrets).await?
     } else {
@@ -1401,7 +1402,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
     vlpds::partition::set_manifest_poll_interval(vlpds::retention::parse_duration(&args.slatedb_manifest_poll)?);
     vlpds::partition::set_gc_min_age(vlpds::retention::parse_duration(&args.slatedb_gc_min_age)?);
     vlpds::partition::set_checkpoint_lifetime(vlpds::retention::parse_duration(&args.slatedb_checkpoint_lifetime)?);
-    vlpds::segment::set_compression_level(args.log_compression);
+    vlsync_store::segment::set_compression_level(args.log_compression);
     vlpds::partition::set_detach_interval(vlpds::retention::parse_duration(&args.slatedb_detach_interval)?);
     let opt_duration = |v: &str| -> anyhow::Result<Option<Duration>> {
         match v {
@@ -1579,7 +1580,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
             renew_every: Duration::from_millis(args.lease_ttl_ms / 5),
             skew: Duration::from_millis(args.lease_ttl_ms / 5),
             clock_offset_ms: 0,
-            levels: vlpds::version::Window::BUILD,
+            levels: vlsync_store::version::Window::BUILD,
             lease_plane: None,
             startup_deadline: vlpds::cluster::STARTUP_DEADLINE,
         }),
@@ -1609,7 +1610,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
     if let Some(c) = &cfg.cluster {
         vlpds::metrics::export_lease_config(c.ttl, c.renew_every, c.skew);
     }
-    vlpds::metrics::export_firehose_config(cfg.firehose_merge_queue_bytes, cfg.firehose_max_lag_bytes);
+    vlsync_firehose::metrics::export_firehose_config(cfg.firehose_merge_queue_bytes, cfg.firehose_max_lag_bytes);
     if args.lease_ttl_ms < 10_000 && !args.dev_mode {
         tracing::warn!(
             lease_ttl_ms = args.lease_ttl_ms,

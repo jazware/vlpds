@@ -169,7 +169,7 @@ async fn request_crawl_reports_each_relay() {
 async fn publish_identity_and_key_rotation() {
     use vlpds::plc::mock::MockPlc;
     let plc = MockPlc::start().await;
-    let rot = Arc::new(vlpds::crypto::Keypair::generate());
+    let rot = Arc::new(vlsync_atproto::crypto::Keypair::generate());
     let s = TestServer::spawn_plc(&plc.url, rot.clone()).await;
     let a = s.create_account("pid").await;
     let b = s.create_account("pid").await;
@@ -196,7 +196,7 @@ async fn publish_identity_and_key_rotation() {
     assert!(out.contains("FAILED") && out.contains(&format!("published identity evt for {}", a.did)), "{out}");
 
     // rotate-keys: the PLC document's atproto key back to the one held here
-    let other = vlpds::crypto::Keypair::generate().did_key();
+    let other = vlsync_atproto::crypto::Keypair::generate().did_key();
     let direct = vlpds::plc::Plc::new(&plc.url, rot.clone(), None);
     assert!(direct.update_signing_key(&a.did, &other).await.unwrap(), "diverged");
     let out = ok(admin_cli(&s.url, &["rotate-keys", &a.did]).await);
@@ -277,7 +277,7 @@ async fn check_and_rebuild_repo() {
     let Ok(p) = s.app.partition(&a.did) else { panic!("not owned") };
     let prefix = vlpds::state::mst_node_prefix(&a.did, 0);
     let first = {
-        let mut it = p.db.scan(prefix.clone()..vlpds::state::prefix_end(&prefix)).await.unwrap();
+        let mut it = p.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await.unwrap();
         it.next().await.unwrap().unwrap().key
     };
     p.db.delete(first).await.unwrap();
@@ -345,7 +345,7 @@ async fn check_and_rebuild_repo() {
     // a lost record: the check says so, and rebuild refuses
     let rprefix = vlpds::state::record_prefix(&a.did, 0);
     let rec = {
-        let mut it = p.db.scan(rprefix.clone()..vlpds::state::prefix_end(&rprefix)).await.unwrap();
+        let mut it = p.db.scan(rprefix.clone()..vlsync_store::keys::prefix_end(&rprefix)).await.unwrap();
         it.next().await.unwrap().unwrap().key
     };
     p.db.delete(rec).await.unwrap();

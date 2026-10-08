@@ -135,12 +135,15 @@ pub(crate) fn serves_local_doc(app: &App, acct: &Account) -> bool {
 
 /// An active account whose did:plc may change elsewhere falls back to our
 /// document when the directory can't be reached.
-pub(crate) async fn account_did_doc(app: &App, acct: &Account) -> Result<Arc<J>, crate::did_resolver::ResolveError> {
+pub(crate) async fn account_did_doc(
+    app: &App,
+    acct: &Account,
+) -> Result<Arc<J>, vlsync_atproto::did_resolver::ResolveError> {
     if serves_local_doc(app, acct) {
         return Ok(Arc::new(did_doc(app, acct)));
     }
     match app.did_resolver.resolve(&acct.did).await {
-        Err(crate::did_resolver::ResolveError::Failed(..))
+        Err(vlsync_atproto::did_resolver::ResolveError::Failed(..))
             if acct.status.is_none() && !acct.signing_pubkey.is_empty() =>
         {
             Ok(Arc::new(did_doc(app, acct)))
@@ -149,8 +152,8 @@ pub(crate) async fn account_did_doc(app: &App, acct: &Account) -> Result<Arc<J>,
     }
 }
 
-fn resolve_error(e: crate::did_resolver::ResolveError) -> XrpcError {
-    use crate::did_resolver::ResolveError as E;
+fn resolve_error(e: vlsync_atproto::did_resolver::ResolveError) -> XrpcError {
+    use vlsync_atproto::did_resolver::ResolveError as E;
     match e {
         E::NotFound(did) | E::BadDid(did) => XrpcError::bad("DidNotFound", format!("DID not found: {did}")),
         E::Failed(..) => {
@@ -166,7 +169,7 @@ struct HandleQ {
 
 async fn resolve_handle(State(app): AppState, Query(q): Query<HandleQ>) -> XResult<Json<J>> {
     let handle = q.handle.to_ascii_lowercase();
-    if !super::syntax::valid_handle(&handle) {
+    if !vlsync_atproto::syntax::valid_handle(&handle) {
         return Err(XrpcError::bad("InvalidRequest", "Error: handle must be a valid handle"));
     }
     match resolve_any_handle(&app, &handle).await? {
@@ -216,7 +219,7 @@ pub(super) async fn resolve_external_handle(app: &App, handle: &str) -> Option<S
     if app.config.dev_mode {
         return None;
     }
-    dns_or_https_did(app, handle).await.filter(|d| super::syntax::valid_did(d))
+    dns_or_https_did(app, handle).await.filter(|d| vlsync_atproto::syntax::valid_did(d))
 }
 
 /// DNS TXT `_atproto.<handle>`, then `https://<handle>/.well-known/atproto-did`
@@ -239,7 +242,12 @@ async fn fetch_well_known(app: &App, handle: &str) -> Result<String, String> {
 async fn appview_resolve_handle(base: &str, handle: &str) -> Result<Option<String>, String> {
     let url = format!("{}/xrpc/com.atproto.identity.resolveHandle", base.trim_end_matches('/'));
     let fetch = async {
-        let r = crate::http::public().get(&url).query(&[("handle", handle)]).send().await.map_err(|e| e.to_string())?;
+        let r = vlsync_atproto::http::public()
+            .get(&url)
+            .query(&[("handle", handle)])
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
         let status = r.status();
         if status.is_client_error() {
             return Ok(None);
@@ -253,7 +261,7 @@ async fn appview_resolve_handle(base: &str, handle: &str) -> Result<Option<Strin
         }
         let j: J = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
         match j["did"].as_str() {
-            Some(d) if super::syntax::valid_did(d) => Ok(Some(d.to_string())),
+            Some(d) if vlsync_atproto::syntax::valid_did(d) => Ok(Some(d.to_string())),
             _ => Err("no valid did in the response".into()),
         }
     };
@@ -280,7 +288,7 @@ struct DidQ {
 }
 
 async fn resolve_did(State(app): AppState, Query(q): Query<DidQ>) -> XResult<Json<J>> {
-    if !super::syntax::valid_did(&q.did) {
+    if !vlsync_atproto::syntax::valid_did(&q.did) {
         return Err(XrpcError::bad("InvalidRequest", "Error: did must be a valid did"));
     }
     let acct = super::server::account_if_exists(&app, &q.did)
@@ -304,13 +312,13 @@ async fn identity_info(app: &App, identifier: &str, fresh: bool) -> XResult<(Opt
     let bad_ident = || XrpcError::bad("InvalidRequest", "Error: identifier must be a valid at-identifier");
     let not_found = |h: &str| XrpcError::bad("HandleNotFound", format!("Unable to resolve handle: {h}"));
     let (did, by_handle) = if identifier.starts_with("did:") {
-        if !super::syntax::valid_did(identifier) {
+        if !vlsync_atproto::syntax::valid_did(identifier) {
             return Err(bad_ident());
         }
         (identifier.to_string(), None)
     } else {
         let handle = identifier.to_ascii_lowercase();
-        if !super::syntax::valid_handle(&handle) {
+        if !vlsync_atproto::syntax::valid_handle(&handle) {
             return Err(bad_ident());
         }
         // a claim here names an account here (whatever its status)
@@ -346,7 +354,7 @@ async fn identity_info(app: &App, identifier: &str, fresh: bool) -> XResult<(Opt
     let verified = match (&claimed, &by_handle) {
         // resolved from the handle: the document must name it back
         (Some(c), Some(h)) => c == h,
-        (Some(c), None) => super::syntax::valid_handle(c) && handle_resolves_to(app, c, &did).await?,
+        (Some(c), None) => vlsync_atproto::syntax::valid_handle(c) && handle_resolves_to(app, c, &did).await?,
         (None, _) => false,
     };
     if let (Some(h), false) = (&by_handle, verified) {
@@ -420,7 +428,7 @@ async fn well_known_did(handle: &str, dev_mode: bool) -> Result<String, String> 
     const MAX_BYTES: usize = 2048;
     let url = format!("https://{handle}/.well-known/atproto-did");
     let fetch = async {
-        let r = crate::http::guarded(dev_mode).get(&url)?.send().await.map_err(|e| format!("{e:?}"))?;
+        let r = vlsync_atproto::http::guarded(dev_mode).get(&url)?.send().await.map_err(|e| format!("{e:?}"))?;
         if !r.status().is_success() {
             return Err(format!("status {}", r.status()));
         }
@@ -782,7 +790,7 @@ async fn get_plc_data(State(app): AppState, Auth(creds): Auth) -> XResult<Json<J
 /// learn which directory this server uses. Accounts here only (any status),
 /// so it is no open proxy.
 async fn get_plc_audit_log(State(app): AppState, Query(q): Query<DidQ>) -> XResult<Json<J>> {
-    if !crate::plc::valid_plc_did(&q.did) {
+    if !vlsync_atproto::plc::valid_plc_did(&q.did) {
         return Err(XrpcError::bad("InvalidRequest", format!("not a did:plc: {}", q.did)));
     }
     if super::server::account_if_exists(&app, &q.did).await?.is_none() {
@@ -902,7 +910,7 @@ async fn submit_plc_operation(
     let plc = plc_service(&app)?.clone();
     let op = inp.operation;
     let bad = |m: &str| XrpcError::bad("InvalidRequest", m);
-    if crate::plc::op_type(&op, true).ok() != Some(crate::plc::OpType::Operation) {
+    if crate::plc::op_type(&op, true).ok() != Some(vlsync_atproto::plc::OpType::Operation) {
         return Err(bad("Invalid operation"));
     }
     if !op["rotationKeys"].as_array().is_some_and(|a| a.iter().any(|k| k == plc.rotation_did_key())) {

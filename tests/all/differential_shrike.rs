@@ -46,9 +46,10 @@ use shrike::crypto::SigningKey as _;
 use shrike::mst::{DetachedTree, NoBlocks};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::str::FromStr;
-use vlpds::cbor::{JsonValue, RecordRefs};
-use vlpds::mst::{height_for_key, Tree};
-use vlpds::{car, crypto, lexicon, tid, xrpc::syntax};
+use vlpds::lexicon;
+use vlsync_atproto::cbor::{JsonValue, RecordRefs};
+use vlsync_atproto::mst::{height_for_key, Tree};
+use vlsync_atproto::{car, crypto, syntax, tid};
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -115,8 +116,8 @@ fn cbor_compare(b: &[u8]) -> Cbor {
             // JSON views: vlpds's tree and streaming transcoders vs shrike's
             let sj = drisl_to_json(b);
             let mut stream = Vec::new();
-            let streamed =
-                vlpds::cbor::write_json(b, &mut stream).map(|()| serde_json::from_slice::<J>(&stream).unwrap());
+            let streamed = vlsync_atproto::cbor::write_json(b, &mut stream)
+                .map(|()| serde_json::from_slice::<J>(&stream).unwrap());
             match (sj, streamed) {
                 (Ok(sj), Ok(vj)) if sj == v.to_json() && vj == sj => Cbor::Agree,
                 (sj, vj) => Cbor::Disagree(format!("JSON differs: vlpds {vj:?} / {}, shrike {sj:?}", v.to_json())),
@@ -261,7 +262,12 @@ fn cbor_random_values_and_mutations() {
     }
     t.root_cid().unwrap();
     t.walk_blocks(&mut |_, b| corpus.push(b.to_vec())).unwrap();
-    corpus.push(vlpds::events::encode_commit("did:plc:abc", "3jzfcijpj2z2a", &rand_cid(&mut rng), Some(&[7; 64])));
+    corpus.push(vlsync_atproto::events::encode_commit(
+        "did:plc:abc",
+        "3jzfcijpj2z2a",
+        &rand_cid(&mut rng),
+        Some(&[7; 64]),
+    ));
 
     let mut d = Diffs::new("random values + mutations");
     let (mut agreed, mut rejected, mut floats) = (0, 0, 0);
@@ -579,11 +585,11 @@ fn cid_strings_and_bytes() {
         // header bytes: version, codec, hash code, digest length
         let k = rng.gen_range(0..4);
         b[k] = rng.gen();
-        inputs.push(format!("b{}", vlpds::cid::base32_encode(&b)));
+        inputs.push(format!("b{}", vlsync_atproto::cid::base32_encode(&b)));
         // other lengths
         let n = rng.gen_range(30..40);
         b.resize(n, 0);
-        inputs.push(format!("b{}", vlpds::cid::base32_encode(&b)));
+        inputs.push(format!("b{}", vlsync_atproto::cid::base32_encode(&b)));
     }
     let mut ok = 0;
     for s in &inputs {
@@ -934,7 +940,7 @@ fn car_read_agreement() {
         let root = t.root_cid().unwrap();
         cars.push(tree_car(
             &mut t,
-            &vlpds::events::encode_commit("did:plc:abc", "3jzfcijpj2z2a", &root, Some(&[1; 64])),
+            &vlsync_atproto::events::encode_commit("did:plc:abc", "3jzfcijpj2z2a", &root, Some(&[1; 64])),
         ));
     }
     // shrike-written CARs (roots: none, one, several)
@@ -1440,8 +1446,8 @@ fn did_and_key(rng: &mut impl Rng) -> (String, crypto::Keypair) {
 }
 
 fn signed_commit(did: &str, rev: &str, data: &Cid, kp: &crypto::Keypair) -> Vec<u8> {
-    let sig = kp.sign(&vlpds::events::encode_commit(did, rev, data, None));
-    vlpds::events::encode_commit(did, rev, data, Some(&sig))
+    let sig = kp.sign(&vlsync_atproto::events::encode_commit(did, rev, data, None));
+    vlsync_atproto::events::encode_commit(did, rev, data, Some(&sig))
 }
 
 #[test]
@@ -1606,7 +1612,7 @@ fn raw_node(l: Option<Cid>, es: &[(&[u8], u64, Option<Cid>)], extra: Option<(&st
     if let Some((k, v)) = extra {
         m.push((k.into(), v));
     }
-    m.sort_by(|a, b| vlpds::cbor::key_cmp(&a.0, &b.0));
+    m.sort_by(|a, b| vlsync_atproto::cbor::key_cmp(&a.0, &b.0));
     Value::Map(m).to_cbor()
 }
 
@@ -1748,7 +1754,7 @@ fn mst_mutated_nodes() {
         let c = cids[rng.gen_range(0..cids.len())];
         let m = mutate(&mut rng, &blocks[&c]);
         let shrike_node = shrike::mst::node::decode_node_data(&m);
-        let vlpds_node = vlpds::mst::decode_node(&m, Cid::dag_cbor(&m));
+        let vlpds_node = vlsync_atproto::mst::decode_node(&m, Cid::dag_cbor(&m));
         let key = match (&vlpds_node, &shrike_node) {
             (Ok(_), Ok(_)) => "both decode".to_string(),
             (Err(_), Err(_)) => "both reject".to_string(),
@@ -1763,7 +1769,7 @@ fn mst_mutated_nodes() {
             // same keys and values in the same order
             let mut vk = Vec::new();
             for e in &vn.entries {
-                if let vlpds::mst::Entry::Value { key, val } = e {
+                if let vlsync_atproto::mst::Entry::Value { key, val } = e {
                     vk.push((key.to_vec(), *val));
                 }
             }

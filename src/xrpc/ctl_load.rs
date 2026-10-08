@@ -3,12 +3,12 @@
 //! reopening) one probe per shard instead of one failing read per request.
 
 use super::XrpcError;
-use crate::slots::ShardId;
 use parking_lot::Mutex as PMutex;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use vlsync_store::slots::ShardId;
 
 const PROBE_PAUSE_MIN: Duration = Duration::from_millis(20);
 const PROBE_PAUSE_MAX: Duration = Duration::from_millis(200);

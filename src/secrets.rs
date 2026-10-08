@@ -7,7 +7,6 @@
 //! pool and never start the unwraps' fail-fast window, so a flood of them
 //! can't starve or fail-fast cold signing-key unwraps.
 
-use crate::crypto::Keypair;
 use async_trait::async_trait;
 use base64::Engine;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
@@ -17,6 +16,7 @@ use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
+use vlsync_atproto::crypto::Keypair;
 use zeroize::{Zeroize, Zeroizing};
 
 mod vault;
@@ -479,7 +479,7 @@ impl GcpKms {
             name: name.to_string(),
             endpoint: endpoint.trim_end_matches('/').to_string(),
             token,
-            http: crate::http::public().clone(),
+            http: vlsync_atproto::http::public().clone(),
             cached: tokio::sync::Mutex::new(None),
         })
     }

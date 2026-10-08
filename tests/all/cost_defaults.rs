@@ -95,8 +95,8 @@ fn flush() -> slatedb::config::FlushOptions {
 /// 10 s poll). Overwrites and deletes included.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn own_writes_visible_with_slow_manifest_poll() {
-    let store = vlpds::store::Store::memory(None);
-    let db = vlpds::partition::open_db(&store, vlpds::slots::ShardId(0), None).await.unwrap();
+    let store = vlsync_store::store::Store::memory(None);
+    let db = vlpds::partition::open_db(&store, vlsync_store::slots::ShardId(0), None).await.unwrap();
     let key = |i: u32| format!("k{i:05}").into_bytes();
     let check = |db: &slatedb::Db, round: u32, upto: u32| {
         let db = db.clone();
@@ -147,7 +147,7 @@ async fn own_writes_visible_with_slow_manifest_poll() {
 }
 
 /// Applied markers of every owned shard.
-async fn markers(s: &TestServer) -> Vec<(vlpds::slots::ShardId, Option<(String, u64)>)> {
+async fn markers(s: &TestServer) -> Vec<(vlsync_store::slots::ShardId, Option<(String, u64)>)> {
     let mut v = Vec::new();
     for p in s.app.partitions.owned() {
         v.push((
@@ -231,11 +231,11 @@ async fn deep_l0_ingest_keeps_up() {
     if let Some(ms) = std::env::var("COMPACTION_POLL_MS").ok().and_then(|v| v.parse().ok()) {
         vlpds::partition::set_compaction_poll_interval(Duration::from_millis(ms));
     }
-    let store = vlpds::store::Store {
+    let store = vlsync_store::store::Store {
         raw: Arc::new(throttled_store(env_or("INGEST_LATENCY_MS", 10))),
-        ..vlpds::store::Store::memory(None)
+        ..vlsync_store::store::Store::memory(None)
     };
-    let db = vlpds::partition::open_db(&store, vlpds::slots::ShardId(0), None).await.unwrap();
+    let db = vlpds::partition::open_db(&store, vlsync_store::slots::ShardId(0), None).await.unwrap();
     let crate::compaction_polling::Ingest { secs, worst, slow, stalled, max_l0 } =
         crate::compaction_polling::unpaced_ingest(&db, records).await;
     eprintln!(

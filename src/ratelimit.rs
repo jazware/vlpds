@@ -38,7 +38,6 @@ pub mod config;
 pub mod mail_budget;
 pub mod runtime;
 
-use crate::xrpc::XrpcError;
 use axum::extract::{ConnectInfo, MatchedPath, Request};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -51,6 +50,7 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, LazyLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+use vlsync_atproto::xrpc::XrpcError;
 
 const MINUTE: u64 = 60_000;
 const HOUR: u64 = 60 * MINUTE;
@@ -1147,12 +1147,12 @@ impl Limiter {
             }
         }
         if let (Some(k), Some(v)) = (&self.bypass_key, hdr("x-ratelimit-bypass")) {
-            if crate::auth::token_eq(k, v) {
+            if vlsync_atproto::xrpc::token_eq(k, v) {
                 return true;
             }
         }
         if let Some(b) = hdr("authorization").and_then(|v| v.strip_prefix("Basic ")) {
-            if crate::auth::basic_admin_ok(b, &self.cfg.admin_token) {
+            if vlsync_atproto::xrpc::basic_admin_ok(b, &self.cfg.admin_token) {
                 return true;
             }
         }
@@ -1220,7 +1220,7 @@ impl Limiter {
     /// it stands for the mail provider's quota, which has none.
     pub async fn consume_cluster_mail(
         &self,
-        store: &crate::store::Store,
+        store: &vlsync_store::store::Store,
         route: &str,
         report: bool,
     ) -> Result<(), XrpcError> {

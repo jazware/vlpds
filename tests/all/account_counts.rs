@@ -37,7 +37,7 @@ fn like(rng: &mut StdRng) -> J {
 }
 
 fn tid_key(rng: &mut StdRng) -> String {
-    vlpds::tid::Tid(rng.gen_range(1u64 << 50..1u64 << 52) << 10).to_string()
+    vlsync_atproto::tid::Tid(rng.gen_range(1u64 << 50..1u64 << 52) << 10).to_string()
 }
 
 fn count(j: &J, k: &str) -> u64 {

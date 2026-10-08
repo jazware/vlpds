@@ -3,11 +3,11 @@
 //! are capped, and integers outside JS's safe range are refused on write.
 use crate::common::*;
 use std::time::Duration;
-use vlpds::cbor::key_cmp;
+use vlsync_atproto::cbor::key_cmp;
 
 /// A CAR of an (unsigned: importRepo doesn't check) commit over `records`.
 fn import_car(did: &str, records: &[(&str, Vec<u8>)]) -> Vec<u8> {
-    let mut tree = vlpds::mst::Tree::new();
+    let mut tree = vlsync_atproto::mst::Tree::new();
     let mut blocks: Vec<(Cid, Vec<u8>)> = Vec::new();
     for (path, rec) in records {
         let c = Cid::dag_cbor(rec);
@@ -27,10 +27,10 @@ fn import_car(did: &str, records: &[(&str, Vec<u8>)]) -> Vec<u8> {
     let commit = Value::Map(fields).to_cbor();
     let root = Cid::dag_cbor(&commit);
     let mut car = Vec::new();
-    vlpds::car::write_header(&mut car, &root);
-    vlpds::car::write_block(&mut car, &root, &commit);
+    vlsync_atproto::car::write_header(&mut car, &root);
+    vlsync_atproto::car::write_block(&mut car, &root, &commit);
     for (c, b) in &blocks {
-        vlpds::car::write_block(&mut car, c, b);
+        vlsync_atproto::car::write_block(&mut car, c, b);
     }
     car
 }

@@ -37,11 +37,11 @@
 //! count each passkey change writes. A row written before the flags were
 //! counted is seeded from the account rows like the suffixes.
 
-use crate::segment::Mutation;
 use crate::state::{self, Account, Head};
-use crate::tid::Tid;
 use bytes::{BufMut, Bytes};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use vlsync_atproto::tid::Tid;
+use vlsync_store::segment::Mutation;
 
 pub const STATUSES: [&str; 5] = ["active", "deactivated", "takendown", "suspended", "other"];
 
@@ -61,7 +61,7 @@ const DAY_MICROS: u64 = 86_400_000_000;
 pub const FAMILY: &[u8] = b"T/";
 
 pub fn key(slot: u16) -> Vec<u8> {
-    state::slot_family(slot, FAMILY)
+    vlsync_store::keys::slot_family(slot, FAMILY)
 }
 
 pub fn status_index(status: Option<&str>) -> u8 {
@@ -76,7 +76,7 @@ pub fn day_of(rev: Tid) -> u32 {
 }
 
 pub fn today() -> u32 {
-    (crate::tid::now_micros() / DAY_MICROS) as u32
+    (vlsync_atproto::tid::now_micros() / DAY_MICROS) as u32
 }
 
 fn cutoff(today: u32) -> u32 {
@@ -158,13 +158,13 @@ impl Delta {
     /// A change that leaves the handle and status alone (a commit). None
     /// when nothing it counts toward changed.
     pub fn new(did: &str, before: Option<RepoKey>, after: Option<RepoKey>) -> Option<Delta> {
-        (before != after).then(|| Delta { slot: crate::slots::slot_of(did), before, after, suffix: None })
+        (before != after).then(|| Delta { slot: vlsync_store::slots::slot_of(did), before, after, suffix: None })
     }
 
     pub fn account(did: &str, before: Counted, after: Counted) -> Option<Delta> {
         let suffix = (before.suffix != after.suffix).then_some((before.suffix, after.suffix));
         (before.repo != after.repo || suffix.is_some()).then(|| Delta {
-            slot: crate::slots::slot_of(did),
+            slot: vlsync_store::slots::slot_of(did),
             before: before.repo,
             after: after.repo,
             suffix,
@@ -471,8 +471,8 @@ impl ShardTotals {
         let mut out: Vec<SlotRows> = Vec::new();
         let mut stale = BTreeSet::new();
         while let Some(kv) = scan.next().await? {
-            let Some(slot) = state::key_slot(&kv.key) else { continue };
-            let body = state::key_body(&kv.key);
+            let Some(slot) = vlsync_store::keys::key_slot(&kv.key) else { continue };
+            let body = vlsync_store::keys::key_body(&kv.key);
             let (row, counts_suffixes) =
                 Totals::decode_row(&kv.value).map_err(|e| e.context(format!("slot {slot}")))?;
             if !counts_suffixes {
@@ -495,7 +495,7 @@ impl ShardTotals {
         let mut seeds: HashMap<u16, Totals> = stale.iter().map(|s| (*s, Totals::default())).collect();
         let mut accts = state::FamilyScan::new(snap.as_ref(), state::ACCOUNT_FAMILY, None, &opts).await?;
         while let Some(kv) = accts.next().await? {
-            let Some(seed) = state::key_slot(&kv.key).and_then(|s| seeds.get_mut(&s)) else { continue };
+            let Some(seed) = vlsync_store::keys::key_slot(&kv.key).and_then(|s| seeds.get_mut(&s)) else { continue };
             let Ok(a) = serde_json::from_slice::<Row>(&kv.value) else { continue };
             if a.status.as_deref() == Some("deleted") {
                 continue;
@@ -858,7 +858,7 @@ mod tests {
         let mut out: Vec<SlotRows> = Vec::new();
         let mut stale = BTreeSet::new();
         for (k, v) in db {
-            let slot = state::key_slot(k).unwrap();
+            let slot = vlsync_store::keys::key_slot(k).unwrap();
             if out.last().is_none_or(|o| o.slot != slot) {
                 out.push(SlotRows { slot, ..Default::default() });
             }
@@ -867,7 +867,7 @@ mod tests {
             if !counts {
                 stale.insert(slot);
             }
-            match state::key_body(k).len() - FAMILY.len() {
+            match vlsync_store::keys::key_body(k).len() - FAMILY.len() {
                 0 => o.row = Some(row),
                 _ => o.deltas.push((k.clone(), row)),
             }

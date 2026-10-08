@@ -3,8 +3,8 @@
 //! both paths that load attacker-chosen CARs: importRepo and the
 //! record-proof check behind OAuth `include:` scopes.
 use crate::common::*;
-use vlpds::cbor::{self, key_cmp};
-use vlpds::crypto::Keypair;
+use vlsync_atproto::cbor::{self, key_cmp};
+use vlsync_atproto::crypto::Keypair;
 
 /// Deep enough to overflow a 2 MiB stack in the unbounded loader.
 const DEPTH: usize = 200_000;
@@ -69,10 +69,10 @@ fn signed_car(did: &str, kp: &Keypair, data: Cid, blocks: &[(Cid, Vec<u8>)]) -> 
     let commit = Value::Map(fields).to_cbor();
     let root = Cid::dag_cbor(&commit);
     let mut car = Vec::new();
-    vlpds::car::write_header(&mut car, &root);
-    vlpds::car::write_block(&mut car, &root, &commit);
+    vlsync_atproto::car::write_header(&mut car, &root);
+    vlsync_atproto::car::write_block(&mut car, &root, &commit);
     for (c, b) in blocks.iter().rev() {
-        vlpds::car::write_block(&mut car, c, b);
+        vlsync_atproto::car::write_block(&mut car, c, b);
     }
     car
 }
@@ -84,7 +84,7 @@ fn signed_car(did: &str, kp: &Keypair, data: Cid, blocks: &[(Cid, Vec<u8>)]) -> 
 /// from ~18 KB, and a few more levels exhaust memory.
 fn dag_car(did: &str, kp: &Keypair, rpath: &str, fan: usize, levels: i32) -> Vec<u8> {
     use std::sync::Arc;
-    use vlpds::mst::{encode_node, height_for_key, Entry, Node};
+    use vlsync_atproto::mst::{encode_node, height_for_key, Entry, Node};
     let rec =
         Value::from_json(&json!({"$type": "com.atproto.lexicon.schema", "id": "com.example.dag"})).unwrap().to_cbor();
     let rec_cid = Cid::dag_cbor(&rec);

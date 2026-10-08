@@ -4,7 +4,7 @@
 //! stream's seqs, order and cursor semantics (DESIGN.md §5).
 use crate::common::*;
 use std::time::Duration;
-use vlpds::slots::{slot_of, SlotRange};
+use vlsync_store::slots::{slot_of, SlotRange};
 
 const IDLE: Duration = Duration::from_millis(600);
 

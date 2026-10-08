@@ -3,21 +3,14 @@
 //! coalesces queued writes into commits, signs them and hands them to the
 //! node log without waiting for durability (acks come back in log order).
 
-use crate::car;
 use crate::chan::{Receiver, Sender};
-use crate::cid::Cid;
-use crate::crypto::Keypair;
-use crate::events::{self, RepoOp};
 use crate::metrics;
-use crate::mst::Tree;
 use crate::mst_lazy::{LazyTree, Source};
 use crate::mst_store::{DbSource, ScanSource};
 use crate::partition::{LogEntry, Partition};
 use crate::secrets::Secrets;
-use crate::segment::Mutation;
 use crate::state::{self, Head};
 use crate::stats::STATS;
-use crate::tid::{self, Tid};
 use bytes::Bytes;
 use prometheus::IntCounter;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -25,6 +18,13 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
+use vlsync_atproto::car;
+use vlsync_atproto::cid::Cid;
+use vlsync_atproto::crypto::Keypair;
+use vlsync_atproto::events::{self, RepoOp};
+use vlsync_atproto::mst::Tree;
+use vlsync_atproto::tid::{self, Tid};
+use vlsync_store::segment::Mutation;
 
 /// Spec limits for a single commit.
 pub const MAX_COMMIT_OPS: usize = 200;
@@ -341,7 +341,7 @@ pub enum WorkerMsg {
     CreateRepo(CreateRepoReq),
     /// Forget cached repos of a partition this node no longer owns; replies
     /// once no repo state referencing it remains in this worker.
-    DropPartition(crate::slots::ShardId, oneshot::Sender<()>),
+    DropPartition(vlsync_store::slots::ShardId, oneshot::Sender<()>),
     /// Boxed: a RepoState is ~900 bytes, and every message is that size otherwise.
     Loaded {
         did: Arc<str>,
@@ -364,7 +364,7 @@ pub enum WorkerMsg {
     /// unchanged), and the blob refs and backlinks if it read them.
     Fetched {
         did: Arc<str>,
-        res: Result<Box<FetchedState>, crate::mst::MstError>,
+        res: Result<Box<FetchedState>, vlsync_atproto::mst::MstError>,
     },
     /// A new [`CacheLimits::bytes`] (src/memory.rs resizes the repo cache).
     SetCacheBytes(usize),
@@ -391,13 +391,13 @@ pub struct CachedRepo {
 /// commit that could still be lost.
 pub struct DurableView {
     pub head: Head,
-    /// The generation the head's rows are under (`state::Gen`).
+    /// The generation the head's rows are under (`vlsync_store::keys::Gen`).
     pub gen: u64,
     /// Only partly loaded: readers load the rest into a private copy from a
     /// SlateDB snapshot taken with the view (`App::repo_view`).
     pub tree: Tree,
     /// Shared with the worker, which advances it per commit.
-    pub nodes: crate::mst::SharedNodeIndex,
+    pub nodes: vlsync_atproto::mst::SharedNodeIndex,
 }
 
 pub type ViewCell = Arc<parking_lot::RwLock<Arc<DurableView>>>;
@@ -433,7 +433,7 @@ pub struct RepoState {
     /// durable one.
     pub stats: state::RepoStats,
     pub view: ViewCell,
-    pub nodes: crate::mst::SharedNodeIndex,
+    pub nodes: vlsync_atproto::mst::SharedNodeIndex,
     /// Approximate heap charged to the worker's cache ([`repo_bytes`]).
     pub charge: usize,
     /// Re-walked only where the tree changed (`Worker::settle`).
@@ -544,7 +544,7 @@ impl From<usize> for CacheLimits {
     }
 }
 
-fn new_view(head: &Head, gen: u64, mst: &LazyTree, nodes: &crate::mst::SharedNodeIndex) -> ViewCell {
+fn new_view(head: &Head, gen: u64, mst: &LazyTree, nodes: &vlsync_atproto::mst::SharedNodeIndex) -> ViewCell {
     Arc::new(parking_lot::RwLock::new(Arc::new(DurableView {
         head: head.clone(),
         gen,
@@ -633,7 +633,7 @@ pub fn spawn_with_secrets(
         std::thread::Builder::new()
             .name(format!("repo-worker-{i}"))
             .spawn(move || {
-                crate::lifecycle::mark_critical_thread("repo_worker");
+                vlsync_store::lifecycle::mark_critical_thread("repo_worker");
                 Worker::new(i, me, partitions, rt, limits, secrets, fallbacks).run(rx)
             })
             .unwrap();
@@ -929,7 +929,7 @@ impl Worker {
     fn fetched(
         &mut self,
         did: Arc<str>,
-        res: Result<Box<FetchedState>, crate::mst::MstError>,
+        res: Result<Box<FetchedState>, vlsync_atproto::mst::MstError>,
         order: &mut Vec<Arc<str>>,
         groups: &mut HashMap<Arc<str>, Vec<Queued>>,
     ) {
@@ -1146,7 +1146,7 @@ impl Worker {
         let (rt, me, d) = (self.rt.clone(), self.me.clone(), did.clone());
         self.loading.insert(did, reqs);
         self.rt.spawn_blocking(move || {
-            let store_err = |e: anyhow::Error| crate::mst::MstError::Store(e.to_string());
+            let store_err = |e: anyhow::Error| vlsync_atproto::mst::MstError::Store(e.to_string());
             let res = mst.as_mut().map_or(Ok(()), |m| need.load(m, &*db, &d, gen, &rt)).and_then(|_| {
                 let blobs = match need.blobs {
                     true => Some(rt.block_on(load_blob_refs(&*db, &d, gen)).map_err(store_err)?),
@@ -1352,7 +1352,7 @@ impl Worker {
                 crate::totals::Counted::of(&account, &head),
             ),
         };
-        let nodes = crate::mst::SharedNodeIndex::default();
+        let nodes = vlsync_atproto::mst::SharedNodeIndex::default();
         let mst = LazyTree::loaded(tree, 1);
         let view = new_view(&head, gen, &mst, &nodes);
         let st = RepoState {
@@ -1564,7 +1564,7 @@ impl Need {
         did: &str,
         gen: u64,
         rt: &tokio::runtime::Handle,
-    ) -> Result<(), crate::mst::MstError> {
+    ) -> Result<(), vlsync_atproto::mst::MstError> {
         let fallbacks = mst.stats.fallbacks;
         if self.all && !mst.fully_loaded() {
             // one forward scan of the records serves every unloaded leaf
@@ -1575,7 +1575,7 @@ impl Need {
         let probes: Vec<&[u8]> = self.probes.iter().map(|k| &k[..]).collect();
         mst.fetch(&keys, &probes, &DbSource::new(db, did, gen, rt))?;
         match mst.stats.fallbacks > fallbacks {
-            true => Err(crate::mst::MstError::Invalid("persisted MST nodes missing")),
+            true => Err(vlsync_atproto::mst::MstError::Invalid("persisted MST nodes missing")),
             false => Ok(()),
         }
     }
@@ -1632,7 +1632,7 @@ fn lazy_needs(st: &mut RepoState, reqs: Vec<Queued>) -> Result<Vec<Queued>, Defe
             Err((reqs, Some(Box::new(need))))
         }
         Ok(()) => Ok(reqs),
-        Err(crate::mst::MstError::NotLoaded) => Err((reqs, Some(Box::new(need)))),
+        Err(vlsync_atproto::mst::MstError::NotLoaded) => Err((reqs, Some(Box::new(need)))),
         Err(e) => {
             tracing::error!(did = %st.did, "lazy MST walk failed: {e}");
             Err((reqs, None))
@@ -1741,7 +1741,7 @@ const PRELOAD_CONCURRENCY: usize = 32;
 /// next owner. A shard closed meanwhile just fails its loads.
 pub fn spawn_preload(
     workers: &Workers,
-    shards: Vec<(crate::slots::ShardId, Arc<slatedb::Db>, Arc<crate::partition::RecentRepos>)>,
+    shards: Vec<(vlsync_store::slots::ShardId, Arc<slatedb::Db>, Arc<crate::partition::RecentRepos>)>,
 ) {
     use futures::StreamExt;
     let senders = Arc::downgrade(&workers.senders);
@@ -1814,14 +1814,14 @@ pub fn sign_commit(
     rev: &str,
     data: &Cid,
     key: &Keypair,
-) -> Result<(Cid, Bytes), crate::crypto::SignatureFault> {
+) -> Result<(Cid, Bytes), vlsync_atproto::crypto::SignatureFault> {
     let unsigned = events::encode_commit(did, rev, data, None);
-    let sig = key.sign_verified(crate::crypto::Purpose::Commit, &unsigned)?;
+    let sig = key.sign_verified(vlsync_atproto::crypto::Purpose::Commit, &unsigned)?;
     let signed = events::encode_commit(did, rev, data, Some(&sig));
     Ok((Cid::dag_cbor(&signed), Bytes::from(signed)))
 }
 
-fn signature_fault(e: &crate::crypto::SignatureFault) -> WriteError {
+fn signature_fault(e: &vlsync_atproto::crypto::SignatureFault) -> WriteError {
     WriteError::SignatureFault(e.to_string())
 }
 
@@ -1842,7 +1842,7 @@ pub async fn warm_repo<R: slatedb::DbReadOps + Sync + ?Sized>(db: &R, did: &str)
 /// cache.
 pub async fn warm_security<R: slatedb::DbReadOps + Sync + ?Sized>(db: &R, did: &str) -> anyhow::Result<()> {
     let lo = [state::private_prefix(did), crate::xrpc::SEC.as_bytes().to_vec()].concat();
-    let hi = state::prefix_end(&lo);
+    let hi = vlsync_store::keys::prefix_end(&lo);
     let opts = slatedb::config::ScanOptions { cache_blocks: true, ..Default::default() };
     let mut it = db.scan_with_options(lo..hi, &opts).await?;
     while it.next().await?.is_some() {}
@@ -1872,7 +1872,7 @@ async fn load_repo_with(partition: Arc<Partition>, did: Arc<str>, opts: LoadOpts
         // the (possibly long-cached) scalar must still derive the account's
         // public key; if not, treat the key as unavailable
         Ok(k) if !k.matches_public(&acct.signing_pubkey) => {
-            crate::crypto::record_fault(crate::crypto::Purpose::KeyLoad);
+            vlsync_atproto::crypto::record_fault(vlsync_atproto::crypto::Purpose::KeyLoad);
             secrets.forget(&did);
             None
         }
@@ -1946,8 +1946,8 @@ async fn open_lazy(
         let err = match opened {
             Ok(t) if t.stats.node_reads == 0 && t.tree.root.height >= 1 => "missing",
             Ok(t) => return Ok((t, false)),
-            Err(crate::mst::MstError::Store(e)) => anyhow::bail!("lazy MST open: {e}"),
-            Err(crate::mst::MstError::Invalid("persisted MST nodes missing")) => "missing_node",
+            Err(vlsync_atproto::mst::MstError::Store(e)) => anyhow::bail!("lazy MST open: {e}"),
+            Err(vlsync_atproto::mst::MstError::Invalid("persisted MST nodes missing")) => "missing_node",
             Err(e) => {
                 tracing::warn!(%did, "lazy MST open failed ({e}): rebuilding from records");
                 "invalid"
@@ -1990,7 +1990,7 @@ async fn load_blob_refs<R: slatedb::DbReadOps + Sync + ?Sized>(
     gen: u64,
 ) -> anyhow::Result<BlobRefs> {
     let prefix = state::blob_ref_prefix(did, gen);
-    let mut iter = db.scan(prefix.clone()..state::prefix_end(&prefix)).await?;
+    let mut iter = db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await?;
     let mut out = BlobRefs::new();
     while let Some(kv) = iter.next().await? {
         let rest = std::str::from_utf8(&kv.key[prefix.len()..])?;
@@ -2031,7 +2031,7 @@ fn finish_load(
 ) -> anyhow::Result<RepoState> {
     let root = mst.tree.root_cid()?;
     anyhow::ensure!(root == head.data, "rebuilt MST root {root} != head data {}", head.data);
-    let nodes = crate::mst::SharedNodeIndex::default();
+    let nodes = vlsync_atproto::mst::SharedNodeIndex::default();
     let view = new_view(&head, account.repo_gen, &mst, &nodes);
     Ok(RepoState {
         did,
@@ -2308,7 +2308,7 @@ fn process_with(st: &mut RepoState, reqs: Vec<Queued>, clock_id: u64, src: &dyn 
     // after a signature fault the requests not reached yet weren't applied
     // either: answer them retryably rather than dropping them
     if let Err(e) = &r {
-        if let Some(f) = e.downcast_ref::<crate::crypto::SignatureFault>() {
+        if let Some(f) = e.downcast_ref::<vlsync_atproto::crypto::SignatureFault>() {
             for q in rest {
                 q.fail(signature_fault(f));
             }
@@ -2921,7 +2921,7 @@ fn flush(st: &mut RepoState, batch: Batch, clock_id: u64, src: &dyn Source) -> a
         car::write_block(&mut car_bytes, c, b);
     }
     // `muts` gets what replay rebuilds from the #commit frame
-    // (segment::derive_commit_muts), `extra` the rest; the segment stores
+    // (crate::derived::derive_commit_muts), `extra` the rest; the segment stores
     // only `extra`
     let mut extra = Vec::new();
     let mut derived_bl: HashMap<&[u8], &str> = HashMap::new();
@@ -3049,7 +3049,7 @@ fn flush(st: &mut RepoState, batch: Batch, clock_id: u64, src: &dyn Source) -> a
     {
         let mut f = Vec::new();
         frame.finish(0, &mut f);
-        let d = crate::segment::derive_commit_muts_n(&f, derived, gen).expect("derive commit muts");
+        let d = crate::derived::derive_commit_muts_n(&f, derived, gen).expect("derive commit muts");
         assert!(
             d.len() == derived && d.iter().zip(&muts).all(|(a, b)| a.key == b.key && a.val == b.val),
             "muts derived from the #commit frame differ from the commit's"
@@ -3083,7 +3083,7 @@ fn flush(st: &mut RepoState, batch: Batch, clock_id: u64, src: &dyn Source) -> a
         part: (st.partition.id, st.partition.epoch),
         since: since_rev.0,
         rev: rev.0,
-        prev_nonempty: prev_data != *crate::recent_writes::EMPTY_ROOT,
+        prev_nonempty: prev_data != *vlsync_atproto::mst::EMPTY_ROOT,
         ops: recent,
     };
     let entry = LogEntry {
@@ -3614,7 +3614,7 @@ fn key_step(
                 part: (st.partition.id, st.partition.epoch),
                 since: since.0,
                 rev: rev.0,
-                prev_nonempty: st.head.data != *crate::recent_writes::EMPTY_ROOT,
+                prev_nonempty: st.head.data != *vlsync_atproto::mst::EMPTY_ROOT,
                 ops: Some(Vec::new()),
             });
             st.head = head;
@@ -3924,7 +3924,7 @@ mod tests {
             r.await.unwrap().unwrap();
         }
         let prefix = state::blob_ref_prefix(&did, 0);
-        let mut it = db.scan(prefix.clone()..state::prefix_end(&prefix)).await.unwrap();
+        let mut it = db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await.unwrap();
         let mut left = Vec::new();
         while let Some(kv) = it.next().await.unwrap() {
             left.push(kv.key.to_vec());
@@ -4041,8 +4041,8 @@ mod tests {
 
     /// A partition whose "sequencer" is the test (`rx`).
     async fn test_partition() -> (Arc<Partition>, tokio::sync::mpsc::Receiver<LogEntry>) {
-        let store = crate::store::Store::memory(None);
-        let db = Arc::new(crate::partition::open_db(&store, crate::slots::ShardId(0), None).await.unwrap());
+        let store = vlsync_store::store::Store::memory(None);
+        let db = Arc::new(crate::partition::open_db(&store, vlsync_store::slots::ShardId(0), None).await.unwrap());
         let (merger_tx, _merger_rx) = tokio::sync::mpsc::unbounded_channel();
         let log = NodeLog::start(
             store.clone(),
@@ -4058,7 +4058,7 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::channel::<LogEntry>(16);
         (
             Arc::new(Partition {
-                id: crate::slots::ShardId(0),
+                id: vlsync_store::slots::ShardId(0),
                 epoch: 1,
                 db,
                 apply_lock: Default::default(),
@@ -4189,8 +4189,8 @@ mod tests {
     fn bench_commit_cpu() {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
         let (part, mut rx) = rt.block_on(async {
-            let store = crate::store::Store::memory(None);
-            let db = Arc::new(crate::partition::open_db(&store, crate::slots::ShardId(0), None).await.unwrap());
+            let store = vlsync_store::store::Store::memory(None);
+            let db = Arc::new(crate::partition::open_db(&store, vlsync_store::slots::ShardId(0), None).await.unwrap());
             let (merger_tx, _merger_rx) = tokio::sync::mpsc::unbounded_channel();
             let log = NodeLog::start(
                 store.clone(),
@@ -4207,7 +4207,7 @@ mod tests {
             let (tx, rx) = tokio::sync::mpsc::channel::<LogEntry>(1 << 16);
             (
                 Arc::new(Partition {
-                    id: crate::slots::ShardId(0),
+                    id: vlsync_store::slots::ShardId(0),
                     epoch: 1,
                     db,
                     apply_lock: Default::default(),
@@ -4256,7 +4256,7 @@ mod tests {
                             _ => serde_json::json!(format!("did:plc:{next:024}")),
                         };
                         let v = serde_json::json!({"$type": coll, "subject": subject, "createdAt": "2026-10-01T00:00:00.000Z"});
-                        (coll, Bytes::from(crate::cbor::Value::from_json(&v).unwrap().to_cbor()))
+                        (coll, Bytes::from(vlsync_atproto::cbor::Value::from_json(&v).unwrap().to_cbor()))
                     }
                 };
                 let (reply, _rx) = oneshot::channel();

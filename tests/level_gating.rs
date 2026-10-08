@@ -29,7 +29,7 @@ use common::*;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
-use vlpds::version;
+use vlsync_store::version;
 
 const SHARDS: u32 = 6;
 const PREFIX: &str = "vlpds";
@@ -92,7 +92,7 @@ struct Scan {
 /// fixture has, plus the optional ones it leaves out). Unknown object
 /// families fail too, so a new one gets a rule here.
 async fn scan(store: &object_store::memory::InMemory, at_most: Option<u32>) -> Scan {
-    use vlpds::segment;
+    use vlsync_store::segment;
     let mut s = Scan::default();
     // fields the fixtures leave out because they were None (or 0) there
     let optional: BTreeMap<&str, &[&str]> = [
@@ -131,13 +131,13 @@ async fn scan(store: &object_store::memory::InMemory, at_most: Option<u32>) -> S
                         assert!(h.checksum.is_none() || h.level >= version::TEST_LEVEL, "{path}");
                     }
                     // and the whole object parses (the test level's checksum verifies)
-                    segment::parse(b.clone(), true, None).unwrap_or_else(|e| panic!("{path}: {e:#}"));
+                    vlpds::derived::parse(b.clone(), None).unwrap_or_else(|e| panic!("{path}: {e:#}"));
                     *s.segments.entry(h.level).or_default() += 1;
                 }
             },
             "retain" => {
                 check_json("control/retain_report.json", "retain");
-                let r: vlpds::retention::Report = serde_json::from_slice(&b).unwrap();
+                let r: vlsync_firehose::log::Report = serde_json::from_slice(&b).unwrap();
                 if r.min_seg_format.is_some() {
                     s.reports.0 += 1;
                 } else {

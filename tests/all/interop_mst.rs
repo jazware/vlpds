@@ -2,7 +2,7 @@
 //! commit-proof fixtures (testdata/interop/{mst,firehose}).
 use crate::common::*;
 use std::collections::HashMap;
-use vlpds::mst::{height_for_key, Tree};
+use vlsync_atproto::mst::{height_for_key, Tree};
 
 #[derive(serde::Deserialize)]
 struct KeyHeight {

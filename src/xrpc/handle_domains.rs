@@ -34,7 +34,7 @@ fn node_id(app: &App) -> String {
     app.cluster.as_ref().map(|c| c.cfg.node_id.clone()).unwrap_or_else(|| "single".into())
 }
 
-type ShardCounts = Vec<(crate::slots::ShardId, BTreeMap<String, u64>)>;
+type ShardCounts = Vec<(vlsync_store::slots::ShardId, BTreeMap<String, u64>)>;
 
 /// The longest of `domains` that `suffix` is or is under.
 fn domain_of<'d>(suffix: &str, domains: &'d [String]) -> Option<&'d str> {
@@ -44,7 +44,7 @@ fn domain_of<'d>(suffix: &str, domains: &'d [String]) -> Option<&'d str> {
 /// Active accounts per domain of `domains`, per shard of this node, from
 /// the kept totals (`crate::totals` counts them by handle suffix); and the
 /// shards whose totals are still loading, left out.
-fn counts_kept(app: &App, domains: &[String]) -> (ShardCounts, Vec<crate::slots::ShardId>) {
+fn counts_kept(app: &App, domains: &[String]) -> (ShardCounts, Vec<vlsync_store::slots::ShardId>) {
     let (mut out, mut loading) = (Vec::new(), Vec::new());
     for sink in app.log.sinks.all() {
         // copied out: the sequencer takes this lock for every account change
@@ -101,7 +101,7 @@ async fn counts_local(
     app: &App,
     domains: &[String],
     recount: bool,
-) -> XResult<(ShardCounts, Vec<crate::slots::ShardId>)> {
+) -> XResult<(ShardCounts, Vec<vlsync_store::slots::ShardId>)> {
     match recount {
         true => Ok((counts_scanned(app, domains).await?, Vec::new())),
         false => Ok(counts_kept(app, domains)),
@@ -118,7 +118,7 @@ struct Counts {
 /// once.
 async fn counts(app: &App, domains: &[String], recount: bool) -> XResult<Counts> {
     let (local, mut loading) = counts_local(app, domains, recount).await?;
-    let mut by_shard: BTreeMap<crate::slots::ShardId, BTreeMap<String, u64>> = local.into_iter().collect();
+    let mut by_shard: BTreeMap<vlsync_store::slots::ShardId, BTreeMap<String, u64>> = local.into_iter().collect();
     let mut query = vec![("domains", domains.join(","))];
     if recount {
         query.push(("recount", "true".into()));
@@ -130,10 +130,10 @@ async fn counts(app: &App, domains: &[String], recount: bool) -> XResult<Counts>
             by_shard.entry(s).or_insert(c);
         }
         loading.extend(
-            serde_json::from_value::<Vec<crate::slots::ShardId>>(r.body["loading"].clone()).unwrap_or_default(),
+            serde_json::from_value::<Vec<vlsync_store::slots::ShardId>>(r.body["loading"].clone()).unwrap_or_default(),
         );
     }
-    let covered: HashSet<crate::slots::ShardId> = by_shard.keys().copied().collect();
+    let covered: HashSet<vlsync_store::slots::ShardId> = by_shard.keys().copied().collect();
     let mut by_domain: BTreeMap<String, u64> = domains.iter().map(|d| (d.clone(), 0)).collect();
     for c in by_shard.into_values() {
         for (d, n) in c {

@@ -20,12 +20,12 @@ const KICK_BACKOFF: Duration = Duration::from_secs(1);
 
 const INTERRUPTED: &str = "KeyRotationInterrupted";
 
-pub use crate::lifecycle::CrashHook;
+pub use vlsync_store::lifecycle::CrashHook;
 
 /// Phases of a DID's rotation: "begun" (the pending key is durable) and
 /// "plc_updated" (the directory names it, the repo isn't re-signed yet).
 /// The test halts the node in the hook.
-static CRASH_HOOKS: crate::lifecycle::CrashHooks = crate::lifecycle::CrashHooks::new();
+static CRASH_HOOKS: vlsync_store::lifecycle::CrashHooks = vlsync_store::lifecycle::CrashHooks::new();
 
 pub fn set_crash_hook(did: &str, h: Option<CrashHook>) {
     CRASH_HOOKS.set(did, h)

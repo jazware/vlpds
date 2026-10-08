@@ -16,7 +16,7 @@ fn ok((r, out): (anyhow::Result<()>, String)) -> String {
 
 /// `{fam}{did}\0{sid}{rest}` in the DID's slot.
 fn space_key(fam: &[u8], did: &str, space: &str, rest: &[u8]) -> Vec<u8> {
-    let mut k = vlpds::state::slot_family(vlpds::slots::slot_of(did), fam);
+    let mut k = vlsync_store::keys::slot_family(vlsync_store::slots::slot_of(did), fam);
     k.extend_from_slice(did.as_bytes());
     k.push(0);
     k.extend_from_slice(&sha2::Sha256::digest(space.as_bytes())[..16]);
@@ -91,7 +91,7 @@ async fn check_space_finds_damaged_rows() {
     // the newest op gone
     let oprefix = space_key(b"sO/", &did, &space, b"");
     let last = {
-        let mut it = p.db.scan(oprefix.clone()..vlpds::state::prefix_end(&oprefix)).await.unwrap();
+        let mut it = p.db.scan(oprefix.clone()..vlsync_store::keys::prefix_end(&oprefix)).await.unwrap();
         let mut last = None;
         while let Some(kv) = it.next().await.unwrap() {
             last = Some(kv.key);

@@ -132,7 +132,7 @@ impl Jwt {
         typ: &str,
         jti: Option<&str>,
     ) -> String {
-        let now = crate::tid::now_micros() / 1_000_000;
+        let now = vlsync_atproto::tid::now_micros() / 1_000_000;
         let header = B64.encode(format!(r#"{{"alg":"HS256","typ":"{typ}"}}"#));
         let claims = Claims {
             scope: scope.into(),
@@ -167,7 +167,7 @@ impl Jwt {
 
     /// Expiry, scope and revocation are the caller's to check.
     pub fn verify_signature_cached(&self, token: &str) -> Option<Arc<Claims>> {
-        let now = crate::tid::now_micros() / 1_000_000;
+        let now = vlsync_atproto::tid::now_micros() / 1_000_000;
         if let Some(c) = self.verified.get(token, now) {
             return Some(c);
         }
@@ -180,13 +180,13 @@ impl Jwt {
 /// ES256K service-auth JWT. `aud` may carry a #fragment. Err: signing failed
 /// verification twice and nothing was issued.
 pub fn service_auth_jwt(
-    key: &crate::crypto::Keypair,
+    key: &vlsync_atproto::crypto::Keypair,
     iss: &str,
     aud: &str,
     lxm: Option<&str>,
     ttl_secs: u64,
-) -> Result<String, crate::crypto::SignatureFault> {
-    let now = crate::tid::now_micros() / 1_000_000;
+) -> Result<String, vlsync_atproto::crypto::SignatureFault> {
+    let now = vlsync_atproto::tid::now_micros() / 1_000_000;
     let header = B64.encode(r#"{"typ":"JWT","alg":"ES256K"}"#);
     let mut claims = serde_json::json!({
         "iat": now,
@@ -200,24 +200,11 @@ pub fn service_auth_jwt(
     }
     let payload = B64.encode(serde_json::to_vec(&claims).unwrap());
     let signing_input = format!("{header}.{payload}");
-    let sig = key.sign_verified(crate::crypto::Purpose::ServiceAuth, signing_input.as_bytes())?;
+    let sig = key.sign_verified(vlsync_atproto::crypto::Purpose::ServiceAuth, signing_input.as_bytes())?;
     Ok(format!("{signing_input}.{}", B64.encode(sig)))
 }
 
-/// Compares SHA-256 digests, so neither content nor length leaks through
-/// timing. An empty `expected` (unset secret) never matches.
-pub fn token_eq(expected: &str, given: &str) -> bool {
-    use sha2::Digest;
-    !expected.is_empty() && ct_eq(&Sha256::digest(expected), &Sha256::digest(given))
-}
-
 pub use crate::prims::ct_eq;
-
-/// `b64` is the `Authorization: Basic` value after the scheme.
-pub fn basic_admin_ok(b64: &str, admin_token: &str) -> bool {
-    let dec = base64::engine::general_purpose::STANDARD.decode(b64.trim()).unwrap_or_default();
-    std::str::from_utf8(&dec).ok().and_then(|s| s.strip_prefix("admin:")).is_some_and(|tok| token_eq(admin_token, tok))
-}
 
 #[cfg(test)]
 mod tests {
@@ -250,18 +237,5 @@ mod tests {
         let (_, sig) =
             other.access("did:plc:abc").rsplit_once('.').map(|(a, b)| (a.to_string(), b.to_string())).unwrap();
         assert!(jwt.verify_signature_cached(&format!("{input}.{sig}")).is_none());
-    }
-
-    #[test]
-    fn token_compare() {
-        assert!(token_eq("abc", "abc"));
-        assert!(!token_eq("abc", "abd"));
-        assert!(!token_eq("abc", "abcd"));
-        assert!(!token_eq("", ""), "an unset token never matches");
-        let b = base64::engine::general_purpose::STANDARD.encode("admin:tok");
-        assert!(basic_admin_ok(&b, "tok"));
-        assert!(!basic_admin_ok(&b, "other"));
-        let empty = base64::engine::general_purpose::STANDARD.encode("admin:");
-        assert!(!basic_admin_ok(&empty, ""));
     }
 }

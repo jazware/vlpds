@@ -26,9 +26,9 @@ use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use vlpds::cid::Cid;
-use vlpds::mst::{Entry, Node, Tree};
 use vlpds::mst_lazy::{self, export_blocks, heap_bytes, LazyTree, LoadStats, MemStore};
+use vlsync_atproto::cid::Cid;
+use vlsync_atproto::mst::{Entry, Node, Tree};
 
 #[derive(Clone, Debug)]
 enum Op {
@@ -363,10 +363,10 @@ fn real_repo() -> Option<(Cid, Vec<(Vec<u8>, Cid)>)> {
         eprintln!("skipping: no repo CAR at {path} (set VLPDS_REPO_CAR)");
         return None;
     };
-    let (roots, blocks) = vlpds::car::read_car(&car).unwrap();
+    let (roots, blocks) = vlsync_atproto::car::read_car(&car).unwrap();
     let blocks: HashMap<Cid, Vec<u8>> = blocks.into_iter().map(|(c, b)| (c, b.to_vec())).collect();
-    let commit = vlpds::cbor::Value::decode(&blocks[&roots[0]]).unwrap();
-    let Some(vlpds::cbor::Value::Link(data)) = commit.get("data") else { panic!("commit without data") };
+    let commit = vlsync_atproto::cbor::Value::decode(&blocks[&roots[0]]).unwrap();
+    let Some(vlsync_atproto::cbor::Value::Link(data)) = commit.get("data") else { panic!("commit without data") };
     let tree = Tree::load_from_blocks(&blocks, *data).unwrap();
     let mut recs = Vec::new();
     tree.walk(&mut |k, c| recs.push((k.to_vec(), c)));
@@ -706,7 +706,7 @@ async fn lazy_node(prefetch: usize) -> TestServer {
 /// with the node's own key, at its own clock).
 fn commit_blocks(f: &Frame) -> Vec<(Cid, Vec<u8>)> {
     let Some(Value::Bytes(car)) = f.body.get("blocks") else { panic!("#commit without blocks") };
-    let (roots, blocks) = vlpds::car::read_car(car).unwrap();
+    let (roots, blocks) = vlsync_atproto::car::read_car(car).unwrap();
     blocks.into_iter().filter(|(c, _)| *c != roots[0]).map(|(c, b)| (c, b.to_vec())).collect()
 }
 
@@ -943,7 +943,7 @@ impl RefRepo {
         want.extend(asked.iter().map(|c| ("cids", c.to_string())));
         let g = get("com.atproto.sync.getBlocks", want).await;
         assert_eq!(g.status, 200, "{}", g.text());
-        let (_, blocks) = vlpds::car::read_car(&g.body).unwrap();
+        let (_, blocks) = vlsync_atproto::car::read_car(&g.body).unwrap();
         let got: HashMap<Cid, Vec<u8>> = blocks.into_iter().map(|(c, b)| (c, b.to_vec())).collect();
         let expected: HashMap<Cid, Vec<u8>> =
             nodes.iter().cloned().chain(recs.iter().take(5).map(|r| (r.1, record_bytes[&r.1].clone()))).collect();
@@ -966,7 +966,7 @@ impl RefRepo {
         // migration counts: the commit, the nodes (not an empty root), a block per record
         let m = s.xrpc.get("com.atproto.server.checkAccountStatus", &[], &a.auth()).await.ok();
         let non_empty =
-            nodes.iter().filter(|(c, b)| !vlpds::mst::decode_node(b, *c).unwrap().entries.is_empty()).count();
+            nodes.iter().filter(|(c, b)| !vlsync_atproto::mst::decode_node(b, *c).unwrap().entries.is_empty()).count();
         assert_eq!(m["repoBlocks"], json!(1 + non_empty + recs.len()), "{did}: checkAccountStatus");
     }
 }
@@ -977,10 +977,10 @@ pub(crate) enum Slot {
 }
 
 /// A loaded tree in the streamable CAR order after the commit, as
-/// `vlpds::car_order` defines it: each node, then its slots as it lists
+/// `vlsync_atproto::car_order` defines it: each node, then its slots as it lists
 /// them, a child recursively and a record (key, CID) in place.
 pub(crate) fn streamable(t: &Tree) -> Vec<Slot> {
-    use vlpds::car_order::{Next, Walk};
+    use vlsync_atproto::car_order::{Next, Walk};
     let mut nodes = HashMap::new();
     t.walk_blocks(&mut |c, b| {
         nodes.insert(c, b.to_vec());
@@ -992,7 +992,7 @@ pub(crate) fn streamable(t: &Tree) -> Vec<Slot> {
         match walk.next() {
             Next::Node(c) => {
                 let b = nodes[&c].clone();
-                walk.enter(vlpds::mst::decode_node(&b, c).unwrap()).unwrap();
+                walk.enter(vlsync_atproto::mst::decode_node(&b, c).unwrap()).unwrap();
                 out.push(Slot::Node(c, b));
             }
             Next::Record { key, cid } => out.push(Slot::Record(key.to_vec(), cid)),
@@ -1003,7 +1003,7 @@ pub(crate) fn streamable(t: &Tree) -> Vec<Slot> {
 
 /// CAR blocks after the first (the commit), in order.
 pub(crate) fn car_tail(body: &[u8]) -> Vec<(Cid, Vec<u8>)> {
-    let (_, blocks) = vlpds::car::read_car(body).unwrap();
+    let (_, blocks) = vlsync_atproto::car::read_car(body).unwrap();
     blocks.into_iter().skip(1).map(|(c, b)| (c, b.to_vec())).collect()
 }
 
@@ -1011,11 +1011,11 @@ pub(crate) fn car_tail(body: &[u8]) -> Vec<(Cid, Vec<u8>)> {
 async fn stored_nodes(s: &TestServer, did: &str) -> HashMap<Cid, Vec<u8>> {
     let Ok(p) = s.app.partition(did) else { panic!("shard of {did} not owned") };
     let prefix = vlpds::state::mst_node_prefix(did, s.app.repo_gen(did).await.ok().unwrap());
-    let mut it = p.db.scan(prefix.clone()..vlpds::state::prefix_end(&prefix)).await.unwrap();
+    let mut it = p.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await.unwrap();
     let mut out = HashMap::new();
     while let Some(kv) = it.next().await.unwrap() {
         let digest: [u8; 32] = kv.key[prefix.len()..].try_into().unwrap();
-        let c = Cid { codec: vlpds::cid::CODEC_DAG_CBOR, digest };
+        let c = Cid { codec: vlsync_atproto::cid::CODEC_DAG_CBOR, digest };
         out.insert(c, kv.value.to_vec());
     }
     out
@@ -1405,7 +1405,7 @@ async fn create_post(s: &TestServer, did: &str) -> Duration {
 /// GETs (whole or ranged) the state client has sent so far.
 fn state_gets() -> u64 {
     use prometheus::core::Collector;
-    vlpds::metrics::OBJ_REQUESTS
+    vlsync_store::metrics::OBJ_REQUESTS
         .collect()
         .iter()
         .flat_map(|f| f.get_metric().iter())
@@ -1604,7 +1604,7 @@ async fn bench_readers() {
             recs.push(c);
         });
         let (mut interior, mut leaves) = (Vec::new(), Vec::new());
-        tree.walk_blocks(&mut |c, b| match vlpds::mst::decode_node(b, c).unwrap().height {
+        tree.walk_blocks(&mut |c, b| match vlsync_atproto::mst::decode_node(b, c).unwrap().height {
             0 => leaves.push(c),
             _ => interior.push(c),
         })
@@ -1706,7 +1706,7 @@ async fn bench_rss() {
         vlpds::mst_store::NODE_CACHE.clear();
         let s = bench_node("rss", base.clone(), vlpds::worker::DEFAULT_PREFETCH_BYTES, 8).await;
         tokio::time::sleep(Duration::from_secs(2)).await;
-        let rss0 = vlpds::metrics::resident_bytes().unwrap_or(0);
+        let rss0 = vlsync_store::metrics::resident_bytes().unwrap_or(0);
         let t = Instant::now();
         let mut lat = Vec::new();
         use futures::StreamExt;
@@ -1721,7 +1721,7 @@ async fn bench_rss() {
         drop(st);
         let took = t.elapsed().as_secs_f64();
         tokio::time::sleep(Duration::from_secs(2)).await;
-        let rss1 = vlpds::metrics::resident_bytes().unwrap_or(0);
+        let rss1 = vlsync_store::metrics::resident_bytes().unwrap_or(0);
         let cache: i64 =
             (0..8).map(|w| vlpds::metrics::REPO_CACHE_BYTES.with_label_values(&[&w.to_string()]).get()).sum();
         let line = format!(
@@ -1769,7 +1769,7 @@ async fn reshard_carries_nodes() {
     };
     let cl = s.app.cluster.as_deref().unwrap();
     let shard_of = |did: &str| {
-        let slot = vlpds::slots::slot_of(did) as u32;
+        let slot = vlsync_store::slots::slot_of(did) as u32;
         cl.layout().shards.iter().find(|r| r.lo <= slot && slot < r.hi).cloned().unwrap()
     };
     let target = shard_of(&accts[0].did);
@@ -1786,11 +1786,11 @@ async fn reshard_carries_nodes() {
     for st in random_steps(&mut rng, accts.len(), 150) {
         run_step(&s, &accts, &st).await;
     }
-    let kids: Vec<vlpds::slots::ShardId> = r["op"]["children"]
+    let kids: Vec<vlsync_store::slots::ShardId> = r["op"]["children"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|c| vlpds::slots::ShardId(c["id"].as_u64().unwrap() as u32))
+        .map(|c| vlsync_store::slots::ShardId(c["id"].as_u64().unwrap() as u32))
         .collect();
     let r = admin("vlpds.admin.mergeShards", json!({"left": kids[0], "right": kids[1], "wait": true})).await;
     assert_eq!(r["done"], json!(true), "{r}");
@@ -1918,7 +1918,7 @@ async fn bench_cold_open_blobs() {
         }
         let Ok(p) = s.app.partition(&dids[0]) else { panic!("shard not owned") };
         let prefix = vlpds::state::blob_ref_prefix(&dids[0], s.app.repo_gen(&dids[0]).await.ok().unwrap());
-        let mut it = p.db.scan(prefix.clone()..vlpds::state::prefix_end(&prefix)).await.unwrap();
+        let mut it = p.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await.unwrap();
         let mut n = 0;
         while it.next().await.unwrap().is_some() {
             n += 1;

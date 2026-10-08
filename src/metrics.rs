@@ -2,8 +2,8 @@
 
 use prometheus::{
     exponential_buckets, register_gauge, register_gauge_vec, register_histogram, register_histogram_vec,
-    register_int_counter, register_int_counter_vec, register_int_gauge, register_int_gauge_vec, Encoder, Gauge,
-    GaugeVec, Histogram, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, TextEncoder,
+    register_int_counter, register_int_counter_vec, register_int_gauge, register_int_gauge_vec, Gauge, GaugeVec,
+    Histogram, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec,
 };
 use std::sync::LazyLock;
 
@@ -23,7 +23,6 @@ lazy!(RUNTIME_LATE_TOTAL: prometheus::Counter = prometheus::register_counter!("v
 lazy!(HTTP_REQUESTS: IntCounterVec = register_int_counter_vec!("vlpds_http_requests_total", "XRPC requests by method and status", &["method", "status"]));
 lazy!(HTTP_DURATION: HistogramVec = register_histogram_vec!("vlpds_http_request_duration_seconds", "XRPC request latency", &["method"], latency_buckets()));
 lazy!(HTTP_INFLIGHT: IntGauge = register_int_gauge!("vlpds_http_requests_inflight", "XRPC requests in flight"));
-lazy!(HTTP_CLIENT_CONNECTS: IntCounterVec = register_int_counter_vec!("vlpds_http_client_connects_total", "New outbound connections by client role (peer, public, guarded); should stay flat under steady load", &["role"]));
 lazy!(HTTP_CLIENT_POOL_WAITS: IntCounterVec = register_int_counter_vec!("vlpds_http_client_pool_waits_total", "Proxy requests that waited for an upstream connection at the per-host cap (src/http.rs h1::MAX_CONNS)", &["role"]));
 lazy!(HTTP_SERVER_CONNECTIONS: IntCounter = register_int_counter!("vlpds_http_server_connections_total", "Accepted inbound TCP connections"));
 lazy!(HTTP_SERVER_OPEN: IntGauge = register_int_gauge!("vlpds_http_server_connections_open", "Inbound connections open"));
@@ -68,7 +67,6 @@ lazy!(SEGMENT_BYTES_TOTAL: IntCounter = register_int_counter!("vlpds_segment_byt
 lazy!(SEGMENT_STALL_SEALS: IntCounter = register_int_counter!("vlpds_segment_stall_seals_total", "Segments sealed early because the oldest PUT in flight stalled (over 2x the recent PUT latency)"));
 lazy!(SEGMENT_STORED_BYTES_TOTAL: IntCounter = register_int_counter!("vlpds_segment_stored_bytes_total", "Bytes of segment objects PUT (after compression)"));
 lazy!(SEGMENT_COMPRESS: Histogram = register_histogram!("vlpds_segment_compress_seconds", "CPU time to zstd one segment body before its PUT", latency_buckets()));
-lazy!(SEGMENT_DECODES: IntCounter = register_int_counter!("vlpds_segment_decodes_total", "Compressed segments decompressed by readers (replay, follower catch-up, backfill, merger read-back)"));
 lazy!(PUT_DURATION: HistogramVec = register_histogram_vec!("vlpds_segment_put_seconds", "Segment PUT latency until durable (incl. hedges/retries)", &["partition"], latency_buckets()));
 lazy!(PUT_ATTEMPTS: IntCounterVec = register_int_counter_vec!("vlpds_segment_put_attempts_total", "Segment PUT attempts by result", &["result"]));
 lazy!(PUT_HEDGES: IntCounter = register_int_counter!("vlpds_segment_put_hedges_total", "Hedged (duplicate) segment PUTs started"));
@@ -77,26 +75,6 @@ lazy!(COMMIT_LATENCY: Histogram = register_histogram!("vlpds_commit_durable_seco
 lazy!(WATERMARK_LAG: IntGaugeVec = register_int_gauge_vec!("vlpds_watermark_lag_microseconds", "now - partition watermark", &["partition"]));
 lazy!(REPLAYED_SEGMENTS: IntCounter = register_int_counter!("vlpds_recovery_replayed_segments_total", "Log segments replayed when opening shards (previous owners' log tails after a crash or takeover)"));
 
-lazy!(FIREHOSE_EVENTS: IntCounter = register_int_counter!("vlpds_firehose_events_total", "Events emitted by the merger"));
-lazy!(FIREHOSE_BATCH: Histogram = register_histogram!("vlpds_firehose_merge_batch_events", "Events per merged batch", exponential_buckets(1.0, 2.0, 16).unwrap()));
-lazy!(FIREHOSE_SUBSCRIBERS: IntGauge = register_int_gauge!("vlpds_firehose_subscribers", "Connected subscribeRepos clients"));
-lazy!(FIREHOSE_RING_BYTES: IntGauge = register_int_gauge!("vlpds_firehose_ring_bytes", "Bytes held in the in-memory firehose ring"));
-lazy!(FIREHOSE_DISCONNECTS: IntCounterVec = register_int_counter_vec!("vlpds_firehose_disconnects_total", "Subscriber disconnects by reason", &["reason"]));
-lazy!(FIREHOSE_SENT: IntCounter = register_int_counter!("vlpds_firehose_frames_sent_total", "Frames sent to subscribers"));
-lazy!(FIREHOSE_MERGE_QUEUE_BYTES: IntGauge = register_int_gauge!("vlpds_firehose_merge_queue_bytes", "Frame bytes queued in the merger waiting for the min watermark"));
-lazy!(FIREHOSE_MERGE_QUEUE_BUDGET: IntGauge = register_int_gauge!("vlpds_firehose_merge_queue_budget_bytes", "Configured byte budget of the merger's queues (--firehose-merge-queue-mb); past it a log spills to S3 read-back"));
-lazy!(FIREHOSE_MAX_LAG: IntGauge = register_int_gauge!("vlpds_firehose_max_lag_bytes", "Configured subscriber lag past which a live subscriber is cut off with ConsumerTooSlow (--firehose-max-lag-mb)"));
-lazy!(FIREHOSE_SPILLS: IntCounter = register_int_counter!("vlpds_firehose_merge_spills_total", "Logs the merger stopped queueing (over budget) and reads back from S3"));
-lazy!(FIREHOSE_SPILL_SEGMENTS: IntCounter = register_int_counter!("vlpds_firehose_merge_spill_segments_total", "Segments the merger read back from S3 for spilled logs"));
-lazy!(FIREHOSE_SENT_BYTES: IntCounter = register_int_counter!("vlpds_firehose_bytes_sent_total", "Websocket bytes written to subscribers (frames + headers)"));
-lazy!(FIREHOSE_BACKFILL_GETS: IntCounter = register_int_counter!("vlpds_firehose_backfill_gets_total", "Segment GETs made by cursor backfill readers"));
-lazy!(FIREHOSE_BACKFILL_CACHE: IntCounterVec = register_int_counter_vec!("vlpds_firehose_backfill_cache_total", "Backfill segment cache lookups (hit includes joining a GET in flight)", &["result"]));
-lazy!(FIREHOSE_BACKFILL_EVENTS: IntCounter = register_int_counter!("vlpds_firehose_backfill_events_total", "Events sent to subscribers from S3 backfill"));
-lazy!(FIREHOSE_BACKFILLS: IntGaugeVec = register_int_gauge_vec!("vlpds_firehose_backfills", "Cursor backfills running, and waiting for a slot (--firehose-max-backfills)", &["state"]));
-lazy!(FIREHOSE_CONNECTIONS: IntCounterVec = register_int_counter_vec!("vlpds_firehose_connections_total", "subscribeRepos connections upgraded, by mode (live: no cursor; backfill: with a cursor, replayed from the ring or the bucket)", &["mode"]));
-lazy!(FIREHOSE_SUBSCRIBER_EVENTS: IntCounterVec = register_int_counter_vec!("vlpds_firehose_subscriber_events_total", "Events sent to each subscribeRepos connection: ip (client address, IPv6 /64), conn (node-local connection id, as the console lists it), relay (the configured relay it matched, or empty). Removed when the connection closes; past 1,000 connections on a node the rest share ip=\"other\", conn=\"other\"", &["ip", "conn", "relay"]));
-lazy!(FIREHOSE_SUBSCRIBER_BYTES: IntCounterVec = register_int_counter_vec!("vlpds_firehose_subscriber_bytes_total", "Websocket bytes sent to each subscribeRepos connection, labelled as vlpds_firehose_subscriber_events_total", &["ip", "conn", "relay"]));
-lazy!(FIREHOSE_REJECTED: IntCounterVec = register_int_counter_vec!("vlpds_firehose_rejected_total", "subscribeRepos connections refused before the upgrade, by reason (per_ip: --firehose-max-per-ip)", &["reason"]));
 lazy!(SYNC_EXPORTS: IntGaugeVec = register_int_gauge_vec!("vlpds_sync_exports", "getRepo exports streaming, and waiting for a slot (--max-exports)", &["state"]));
 lazy!(SYNC_EXPORTS_ENDED: IntCounterVec = register_int_counter_vec!("vlpds_sync_exports_ended_total", "getRepo exports by how they ended: done, client_gone, stalled (the client read nothing for --export-stall-secs), error, shed (no slot within 10 s: 503)", &["reason"]));
 lazy!(IMPORTS: IntGaugeVec = register_int_gauge_vec!("vlpds_imports", "importRepo calls running (admitted by the import budget), and waiting for it", &["state"]));
@@ -106,7 +84,6 @@ lazy!(IMPORT_ADMISSIONS: IntCounterVec = register_int_counter_vec!("vlpds_import
 lazy!(IMPORT_GROWTHS: IntCounterVec = register_int_counter_vec!("vlpds_import_growths_total", "Running imports' reservations grown past their estimate (no or wrong Content-Length, the buffered fallback): granted, waited, rejected (503)", &["result"]));
 lazy!(IMPORT_WAIT_SECONDS: HistogramVec = register_histogram_vec!("vlpds_import_wait_seconds", "Time importRepo calls queued for the import budget, by kind: admit, grow", &["kind"], latency_buckets()));
 lazy!(IMPORT_REPO_PARSES: IntCounterVec = register_int_counter_vec!("vlpds_import_repo_parses_total", "importRepo bodies parsed, by path: stream (one pass over a CAR in the streamable block order) or buffered (any other order, or a CAR refused)", &["path"]));
-lazy!(FIREHOSE_BACKFILL_RETRIES: IntCounterVec = register_int_counter_vec!("vlpds_firehose_backfill_retries_total", "Cursor backfill retries: seek (a log seek re-run after retention pruned the log's head below the cursor under it), pruned (a whole backfill re-run for the same reason) or error (S3)", &["reason"]));
 lazy!(LOG_LIVE_BYTES: IntGauge = register_int_gauge!("vlpds_log_live_ring_bytes", "Segment bytes pinned by the node log's live ring (peer streams)"));
 lazy!(LOG_STREAM_LAGGED: IntCounter = register_int_counter!("vlpds_log_stream_lagged_total", "Peer log streams dropped for falling behind the live ring (they catch up from S3)"));
 
@@ -134,13 +111,6 @@ lazy!(WRITE_RETRIES: IntCounterVec = register_int_counter_vec!("vlpds_write_retr
 lazy!(READ_RETRIES: IntCounterVec = register_int_counter_vec!("vlpds_read_retries_total", "XRPC queries the entry node resent after a 503 that did nothing, by reason (unreachable: owner refused the connection; loading: RepoLoading; moved: ShardMoved, also from a security-controls check waiting out a move)", &["reason"]));
 lazy!(OWNED_PARTITIONS: IntGauge = register_int_gauge!("vlpds_owned_partitions", "Partitions this node owns"));
 lazy!(LEASE_EVENTS: IntCounterVec = register_int_counter_vec!("vlpds_lease_events_total", "Partition lease transitions", &["event"]));
-lazy!(OBJ_REQUESTS: IntCounterVec = register_int_counter_vec!("vlpds_object_store_requests_total", "Object-store requests sent to the store, by billable op (put, put_create, put_cas, get, get_range, head, list pages, delete, delete_batch, copy, mpu_*), key component, client pool and result (ok, not_found, precondition, timeout, error, cancelled: the caller dropped it unanswered) (objstats.rs)", &["op", "component", "client", "result"]));
-lazy!(STORE_THROTTLED: IntCounterVec = register_int_counter_vec!("vlpds_object_store_throttled_total", "Object-store answers of 429 Too Many Requests or 503 SlowDown (not other 503s), each one counted (object_store retries them inside its client, so vlpds_object_store_requests_total sees only the final result), by key kind (lease: node leases, assignments, writer claims, cluster version, LISTs by prefix; segment: commit-log segments; other, bulk deletes included) (throttle.rs)", &["kind"]));
-lazy!(OBJ_BYTES: IntCounterVec = register_int_counter_vec!("vlpds_object_store_bytes_total", "Object-store payload bytes by direction (up, down), key component and client pool", &["dir", "component", "client"]));
-lazy!(OBJ_INFLIGHT: IntGaugeVec = register_int_gauge_vec!("vlpds_object_store_inflight", "Object-store requests holding an in-flight permit, by client pool (log, state, ctl) and lane (main; reserved: log writes, ctl lease writes) (objlimit.rs)", &["client", "lane"]));
-lazy!(OBJ_INFLIGHT_LIMIT: IntGaugeVec = register_int_gauge_vec!("vlpds_object_store_inflight_limit", "In-flight permits of each object-store client pool and lane (--store-inflight, --log-store-inflight)", &["client", "lane"]));
-lazy!(OBJ_PERMIT_WAITS: IntCounterVec = register_int_counter_vec!("vlpds_object_store_permit_waits_total", "Object-store requests that found every in-flight permit of their pool and lane taken and queued", &["client", "lane"]));
-lazy!(OBJ_PERMIT_WAIT_SECONDS: HistogramVec = register_histogram_vec!("vlpds_object_store_permit_wait_seconds", "How long object-store requests that queued for an in-flight permit waited", &["client", "lane"], latency_buckets()));
 lazy!(CLUSTER_STORE_REQUESTS: IntCounterVec = register_int_counter_vec!("vlpds_cluster_store_requests_total", "Control-plane object-store requests (leases, assignments, writer claims, fences) by op", &["op"]));
 lazy!(CLUSTER_NUDGES: IntCounterVec = register_int_counter_vec!("vlpds_cluster_nudges_total", "Early control-plane steps asked of peers after a release (sent, failed) or by peers (received)", &["dir"]));
 lazy!(CLUSTER_LONE_SKIPS: IntCounterVec = register_int_counter_vec!("vlpds_cluster_lone_skips_total", "Control-plane LISTs a lone node skipped (nodes: membership reused, listed at least once per TTL; assign: assignments unchanged but by our own writes, listed every 25 steps)", &["list"]));
@@ -157,24 +127,14 @@ lazy!(RESHARD_GC_ORPHAN_ASSIGNS: IntGauge = register_int_gauge!("vlpds_reshard_g
 lazy!(FORCED_COMPACTIONS: IntCounterVec = register_int_counter_vec!("vlpds_forced_compactions_total", "Compactions this node submitted for its shards, by kind (detach: rewrite SSTs inherited from a split/merge parent; full: --full-compaction-every) and result (submitted, completed, failed: retried next pass)", &["kind", "result"]));
 lazy!(SHARDS_INHERITED: IntGauge = register_int_gauge!("vlpds_shards_with_inherited_ssts", "Shards open here still reading SSTs of a split/merge parent (external SSTs): each pins its parent's state dir until a forced compaction rewrites them"));
 
-lazy!(JEMALLOC: IntGaugeVec = register_int_gauge_vec!("vlpds_jemalloc_bytes", "jemalloc stats", &["stat"]));
-
 lazy!(COMMIT_STAGE: HistogramVec = register_histogram_vec!("vlpds_commit_stage_seconds", "Per-segment commit pipeline stages: seal_wait (oldest entry's enqueue -> PUT start), put (-> durable), apply_lock (finalizer waiting for shard apply locks), apply (SlateDB batches), ack (acks + repo views published)", &["stage"], latency_buckets()));
 lazy!(PUTS_INFLIGHT: IntGauge = register_int_gauge!("vlpds_segment_puts_inflight", "Segment PUT attempts in flight (hedges included)"));
 lazy!(REPO_CACHE: IntCounterVec = register_int_counter_vec!("vlpds_repo_cache_lookups_total", "Worker repo lookups for queued requests: hit (cached), miss (starts a cold load), loading (joins one in flight)", &["result"]));
 lazy!(FORWARDS: IntCounterVec = register_int_counter_vec!("vlpds_forwards_total", "Forwarded requests by the owner's status class (5xx includes owner unreachable / past its TTFB deadline)", &["result"]));
 lazy!(FORWARD_DURATION: Histogram = register_histogram!("vlpds_forward_seconds", "Forwarded request time to the owner's response head", latency_buckets()));
-lazy!(FIREHOSE_EMIT_DELAY: Histogram = register_histogram!("vlpds_firehose_emit_delay_seconds", "Seq assignment of a merged batch's oldest event -> firehose emit", latency_buckets()));
 lazy!(BUILD_INFO: IntGaugeVec = register_int_gauge_vec!("vlpds_build_info", "1, labeled with node id, git revision and whether the profiling feature is built in", &["node_id", "rev", "profiling"]));
 
 // The prometheus crate's process collector is Linux-only, so these are ours.
-lazy!(PROCESS_RSS: IntGauge = register_int_gauge!("vlpds_process_resident_bytes", "Resident set size"));
-lazy!(PROCESS_CPU: prometheus::CounterVec = prometheus::register_counter_vec!("vlpds_process_cpu_seconds_total", "CPU time consumed by mode (getrusage)", &["mode"]));
-lazy!(PROCESS_THREADS: IntGauge = register_int_gauge!("vlpds_process_threads", "OS threads"));
-lazy!(TOKIO_WORKERS: IntGauge = register_int_gauge!("vlpds_tokio_workers", "Tokio worker threads"));
-lazy!(TOKIO_TASKS: IntGauge = register_int_gauge!("vlpds_tokio_alive_tasks", "Tokio tasks alive"));
-lazy!(TOKIO_GLOBAL_QUEUE: IntGauge = register_int_gauge!("vlpds_tokio_global_queue_depth", "Tasks in the tokio injection queue"));
-lazy!(TOKIO_BUSY: prometheus::Counter = prometheus::register_counter!("vlpds_tokio_busy_seconds_total", "Busy time summed over tokio workers (rate / workers = utilization)"));
 
 /// Also records the round trip as a fraction of the lease TTL, so alert
 /// thresholds work at any --lease-ttl-ms.
@@ -209,13 +169,6 @@ lazy!(LEASE_SKEW: Gauge = register_gauge!("vlpds_lease_skew_seconds", "Configure
 lazy!(LEASE_RENEW_ERRORS: IntCounterVec = register_int_counter_vec!("vlpds_lease_renew_errors_total", "Failed node lease renewals by kind: timeout / error (retried next interval), conflict (someone rewrote our lease: fail-stop), lapsed (validity ended before the renewal: fail-stop)", &["kind"]));
 lazy!(LEASE_VALIDITY: GaugeVec = register_gauge_vec!("vlpds_lease_validity_seconds", "Seconds until this node's own lease validity ends (TTL - skew after the send time of its last successful renewal), computed at scrape. Normally between TTL - skew - one renew interval and TTL - skew; negative = lapsed", &["node_id"]));
 lazy!(PEER_TAKEOVERS: IntCounterVec = register_int_counter_vec!("vlpds_peer_takeovers_total", "Log incarnations this node fenced because they ended without fencing themselves (crash, kill, fail-stop, partition): peer = a dead peer's log, before taking its shards; restart = our own previous incarnation's, at startup. A graceful stop fences its own log and is not counted", &["reason"]));
-lazy!(PROCESS_START: Gauge = register_gauge!("vlpds_process_start_time_seconds", "Start time of this process since the Unix epoch, in seconds"));
-lazy!(PROCESS_START_STD: Gauge = register_gauge!("process_start_time_seconds", "Start time of the process since unix epoch in seconds."));
-lazy!(LAST_EXIT: IntGaugeVec = register_int_gauge_vec!("vlpds_last_exit_reason_info", "1, labeled with how the previous process using this exit-state file ended (lifecycle.rs): a fail-stop reason with its exit code, clean, error, crash (no exit recorded: SIGKILL, OOM kill, abort, host loss) or none (first run, or no exit-state file)", &["reason", "code"]));
-lazy!(LAST_EXIT_TIME: Gauge = register_gauge!("vlpds_last_exit_time_seconds", "When the previous process recorded its exit (Unix seconds; 0 if unknown)"));
-lazy!(FEATURE_LEVEL: IntGaugeVec = register_int_gauge_vec!("vlpds_feature_level", "Feature levels (version.rs): active = the cluster's active level as this node last read cluster/version (what writers emit), binary_min / binary_max = the levels this build can run. binary_max > active on every node = a finalize is available", &["kind"]));
-lazy!(FORMAT_ERRORS: IntCounterVec = register_int_counter_vec!("vlpds_format_errors_total", "Decodes that failed on an unknown or malformed format marker (segment: magic/codec; log_stream: message type, skipped; applied_marker: meta/applied2; cluster_version / control_object: unreadable control JSON). Any is a node of a newer level writing early, or corruption", &["format"]));
-lazy!(SIGNATURE_VERIFY_FAILURES: IntCounterVec = register_int_counter_vec!("vlpds_signature_verify_failures_total", "Signatures that failed verification right after signing (never emitted; crypto.rs), by purpose (commit, service_auth, oauth_token, plc_operation; key_load: a loaded key's scalar no longer derives its public key). Any is a suspected memory/CPU fault; 3 within a minute fail-stop the node (signature_fault)", &["purpose"]));
 
 lazy!(SHARDS_OPENED: IntCounterVec = register_int_counter_vec!("vlpds_shards_opened_total", "Shard opens (acquire, adopt, takeover, reshard children) by result", &["result"]));
 lazy!(SHARD_OPEN_SECONDS: HistogramVec = register_histogram_vec!("vlpds_shard_open_seconds", "One batch of shard opens until served (SlateDB open + log replay + flush), by kind: replay (it replayed segments: a takeover after a crash) or clean (nothing to replay: a handback)", &["kind"], exponential_buckets(0.01, 2.0, 14).unwrap()));
@@ -235,8 +188,6 @@ lazy!(MEMORY_CACHE: IntGaugeVec = register_int_gauge_vec!("vlpds_memory_cache_by
 lazy!(SST_META_NEED: IntGauge = register_int_gauge!("vlpds_sst_meta_need_bytes", "Decoded size of the owned SSTs' filters and indexes: vlpds_sst_meta_bytes x vlpds_sst_meta_decode_ratio (what the metadata cache must hold under uniform reads)"));
 lazy!(SST_META_DECODE_RATIO: Gauge = register_gauge!("vlpds_sst_meta_decode_ratio", "Decoded / encoded size of SST filters and indexes, measured from the metadata cache while it neither loads nor evicts (1.3 until measured)"));
 lazy!(META_CACHE_SHORTFALL: IntGauge = register_int_gauge!("vlpds_meta_cache_shortfall_bytes", "How far the metadata cache's capacity is below its target (the memory pool can't fit the owned SSTs' metadata with headroom, or --meta-cache-mb is too small); 0 when it fits"));
-
-lazy!(OBJ_DURATION: HistogramVec = register_histogram_vec!("vlpds_object_store_request_seconds", "Object-store request latency by op and key component (objstats.rs), answered requests only: to the response head for GETs, to the first page for LISTs; deletes are not timed", &["op", "component"], latency_buckets()));
 
 lazy!(RETENTION_PASS_SECONDS: Histogram = register_histogram!("vlpds_retention_pass_seconds", "One log retention pass, ok or failed", exponential_buckets(0.01, 2.0, 14).unwrap()));
 lazy!(RETENTION_DEAD_SEGMENTS: IntGauge = register_int_gauge!("vlpds_retention_dead_log_segments", "Log objects left below the end of dead (writer gone) logs, as of the last pass that checked them all; only the dead-log pruner (owner of slot 0's shard) reports non-zero"));
@@ -272,7 +223,6 @@ lazy!(REPORTS: IntCounterVec = register_int_counter_vec!("vlpds_reports_total", 
 lazy!(UPSTREAM_REQUESTS: IntCounterVec = register_int_counter_vec!("vlpds_upstream_requests_total", "Requests proxied for users to other services, by service (appview: the Bluesky AppView, chat, moderation, other) and result (ok: 2xx/3xx; client_error: 4xx; server_error: 5xx; unreachable: connection failure or timeout)", &["service", "result"]));
 lazy!(UPSTREAM_DURATION: HistogramVec = register_histogram_vec!("vlpds_upstream_request_seconds", "Proxied request time until the upstream service's response head, by service (unreachable ones included)", &["service"], latency_buckets()));
 lazy!(HANDLE_RESOLUTIONS: IntCounterVec = register_int_counter_vec!("vlpds_handle_resolutions_total", "Custom-domain handle lookups by result (dns: TXT _atproto record; http: /.well-known/atproto-did; not_found: neither answered with a DID)", &["result"]));
-lazy!(IDENTITY_EVENTS: IntCounterVec = register_int_counter_vec!("vlpds_identity_events_total", "#identity and #account firehose events built (new accounts, handle changes, status changes), by kind", &["kind"]));
 lazy!(REQUEST_CRAWL: IntCounterVec = register_int_counter_vec!("vlpds_request_crawl_total", "requestCrawl calls to relays (the slot-0 leader's startup/after-activity asks, and vlpds.admin.requestCrawl) by relay and result (ok; rejected: non-2xx answer; failed: unreachable)", &["relay", "result"]));
 lazy!(REQUEST_CRAWL_LAST_OK: GaugeVec = register_gauge_vec!("vlpds_request_crawl_last_success_time_seconds", "Unix time of this node's last requestCrawl the relay accepted (0: none since the process started)", &["relay"]));
 lazy!(ACCOUNTS: IntGaugeVec = register_int_gauge_vec!("vlpds_accounts", "Accounts on the shards this node has open, by status (active, deactivated, takendown, suspended, other); exact, kept per slot with every account change (crate::totals); sum over nodes for the PDS", &["status"]));
@@ -490,24 +440,29 @@ static UNLABELLED_COUNTERS: &[&LazyLock<IntCounter>] = &[
     &SEGMENT_BYTES_TOTAL,
     &SEGMENT_STALL_SEALS,
     &SEGMENT_STORED_BYTES_TOTAL,
-    &SEGMENT_DECODES,
+    &vlsync_store::metrics::SEGMENT_DECODES,
     &PUT_HEDGES,
     &REPLAYED_SEGMENTS,
-    &FIREHOSE_EVENTS,
-    &FIREHOSE_SENT,
-    &FIREHOSE_SPILLS,
-    &FIREHOSE_SPILL_SEGMENTS,
-    &FIREHOSE_SENT_BYTES,
-    &FIREHOSE_BACKFILL_GETS,
-    &FIREHOSE_BACKFILL_EVENTS,
+    &vlsync_firehose::metrics::FIREHOSE_EVENTS,
+    &vlsync_firehose::metrics::FIREHOSE_SENT,
+    &vlsync_firehose::metrics::FIREHOSE_SPILLS,
+    &vlsync_firehose::metrics::FIREHOSE_SPILL_SEGMENTS,
+    &vlsync_firehose::metrics::FIREHOSE_SENT_BYTES,
+    &vlsync_firehose::metrics::FIREHOSE_BACKFILL_GETS,
+    &vlsync_firehose::metrics::FIREHOSE_BACKFILL_EVENTS,
     &LOG_STREAM_LAGGED,
     &FORWARDED,
     &RESHARD_GC_SKIPPED,
 ];
 
 /// Histograms whose `_count` an alert rates.
-static ALERT_HISTOGRAMS: &[&LazyLock<Histogram>] =
-    &[&COMMIT_LATENCY, &CHECKPOINT_SHARD, &FORWARD_DURATION, &FIREHOSE_EMIT_DELAY, &REPLAY_SECONDS];
+static ALERT_HISTOGRAMS: &[&LazyLock<Histogram>] = &[
+    &COMMIT_LATENCY,
+    &CHECKPOINT_SHARD,
+    &FORWARD_DURATION,
+    &vlsync_firehose::metrics::FIREHOSE_EMIT_DELAY,
+    &REPLAY_SECONDS,
+];
 
 #[allow(clippy::type_complexity)]
 static LABELLED_COUNTERS: &[(&LazyLock<IntCounterVec>, &[&str])] = &[
@@ -527,7 +482,6 @@ static LABELLED_COUNTERS: &[(&LazyLock<IntCounterVec>, &[&str])] = &[
     ),
     (&LEASE_RENEW_ERRORS, &["timeout", "error", "conflict", "lapsed"]),
     (&CLUSTER_STORE_TIMEOUTS, &["get", "put", "list", "delete", "fence", "fence-scan"]),
-    (&STORE_THROTTLED, &crate::throttle::KINDS),
     (&SHARDS_OPENED, &["ok", "error"]),
     (&SHARD_WARM_SSTS, &["ok", "error"]),
     (&SHARD_PREWARMS, &["ok", "failed"]),
@@ -553,8 +507,8 @@ static LABELLED_COUNTERS: &[(&LazyLock<IntCounterVec>, &[&str])] = &[
     (&REPO_CACHE, &["hit", "miss", "loading"]),
     (&REPO_LOADS, &["ok", "error", "not_found", "stale"]),
     (&LAZY_MST_FALLBACKS, &["missing", "missing_node", "invalid"]),
-    (&FIREHOSE_DISCONNECTS, &["too_slow"]),
-    (&FIREHOSE_REJECTED, &["per_ip"]),
+    (&vlsync_firehose::metrics::FIREHOSE_DISCONNECTS, &["too_slow"]),
+    (&vlsync_firehose::metrics::FIREHOSE_REJECTED, &["per_ip"]),
     (&SYNC_EXPORTS_ENDED, &["done", "client_gone", "stalled", "error", "shed"]),
     (&IMPORT_REPO_PARSES, &["stream", "buffered"]),
     (&IMPORT_ADMISSIONS, &["admitted", "waited", "rejected"]),
@@ -595,7 +549,7 @@ static LABELLED_COUNTERS: &[(&LazyLock<IntCounterVec>, &[&str])] = &[
     (&BLOB_QUARANTINE, &["quarantined", "restored", "purged"]),
     (&REPORTS, &["ok", "failed"]),
     (&HANDLE_RESOLUTIONS, &["dns", "http", "not_found"]),
-    (&IDENTITY_EVENTS, &["identity", "account"]),
+    (&vlsync_atproto::events::IDENTITY_EVENTS, &["identity", "account"]),
 ];
 
 /// Only nodes that run retention, so `VlpdsRetentionNotRunning` stays quiet
@@ -840,11 +794,6 @@ pub fn export_lease_config(ttl: std::time::Duration, renew_every: std::time::Dur
     LEASE_SKEW.set(skew.as_secs_f64());
 }
 
-pub fn export_firehose_config(merge_queue_bytes: usize, max_lag_bytes: usize) {
-    FIREHOSE_MERGE_QUEUE_BUDGET.set(merge_queue_bytes as i64);
-    FIREHOSE_MAX_LAG.set(max_lag_bytes as i64);
-}
-
 pub fn observe_forward(status: u16, start: std::time::Instant) {
     FORWARD_DURATION.observe(start.elapsed().as_secs_f64());
     let class = match status {
@@ -856,193 +805,17 @@ pub fn observe_forward(status: u16, start: std::time::Instant) {
     FORWARDS.with_label_values(&[class]).inc();
 }
 
-type Refresher = Box<dyn Fn() -> bool + Send + Sync>;
-
-static REFRESHERS: LazyLock<parking_lot::Mutex<Vec<Refresher>>> = LazyLock::new(Default::default);
-
-/// Runs `f` before every render while it returns true (false: its source
-/// is gone, drop it).
-pub fn on_render(f: impl Fn() -> bool + Send + Sync + 'static) {
-    REFRESHERS.lock().push(Box::new(f));
-}
-
+/// The whole /metrics text: vlpds's series and every vlsync one.
 pub fn render() -> String {
     init_counters();
-    REFRESHERS.lock().retain(|f| f());
-    crate::lifecycle::refresh_metrics();
-    crate::crypto::touch_metrics();
-    refresh_jemalloc();
-    refresh_process();
-    refresh_tokio();
+    vlsync_atproto::crypto::touch_metrics();
     crate::caches::refresh_metrics();
-    let mut buf = Vec::new();
-    TextEncoder::new().encode(&prometheus::gather(), &mut buf).unwrap();
-    String::from_utf8(buf).unwrap()
-}
-
-#[cfg(not(feature = "jemalloc"))]
-fn refresh_jemalloc() {}
-
-#[cfg(feature = "jemalloc")]
-fn refresh_jemalloc() {
-    use tikv_jemalloc_ctl::{epoch, stats};
-    if epoch::advance().is_err() {
-        return;
-    }
-    for (name, v) in [
-        ("allocated", stats::allocated::read()),
-        ("active", stats::active::read()),
-        ("resident", stats::resident::read()),
-        ("mapped", stats::mapped::read()),
-        ("retained", stats::retained::read()),
-        ("metadata", stats::metadata::read()),
-    ] {
-        if let Ok(v) = v {
-            JEMALLOC.with_label_values(&[name]).set(v as i64);
-        }
-    }
-}
-
-/// Mirrors a cumulative total read at scrape time. Never moves down (a total
-/// from another runtime, or one that went back); serialized so concurrent
-/// scrapes don't add the same delta twice.
-fn advance(c: &prometheus::Counter, total: f64) {
-    static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-    let _g = LOCK.lock();
-    let cur = c.get();
-    if total > cur {
-        c.inc_by(total - cur);
-    }
-}
-
-fn refresh_tokio() {
-    let Ok(h) = tokio::runtime::Handle::try_current() else { return };
-    let m = h.metrics();
-    let n = m.num_workers();
-    TOKIO_WORKERS.set(n as i64);
-    TOKIO_TASKS.set(m.num_alive_tasks() as i64);
-    TOKIO_GLOBAL_QUEUE.set(m.global_queue_depth() as i64);
-    advance(&TOKIO_BUSY, (0..n).map(|w| m.worker_total_busy_duration(w).as_secs_f64()).sum());
-}
-
-pub fn resident_bytes() -> Option<u64> {
-    #[cfg(all(any(target_os = "macos", target_os = "linux"), target_pointer_width = "64"))]
-    return sys::rss_threads().map(|(rss, _)| rss);
-    #[allow(unreachable_code)]
-    None
-}
-
-/// User plus system CPU seconds this process has used.
-pub fn cpu_seconds() -> Option<f64> {
-    sys::cpu_seconds().map(|(u, s)| u + s)
-}
-
-fn refresh_process() {
-    if let Some((user, system)) = sys::cpu_seconds() {
-        advance(&PROCESS_CPU.with_label_values(&["user"]), user);
-        advance(&PROCESS_CPU.with_label_values(&["system"]), system);
-    }
-    if let Some((rss, threads)) = sys::rss_threads() {
-        PROCESS_RSS.set(rss as i64);
-        PROCESS_THREADS.set(threads as i64);
-    }
-}
-
-/// Process stats without a libc dependency: getrusage (macOS and 64-bit
-/// Linux share the layout but for `tv_usec`'s width), proc_pidinfo on macOS,
-/// /proc/self/status on Linux.
-#[cfg(all(any(target_os = "macos", target_os = "linux"), target_pointer_width = "64"))]
-mod sys {
-    #[repr(C)]
-    struct Timeval {
-        sec: i64,
-        #[cfg(target_os = "macos")]
-        usec: i32,
-        #[cfg(target_os = "linux")]
-        usec: i64,
-    }
-    #[repr(C)]
-    struct Rusage {
-        utime: Timeval,
-        stime: Timeval,
-        rest: [i64; 14],
-    }
-    extern "C" {
-        fn getrusage(who: i32, usage: *mut Rusage) -> i32;
-    }
-
-    pub fn cpu_seconds() -> Option<(f64, f64)> {
-        let mut r = std::mem::MaybeUninit::<Rusage>::zeroed();
-        // RUSAGE_SELF = 0
-        if unsafe { getrusage(0, r.as_mut_ptr()) } != 0 {
-            return None;
-        }
-        let r = unsafe { r.assume_init() };
-        let s = |t: &Timeval| t.sec as f64 + t.usec as f64 / 1e6;
-        Some((s(&r.utime), s(&r.stime)))
-    }
-
-    #[cfg(target_os = "macos")]
-    pub fn rss_threads() -> Option<(u64, u64)> {
-        /// <sys/proc_info.h> struct proc_taskinfo
-        #[repr(C)]
-        struct ProcTaskinfo {
-            virtual_size: u64,
-            resident_size: u64,
-            total_user: u64,
-            total_system: u64,
-            threads_user: u64,
-            threads_system: u64,
-            policy: i32,
-            faults: i32,
-            pageins: i32,
-            cow_faults: i32,
-            messages_sent: i32,
-            messages_received: i32,
-            syscalls_mach: i32,
-            syscalls_unix: i32,
-            csw: i32,
-            threadnum: i32,
-            numrunning: i32,
-            priority: i32,
-        }
-        extern "C" {
-            fn proc_pidinfo(pid: i32, flavor: i32, arg: u64, buffer: *mut ProcTaskinfo, size: i32) -> i32;
-        }
-        const PROC_PIDTASKINFO: i32 = 4;
-        let size = std::mem::size_of::<ProcTaskinfo>() as i32;
-        let mut ti = std::mem::MaybeUninit::<ProcTaskinfo>::zeroed();
-        let n = unsafe { proc_pidinfo(std::process::id() as i32, PROC_PIDTASKINFO, 0, ti.as_mut_ptr(), size) };
-        if n != size {
-            return None;
-        }
-        let ti = unsafe { ti.assume_init() };
-        Some((ti.resident_size, ti.threadnum.max(0) as u64))
-    }
-
-    #[cfg(target_os = "linux")]
-    pub fn rss_threads() -> Option<(u64, u64)> {
-        let s = std::fs::read_to_string("/proc/self/status").ok()?;
-        let field = |name: &str| {
-            s.lines().find_map(|l| l.strip_prefix(name)).and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok())
-        };
-        Some((field("VmRSS:")? * 1024, field("Threads:")?))
-    }
-}
-
-#[cfg(not(all(any(target_os = "macos", target_os = "linux"), target_pointer_width = "64")))]
-mod sys {
-    pub fn cpu_seconds() -> Option<(f64, f64)> {
-        None
-    }
-    pub fn rss_threads() -> Option<(u64, u64)> {
-        None
-    }
+    vlsync_store::metrics::render()
 }
 
 /// The `db` label of a shard's SlateDB series (its read-only warm-up
 /// handle adds `_reader`).
-pub fn slatedb_label(shard: crate::slots::ShardId) -> String {
+pub fn slatedb_label(shard: vlsync_store::slots::ShardId) -> String {
     format!("shard_{}", shard.0)
 }
 

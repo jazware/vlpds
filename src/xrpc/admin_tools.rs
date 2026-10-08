@@ -103,7 +103,7 @@ fn sample<T: ToString>(v: impl IntoIterator<Item = T>) -> Vec<String> {
 }
 
 async fn scan_keys<R: slatedb::DbReadOps + Sync + ?Sized>(db: &R, prefix: &[u8]) -> XResult<Vec<(Bytes, Bytes)>> {
-    let mut it = db.scan(prefix.to_vec()..state::prefix_end(prefix)).await.map_err(XrpcError::from_err)?;
+    let mut it = db.scan(prefix.to_vec()..vlsync_store::keys::prefix_end(prefix)).await.map_err(XrpcError::from_err)?;
     let mut out = Vec::new();
     while let Some(kv) = it.next().await.map_err(XrpcError::from_err)? {
         out.push((kv.key, kv.value));
@@ -124,7 +124,7 @@ fn check_commit(did: &str, head: &Head, pubkey: &str) -> J {
         if let (Some(cdid), Some(rev), Some(Value::Link(data)), Some(Value::Bytes(sig))) =
             (text("did"), text("rev"), c.get("data"), c.get("sig"))
         {
-            let unsigned = crate::events::encode_commit(&cdid, &rev, data, None);
+            let unsigned = vlsync_atproto::events::encode_commit(&cdid, &rev, data, None);
             let sec1 = pubkey
                 .strip_prefix('z')
                 .and_then(|m| bs58::decode(m).into_vec().ok())
@@ -257,7 +257,7 @@ async fn inspect(app: &App, did: &str) -> XResult<Inspection> {
             stale_keys.push(k.clone());
             continue;
         };
-        let c = Cid { codec: crate::cid::CODEC_DAG_CBOR, digest };
+        let c = Cid { codec: vlsync_atproto::cid::CODEC_DAG_CBOR, digest };
         if Cid::dag_cbor(v) != c {
             corrupt.push(c.to_string());
             stale_keys.push(k.clone());
@@ -512,7 +512,8 @@ async fn check_space(
     if rows.is_empty() {
         return Err(XrpcError::bad("RepoNotFound", format!("{} has no rows in {}", q.did, q.space)));
     }
-    let report = check::check(&q.did, &q.space, &rows, crate::tid::now_micros(), app.config.space_oplog_retention);
+    let report =
+        check::check(&q.did, &q.space, &rows, vlsync_atproto::tid::now_micros(), app.config.space_oplog_retention);
     if report.pointer("/records/matchesHead") == Some(&J::Bool(false)) {
         tracing::warn!(did = %q.did, space = %crate::state::space_log_id(&q.space), "check-space: records don't hash to the space head");
         crate::metrics::space_digest_mismatch();

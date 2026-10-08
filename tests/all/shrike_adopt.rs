@@ -12,8 +12,8 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::HashMap;
 use std::str::FromStr;
-use vlpds::cbor::{key_cmp, ValueRef};
-use vlpds::mst::{decode_node, decode_node_reference, Entry, Node, Tree};
+use vlsync_atproto::cbor::{key_cmp, ValueRef};
+use vlsync_atproto::mst::{decode_node, decode_node_reference, Entry, Node, Tree};
 
 // ---------- DAG-CBOR ----------
 
@@ -58,7 +58,7 @@ fn rand_value(rng: &mut impl Rng, depth: usize) -> Value {
 
 fn car_blocks(rel: &str) -> (Vec<Cid>, Vec<(Cid, Vec<u8>)>) {
     let car = std::fs::read(fixture_path(rel)).unwrap();
-    let (roots, blocks) = vlpds::car::read_car(&car).unwrap();
+    let (roots, blocks) = vlsync_atproto::car::read_car(&car).unwrap();
     (roots, blocks.into_iter().map(|(c, b)| (c, b.to_vec())).collect())
 }
 
@@ -78,7 +78,11 @@ fn cbor_corpus() -> Vec<Vec<u8>> {
     for car in ["shrike/greenground.repo.car", "shrike/repo_slice.car"] {
         let (_, blocks) = car_blocks(car);
         out.extend(
-            blocks.into_iter().filter(|(c, _)| c.codec == vlpds::cid::CODEC_DAG_CBOR).map(|(_, b)| b).take(1500),
+            blocks
+                .into_iter()
+                .filter(|(c, _)| c.codec == vlsync_atproto::cid::CODEC_DAG_CBOR)
+                .map(|(_, b)| b)
+                .take(1500),
         );
     }
     let mut rng = StdRng::seed_from_u64(42);
@@ -226,7 +230,7 @@ fn json_strings_are_escaped_as_serde_json_does() {
         };
         let cbor = Value::Map(vec![(s.clone(), Value::Text(s.clone()))]).to_cbor();
         let mut out = Vec::new();
-        vlpds::cbor::write_json(&cbor, &mut out).unwrap();
+        vlsync_atproto::cbor::write_json(&cbor, &mut out).unwrap();
         let q = serde_json::to_string(&s).unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), format!("{{{q}:{q}}}"), "{s:?}");
     }
@@ -287,9 +291,9 @@ fn base32_and_cid_codecs_match_the_old_ones() {
     for n in 0..64 {
         for _ in 0..50 {
             let data: Vec<u8> = (0..n).map(|_| rng.gen()).collect();
-            let s = vlpds::cid::base32_encode(&data);
+            let s = vlsync_atproto::cid::base32_encode(&data);
             assert_eq!(s, old_base32_encode(&data));
-            assert_eq!(vlpds::cid::base32_decode(&s), Some(data));
+            assert_eq!(vlsync_atproto::cid::base32_decode(&s), Some(data));
         }
     }
     const ALPHA: &[u8] = b"abcdefghijklmnopqrstuvwxyz234567";
@@ -373,7 +377,7 @@ fn key_heights_match_the_old_count() {
     let mut seen = [0usize; 12];
     for i in 0..300_000u64 {
         let k = format!("app.bsky.feed.post/{i}{}", rng.gen::<u32>());
-        let h = vlpds::mst::height_for_key(k.as_bytes());
+        let h = vlsync_atproto::mst::height_for_key(k.as_bytes());
         assert_eq!(h, old_height_for_key(k.as_bytes()), "{k}");
         seen[h.min(11) as usize] += 1;
     }
@@ -401,7 +405,7 @@ fn check_node(b: &[u8], what: &str) -> bool {
         (Ok(x), Ok(y)) => {
             assert!(node_eq(&x, &y), "{what}: nodes differ: {x:?} vs {y:?}");
             let mut enc = Vec::new();
-            vlpds::mst::encode_node(&x, &mut enc).unwrap();
+            vlsync_atproto::mst::encode_node(&x, &mut enc).unwrap();
             assert_eq!(enc, b, "{what}: re-encoding differs");
             true
         }
@@ -599,15 +603,15 @@ fn table_tid_check_matches_syntax() {
             let mut b = tid.as_bytes().to_vec();
             b[at] = c;
             let s = String::from_utf8_lossy(&b);
-            assert_eq!(vlpds::lexicon::valid_tid(&s), vlpds::xrpc::syntax::valid_tid(&s), "{s:?}");
+            assert_eq!(vlpds::lexicon::valid_tid(&s), vlsync_atproto::syntax::valid_tid(&s), "{s:?}");
         }
     }
     const A: &[u8] = b"234567abcdefghijklmnopqrstuvwxyzABZ01-_.";
     for _ in 0..100_000 {
         let s: String = (0..rng.gen_range(11..16)).map(|_| A[rng.gen_range(0..A.len())] as char).collect();
-        assert_eq!(vlpds::lexicon::valid_tid(&s), vlpds::xrpc::syntax::valid_tid(&s), "{s:?}");
+        assert_eq!(vlpds::lexicon::valid_tid(&s), vlsync_atproto::syntax::valid_tid(&s), "{s:?}");
     }
     for s in ["", "é", "3kxyzabcdefgé", "3kxyzabcdefghé"] {
-        assert_eq!(vlpds::lexicon::valid_tid(s), vlpds::xrpc::syntax::valid_tid(s), "{s:?}");
+        assert_eq!(vlpds::lexicon::valid_tid(s), vlsync_atproto::syntax::valid_tid(s), "{s:?}");
     }
 }

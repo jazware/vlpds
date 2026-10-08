@@ -26,12 +26,12 @@
 //! those has expired by then. A credential issued after the block isn't
 //! one it stands for, so letting it through once the block ends is right.
 
-use crate::store::Store;
 use object_store::{GetOptions, ObjectStore, PutMode, PutOptions, PutPayload};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use vlsync_store::store::Store;
 
 /// `SPACE_CREDENTIAL_MAX_AGE_SEC + 2 * CLOCK_SKEW_SEC` (reference
 /// addRevokedSpaceCredentials).
@@ -411,7 +411,7 @@ impl Revocations {
 
     /// Loaded, and read within [`STALE_AFTER`].
     pub fn fresh(&self) -> bool {
-        let age = crate::tid::now_micros().saturating_sub(self.last_ok.load(Ordering::Acquire));
+        let age = vlsync_atproto::tid::now_micros().saturating_sub(self.last_ok.load(Ordering::Acquire));
         self.loaded() && age < STALE_AFTER.as_micros() as u64
     }
 
@@ -430,7 +430,7 @@ impl Revocations {
     }
 
     fn read_ok(&self) {
-        self.last_ok.store(crate::tid::now_micros(), Ordering::Release);
+        self.last_ok.store(vlsync_atproto::tid::now_micros(), Ordering::Release);
     }
 
     /// Whether `space`'s credentials are refused here.

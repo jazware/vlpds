@@ -10,10 +10,10 @@
 //! inside the window has nothing to prune and isn't scanned.
 
 use crate::state::{self, SpaceId};
-use crate::tid::Tid;
 use crate::xrpc::App;
 use std::sync::Arc;
 use std::time::Duration;
+use vlsync_atproto::tid::Tid;
 
 pub const DEFAULT_RETENTION: Duration = Duration::from_secs(7 * 24 * 3600);
 /// Between sweeps: a sweep reads every space head of the node's shards.
@@ -34,7 +34,7 @@ pub fn start(app: &Arc<App>) {
         loop {
             tokio::time::sleep(wait).await;
             let Some(app) = weak.upgrade() else { return };
-            let cutoff = window.map_or(0, |w| crate::tid::now_micros().saturating_sub(w.as_micros() as u64));
+            let cutoff = window.map_or(0, |w| vlsync_atproto::tid::now_micros().saturating_sub(w.as_micros() as u64));
             match prune_before(&app, cutoff).await {
                 Ok(0) => {}
                 Ok(n) => tracing::info!(ops = n, "space oplog retention pruned ops"),
@@ -66,9 +66,9 @@ pub async fn prune_before(app: &App, cutoff: u64) -> anyhow::Result<usize> {
         for (did, sid) in repos {
             let prefix = state::space_prefix(state::SPACE_OPLOG_FAMILY, &did, &sid);
             let hi = [&prefix[..], &below].concat();
-            let mut it = state::BatchedScan::new(p.db.scan_with_options(prefix..hi, &opts).await?);
+            let mut it = vlsync_store::keys::BatchedScan::new(p.db.scan_with_options(prefix..hi, &opts).await?);
             while let Some(kv) = it.next().await? {
-                muts.push(crate::segment::Mutation { key: kv.key, val: None });
+                muts.push(vlsync_store::segment::Mutation { key: kv.key, val: None });
                 if muts.len() == BATCH {
                     pruned += flush(&p, &mut muts).await?;
                 }
@@ -80,7 +80,10 @@ pub async fn prune_before(app: &App, cutoff: u64) -> anyhow::Result<usize> {
     Ok(pruned)
 }
 
-async fn flush(p: &crate::partition::Partition, muts: &mut Vec<crate::segment::Mutation>) -> anyhow::Result<usize> {
+async fn flush(
+    p: &crate::partition::Partition,
+    muts: &mut Vec<vlsync_store::segment::Mutation>,
+) -> anyhow::Result<usize> {
     if muts.is_empty() {
         return Ok(0);
     }

@@ -9,8 +9,8 @@ use crate::common::*;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
-use vlpds::nodelog::{read_head, Head};
-use vlpds::store::Store;
+use vlsync_firehose::log::{read_head, Head};
+use vlsync_store::store::Store;
 
 const SHARDS: u32 = 8;
 const POST: &str = "app.bsky.feed.post";
@@ -70,7 +70,7 @@ fn check_stream(frames: &[Frame], acked: &[RecordRef]) {
 /// Segments of `log_id` that were sealed while an earlier one was in flight.
 async fn overlapped(raw: &Arc<object_store::memory::InMemory>, log_id: &str) -> usize {
     let store = Store { raw: raw.clone(), ..Store::memory(None) };
-    let (end, _) = vlpds::nodelog::first_free(&store, log_id).await.unwrap();
+    let (end, _) = vlsync_firehose::log::first_free(&store, log_id).await.unwrap();
     let mut n = 0;
     for o in 0..end {
         match read_head(&store, log_id, o).await.unwrap() {

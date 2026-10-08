@@ -12,13 +12,13 @@
 //! same rev. Entries are valid only in the partition epoch they were made in,
 //! and loads that raced a change are not cached (per-shard generations).
 
-use crate::cid::Cid;
 use bytes::Bytes;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
+use vlsync_atproto::cid::Cid;
 
 /// Records kept per repo above `base`.
 pub const MAX_RECS: usize = 32;
@@ -41,14 +41,12 @@ pub struct Rec {
     pub bytes: Option<Bytes>,
 }
 
-pub static EMPTY_ROOT: LazyLock<Cid> = LazyLock::new(|| crate::mst::Tree::new().root_cid().expect("empty tree root"));
-
 pub fn keeps_bytes(path: &str) -> bool {
     path == PROFILE_PATH || crate::worker::collection_of(path) == POST
 }
 
 /// (partition id, ownership epoch) an entry was made in.
-pub type Part = (crate::slots::ShardId, u64);
+pub type Part = (vlsync_store::slots::ShardId, u64);
 
 struct Entry {
     part: Part,
@@ -317,13 +315,13 @@ mod tests {
     use super::*;
 
     fn cid(n: u8) -> Cid {
-        crate::cid::Cid::dag_cbor(&[n])
+        vlsync_atproto::cid::Cid::dag_cbor(&[n])
     }
 
     fn commit(did: &str, since: u64, rev: u64, ops: Vec<(&str, bool)>) -> Commit {
         Commit {
             did: did.into(),
-            part: (crate::slots::ShardId(1), 1),
+            part: (vlsync_store::slots::ShardId(1), 1),
             since,
             rev,
             prev_nonempty: true,
@@ -348,17 +346,17 @@ mod tests {
     fn commits_extend_and_answer() {
         let did = "did:plc:rwtest1";
         invalidate(did);
-        assert!(matches!(lookup(did, (crate::slots::ShardId(1), 1), 5), Since::Unknown));
+        assert!(matches!(lookup(did, (vlsync_store::slots::ShardId(1), 1), 5), Since::Unknown));
         commit(did, 10, 20, vec![("app.bsky.feed.post/a", true)]).apply();
         commit(did, 20, 30, vec![("app.bsky.feed.like/b", true), ("app.bsky.feed.post/a", false)]).apply();
-        assert!(matches!(lookup(did, (crate::slots::ShardId(1), 1), 30), Since::Nothing));
-        assert_eq!(paths(lookup(did, (crate::slots::ShardId(1), 1), 10)), vec!["app.bsky.feed.like/b"]);
-        assert!(matches!(lookup(did, (crate::slots::ShardId(1), 1), 9), Since::Unknown), "below base");
-        assert!(matches!(lookup(did, (crate::slots::ShardId(2), 1), 30), Since::Unknown), "other epoch");
+        assert!(matches!(lookup(did, (vlsync_store::slots::ShardId(1), 1), 30), Since::Nothing));
+        assert_eq!(paths(lookup(did, (vlsync_store::slots::ShardId(1), 1), 10)), vec!["app.bsky.feed.like/b"]);
+        assert!(matches!(lookup(did, (vlsync_store::slots::ShardId(1), 1), 9), Since::Unknown), "below base");
+        assert!(matches!(lookup(did, (vlsync_store::slots::ShardId(2), 1), 30), Since::Unknown), "other epoch");
         // the wrong-epoch lookup dropped it; a commit that doesn't follow restarts it
         commit(did, 40, 50, vec![("app.bsky.feed.post/c", true)]).apply();
-        assert_eq!(paths(lookup(did, (crate::slots::ShardId(1), 1), 40)), vec!["app.bsky.feed.post/c"]);
-        assert!(matches!(lookup(did, (crate::slots::ShardId(1), 1), 30), Since::Unknown));
+        assert_eq!(paths(lookup(did, (vlsync_store::slots::ShardId(1), 1), 40)), vec!["app.bsky.feed.post/c"]);
+        assert!(matches!(lookup(did, (vlsync_store::slots::ShardId(1), 1), 30), Since::Unknown));
     }
 
     #[test]
@@ -369,21 +367,27 @@ mod tests {
         c.prev_nonempty = false;
         c.apply();
         // no record at or below the AppView's rev: nothing (reference sanity check)
-        assert!(matches!(lookup(did, (crate::slots::ShardId(1), 1), 1), Since::Nothing));
+        assert!(matches!(lookup(did, (vlsync_store::slots::ShardId(1), 1), 1), Since::Nothing));
         for i in 2..60u64 {
             commit(did, i, i + 1, vec![(&format!("app.bsky.feed.post/{i}"), true)]).apply();
         }
-        assert!(matches!(lookup(did, (crate::slots::ShardId(1), 1), 2), Since::Unknown), "trimmed below");
-        let r = paths(lookup(did, (crate::slots::ShardId(1), 1), 40));
+        assert!(matches!(lookup(did, (vlsync_store::slots::ShardId(1), 1), 2), Since::Unknown), "trimmed below");
+        let r = paths(lookup(did, (vlsync_store::slots::ShardId(1), 1), 40));
         assert_eq!(r.len(), LIMIT);
         assert_eq!(r[0], "app.bsky.feed.post/40");
         // a filled entry raced by a commit is not cached
         invalidate(did);
         let g = generation(did);
         commit(did, 70, 71, vec![]).apply();
-        fill(did, (crate::slots::ShardId(1), 1), g, Read { head: 60, base: 60, old_exists: true, recs: vec![] }, 60);
-        assert!(matches!(lookup(did, (crate::slots::ShardId(1), 1), 70), Since::Nothing));
-        assert!(matches!(lookup(did, (crate::slots::ShardId(1), 1), 69), Since::Unknown));
+        fill(
+            did,
+            (vlsync_store::slots::ShardId(1), 1),
+            g,
+            Read { head: 60, base: 60, old_exists: true, recs: vec![] },
+            60,
+        );
+        assert!(matches!(lookup(did, (vlsync_store::slots::ShardId(1), 1), 70), Since::Nothing));
+        assert!(matches!(lookup(did, (vlsync_store::slots::ShardId(1), 1), 69), Since::Unknown));
     }
 
     /// The answer for a rev with too many records above it is kept until
@@ -391,7 +395,7 @@ mod tests {
     #[test]
     fn lagging_answer_kept_until_the_repo_changes() {
         let did = "did:plc:rwtest3";
-        let part = (crate::slots::ShardId(1), 1);
+        let part = (vlsync_store::slots::ShardId(1), 1);
         invalidate(did);
         let rec = |p: &str, rev| Rec { path: p.into(), rev, cid: cid(rev as u8), bytes: None };
         let g = generation(did);

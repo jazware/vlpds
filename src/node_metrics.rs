@@ -116,14 +116,14 @@ fn sample() -> Sample {
     let s = &*crate::stats::STATS;
     let [http, http_5xx] =
         sum_by::<2>(&metrics::HTTP_REQUESTS, |l| Some(if label(l, "status").starts_with('5') { 1 } else { 0 }));
-    let [class_a, class_b, store_errors] = sum_by::<3>(&metrics::OBJ_REQUESTS, |l| {
+    let [class_a, class_b, store_errors] = sum_by::<3>(&vlsync_store::metrics::OBJ_REQUESTS, |l| {
         if matches!(label(l, "result"), "timeout" | "error") {
             return Some(2);
         }
         store_class(label(l, "op"))
     });
     let mut store: BTreeMap<String, [u64; 2]> = BTreeMap::new();
-    for mf in metrics::OBJ_REQUESTS.collect() {
+    for mf in vlsync_store::metrics::OBJ_REQUESTS.collect() {
         for m in mf.get_metric() {
             let labels: Vec<(&str, &str)> = m.get_label().iter().map(|l| (l.name(), l.value())).collect();
             if matches!(label(&labels, "result"), "timeout" | "error") {
@@ -136,27 +136,27 @@ fn sample() -> Sample {
         }
     }
     Sample {
-        t_ms: crate::tid::now_micros() / 1000,
+        t_ms: vlsync_atproto::tid::now_micros() / 1000,
         commits: s.commits.load(Ordering::Relaxed),
         ops: s.ops.load(Ordering::Relaxed),
         http: http + http_5xx,
         http_5xx,
         rate_limited: metrics::RATE_LIMITED.get(),
-        firehose_events: metrics::FIREHOSE_EVENTS.get(),
-        firehose_bytes: metrics::FIREHOSE_SENT_BYTES.get(),
+        firehose_events: vlsync_firehose::metrics::FIREHOSE_EVENTS.get(),
+        firehose_bytes: vlsync_firehose::metrics::FIREHOSE_SENT_BYTES.get(),
         repo_loads: s.repo_loads.load(Ordering::Relaxed),
         class_a,
         class_b,
         store_errors,
         store,
-        cpu_s: metrics::cpu_seconds().unwrap_or(0.0),
-        rss: metrics::resident_bytes().map_or(0, |b| b as i64),
-        subscribers: metrics::FIREHOSE_SUBSCRIBERS.get(),
+        cpu_s: vlsync_store::metrics::cpu_seconds().unwrap_or(0.0),
+        rss: vlsync_store::metrics::resident_bytes().map_or(0, |b| b as i64),
+        subscribers: vlsync_firehose::metrics::FIREHOSE_SUBSCRIBERS.get(),
         cached_repos: gauge_sum(&metrics::CACHED_REPOS),
         mail_queue: crate::mail::MAIL_QUEUE.get(),
         commit: buckets(&metrics::COMMIT_LATENCY),
         put: buckets(&metrics::PUT_DURATION.with_label_values(&["node"])),
-        emit: buckets(&metrics::FIREHOSE_EMIT_DELAY),
+        emit: buckets(&vlsync_firehose::metrics::FIREHOSE_EMIT_DELAY),
     }
 }
 
@@ -303,11 +303,11 @@ pub fn report(since_ms: u64) -> Report {
     let bd = Bounds {
         commit: bounds(&metrics::COMMIT_LATENCY),
         put: bounds(&metrics::PUT_DURATION.with_label_values(&["node"])),
-        emit: bounds(&metrics::FIREHOSE_EMIT_DELAY),
+        emit: bounds(&vlsync_firehose::metrics::FIREHOSE_EMIT_DELAY),
     };
     let mut samples: Vec<Sample> = SAMPLES.lock().iter().cloned().collect();
     // a fresh sample, so a first call (or one between ticks) is current
-    if samples.last().is_none_or(|s| s.t_ms + 250 < crate::tid::now_micros() / 1000) {
+    if samples.last().is_none_or(|s| s.t_ms + 250 < vlsync_atproto::tid::now_micros() / 1000) {
         samples.push(sample());
     }
     let series = samples.windows(2).filter(|w| w[1].t_ms > since_ms).map(|w| point(&w[0], &w[1], &bd)).collect();
@@ -319,7 +319,7 @@ pub fn report(since_ms: u64) -> Report {
         (Some(a), Some(b)) if samples.len() >= 2 => (components(a, b), b.t_ms.saturating_sub(a.t_ms)),
         _ => (Vec::new(), 0),
     };
-    crate::lifecycle::refresh_metrics();
+    vlsync_store::lifecycle::refresh_metrics();
     Report {
         series,
         latest,
@@ -328,7 +328,7 @@ pub fn report(since_ms: u64) -> Report {
         interval_ms: EVERY.as_millis() as u64,
         cpu_limit_cores: std::thread::available_parallelism().map_or(0, |n| n.get()) as f64,
         memory_limit_bytes: metrics::MEMORY_LIMIT.get(),
-        started_at: (metrics::PROCESS_START.get() * 1000.0) as u64,
+        started_at: (vlsync_store::metrics::PROCESS_START.get() * 1000.0) as u64,
     }
 }
 

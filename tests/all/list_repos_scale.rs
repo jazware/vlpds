@@ -26,18 +26,20 @@ async fn populate(nodes: &[TestServer], shards: u32, n: u64) -> std::collections
     let mut by_shard: Vec<Vec<(String, u64)>> = vec![Vec::new(); shards as usize];
     for i in 0..n {
         let did = state::bulk_did(i);
-        by_shard[vlpds::slots::shard_of(&did, shards).0 as usize].push((did, i));
+        by_shard[vlsync_store::slots::shard_of(&did, shards).0 as usize].push((did, i));
     }
     let mut want = std::collections::HashMap::new();
     let commit = Cid::dag_cbor(b"commit");
     let data = Cid::dag_cbor(b"data");
     for (shard, dids) in by_shard.into_iter().enumerate() {
-        let p =
-            nodes.iter().find_map(|s| s.app.partitions.get(vlpds::slots::ShardId(shard as u32))).expect("shard owner");
+        let p = nodes
+            .iter()
+            .find_map(|s| s.app.partitions.get(vlsync_store::slots::ShardId(shard as u32)))
+            .expect("shard owner");
         for chunk in dids.chunks(5000) {
             let mut wb = slatedb::WriteBatch::new();
             for (did, i) in chunk {
-                let rev = vlpds::tid::Tid(1_000_000 + *i);
+                let rev = vlsync_atproto::tid::Tid(1_000_000 + *i);
                 let head = state::Head { commit, data, rev, commit_block: bytes::Bytes::new() };
                 wb.put(state::head_key(did), head.encode());
                 let acct = state::Account {

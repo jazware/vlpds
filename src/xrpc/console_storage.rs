@@ -1,4 +1,4 @@
-//! The console's storage calls (crate::store_stats): objects and bytes by
+//! The console's storage calls (vlsync_store::store_stats): objects and bytes by
 //! key component, and the one-time backfill that seeds them. Admin token
 //! only. getStorageStats reads one control-plane object and asks each live
 //! node for what it hasn't folded yet; neither call lists the bucket on the
@@ -7,7 +7,7 @@
 use super::admin::require_admin;
 use super::moderation::{audit, ClientIp, Who};
 use super::*;
-use crate::store_stats::{self as ss, Comps, Counts};
+use vlsync_store::store_stats::{self as ss, Comps, Counts};
 
 pub fn routes() -> Router<Arc<App>> {
     Router::new()

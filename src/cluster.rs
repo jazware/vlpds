@@ -9,9 +9,6 @@
 //! and "Why safety needs no clocks".
 
 use crate::nodelog::Span;
-use crate::slots::{Layout, Reshard, ShardId};
-use crate::store::Store;
-use crate::version::{self, ClusterVersion};
 use object_store::path::Path;
 use object_store::{ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
 use parking_lot::RwLock;
@@ -20,6 +17,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use vlsync_store::slots::{Layout, Reshard, ShardId};
+use vlsync_store::store::Store;
+use vlsync_store::version::{self, ClusterVersion};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct NodeLease {
@@ -474,8 +474,8 @@ fn now_ms() -> u64 {
 pub(crate) async fn wait_clock_past(floor: i64, max: Duration) -> bool {
     let deadline = Instant::now() + max;
     loop {
-        let now = crate::tid::now_micros();
-        if crate::nodelog::seq_floor(now) > floor {
+        let now = vlsync_atproto::tid::now_micros();
+        if vlsync_firehose::log::seq_floor(now) > floor {
             return true;
         }
         if Instant::now() >= deadline {
@@ -534,7 +534,7 @@ impl Cluster {
         store: Store,
         before_lease: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
     ) -> anyhow::Result<Arc<Cluster>> {
-        let log_id = format!("{}.{}", cfg.node_id, crate::tid::now_micros());
+        let log_id = format!("{}.{}", cfg.node_id, vlsync_atproto::tid::now_micros());
         let mut c = Cluster {
             log_id: log_id.clone(),
             writer: 0,
@@ -552,7 +552,7 @@ impl Cluster {
                 joined: false,
                 follows: BTreeMap::new(),
                 wm_cap: 0,
-                rev: version::build_rev().to_string(),
+                rev: crate::build::rev().to_string(),
                 min_level: cfg.levels.min,
                 max_level: cfg.levels.max,
                 seen_level: 0,
@@ -662,7 +662,7 @@ impl Cluster {
         c.bounded.store(true, Ordering::Release);
         let c = Arc::new(c);
         let (weak, node_id) = (Arc::downgrade(&c), c.cfg.node_id.clone());
-        crate::metrics::on_render(move || match weak.upgrade() {
+        vlsync_store::metrics::on_render(move || match weak.upgrade() {
             Some(c) => {
                 crate::metrics::LEASE_VALIDITY.with_label_values(&[node_id.as_str()]).set(c.lease_validity_secs());
                 true
@@ -1072,14 +1072,14 @@ impl Cluster {
         let (from, to) = (host.durable_end(), host.next_ordinal());
         if to < from || to - from > 64 {
             self.count("list");
-            return Ok(crate::nodelog::first_free(&self.store, &self.log_id).await?.1);
+            return Ok(vlsync_firehose::log::first_free(&self.store, &self.log_id).await?.1);
         }
         let heads = futures::future::try_join_all((from..=to).map(|o| {
             self.count("get");
-            crate::nodelog::read_head(&self.store, &self.log_id, o)
+            vlsync_firehose::log::read_head(&self.store, &self.log_id, o)
         }))
         .await?;
-        Ok(heads.iter().any(|h| matches!(h, crate::nodelog::Head::Fence)))
+        Ok(heads.iter().any(|h| matches!(h, vlsync_firehose::log::Head::Fence)))
     }
 
     pub fn layout(&self) -> Arc<Layout> {
@@ -1293,7 +1293,7 @@ impl Cluster {
         // our watermark cap once this lands (published as `wm_cap`): from
         // the send time, so the cap never exceeds what peers read
         let expires_local_ms = now_ms() + self.cfg.ttl.as_millis() as u64;
-        l.wm_cap = crate::nodelog::seq_floor(expires_local_ms * 1000);
+        l.wm_cap = vlsync_firehose::log::seq_floor(expires_local_ms * 1000);
         let store = self.cfg.lease_plane.as_ref().map_or(&self.store, |p| &p.store);
         let put = Self::put_json_on(store, &self.path(&format!("nodes/{}", self.cfg.node_id)), &l, mode).await;
         *self.last_lease_write.lock() = Some((Instant::now(), put.is_ok(), l.joined, l.draining));
@@ -1414,15 +1414,15 @@ impl Cluster {
             // it, so never stack another one after it.
             self.count("list");
             let (next, fenced) =
-                self.bounded_any("fence-scan", crate::nodelog::first_free(&self.store, log_id)).await?;
+                self.bounded_any("fence-scan", vlsync_firehose::log::first_free(&self.store, log_id)).await?;
             if !fenced {
-                let path = crate::nodelog::segment_path(&self.store, log_id, next);
+                let path = vlsync_firehose::log::segment_path(&self.store, log_id, next);
                 self.count("put");
                 // a fence PUT that times out and lands later is found by the
                 // next attempt's scan (or collides with it: conflict path)
                 let put = self.store.raw.put_opts(
                     &path,
-                    PutPayload::from_bytes(crate::segment::fence_object(&self.cfg.node_id)),
+                    PutPayload::from_bytes(vlsync_store::segment::fence_object(&self.cfg.node_id)),
                     PutOptions { mode: PutMode::Create, ..Default::default() },
                 );
                 match self.bounded("fence", put).await {
@@ -1435,7 +1435,10 @@ impl Cluster {
                         // a zombie got a segment in, or another node fenced first
                         self.count("get");
                         let b = self.bounded("get", async { self.store.raw.get(&path).await?.bytes().await }).await?;
-                        if !matches!(crate::segment::parse(b, false, None)?, crate::segment::LogObject::Fence { .. }) {
+                        if !matches!(
+                            vlsync_store::segment::parse(b, false, None)?,
+                            vlsync_store::segment::LogObject::Fence { .. }
+                        ) {
                             continue; // re-scan: the log grew
                         }
                     }
@@ -1456,12 +1459,12 @@ impl Cluster {
         while ord > 0 {
             ord -= 1;
             self.count("get");
-            match self.bounded_any("get", crate::nodelog::read_head(&self.store, log_id, ord)).await? {
-                crate::nodelog::Head::Segment(h) => return Ok(h.last_seq),
+            match self.bounded_any("get", vlsync_firehose::log::read_head(&self.store, log_id, ord)).await? {
+                vlsync_firehose::log::Head::Segment(h) => return Ok(h.last_seq),
                 // below a fence only retention removes segments, and only
                 // ones past its window: their seqs are long behind any clock
-                crate::nodelog::Head::Missing => break,
-                crate::nodelog::Head::Fence => {}
+                vlsync_firehose::log::Head::Missing => break,
+                vlsync_firehose::log::Head::Fence => {}
             }
         }
         Ok(0)
@@ -1828,11 +1831,12 @@ impl Cluster {
                     host.lost();
                 }
                 _ => {
-                    let kind = if e.downcast_ref::<object_store::Error>().is_some_and(crate::objstats::is_timeout) {
-                        "timeout"
-                    } else {
-                        "error"
-                    };
+                    let kind =
+                        if e.downcast_ref::<object_store::Error>().is_some_and(vlsync_store::objstats::is_timeout) {
+                            "timeout"
+                        } else {
+                            "error"
+                        };
                     crate::metrics::LEASE_RENEW_ERRORS.with_label_values(&[kind]).inc();
                     tracing::warn!("node lease renew error (will retry): {e:#}");
                 }
@@ -1868,7 +1872,7 @@ impl Cluster {
             }
         }
         self.count("list");
-        match self.bounded_any("fence-scan", crate::nodelog::first_free(&self.store, &self.log_id)).await {
+        match self.bounded_any("fence-scan", vlsync_firehose::log::first_free(&self.store, &self.log_id)).await {
             Ok((_, false)) => {}
             Ok((_, true)) => return Recreate::Lost,
             Err(e) => {
@@ -2841,11 +2845,11 @@ impl Cluster {
     /// Ok(true): our log is fenced at `end` (by us, or a peer before us).
     /// Ok(false): a segment holds `end`.
     async fn fence_own_at(&self, end: u64, last_seq: i64) -> anyhow::Result<bool> {
-        let path = crate::nodelog::segment_path(&self.store, &self.log_id, end);
+        let path = vlsync_firehose::log::segment_path(&self.store, &self.log_id, end);
         self.count("put");
         let put = self.store.raw.put_opts(
             &path,
-            PutPayload::from_bytes(crate::segment::fence_object(&self.cfg.node_id)),
+            PutPayload::from_bytes(vlsync_store::segment::fence_object(&self.cfg.node_id)),
             PutOptions { mode: PutMode::Create, ..Default::default() },
         );
         match self.bounded("fence", put).await {
@@ -2853,7 +2857,10 @@ impl Cluster {
             Err(e) if is_conflict(&e) => {
                 self.count("get");
                 let b = self.bounded("get", async { self.store.raw.get(&path).await?.bytes().await }).await?;
-                if !matches!(crate::segment::parse(b, false, None)?, crate::segment::LogObject::Fence { .. }) {
+                if !matches!(
+                    vlsync_store::segment::parse(b, false, None)?,
+                    vlsync_store::segment::LogObject::Fence { .. }
+                ) {
                     return Ok(false);
                 }
             }
@@ -3056,8 +3063,8 @@ mod tests {
 
     /// A real segment holding one entry at `seq` (fence/replay parse it).
     fn segment(log_id: &str, ord: u64, seq: i64) -> PutPayload {
-        let mut b = crate::segment::SegmentBuilder::new();
-        b.push(seq, crate::slots::ShardId(0), 1, |_| {}, &[]);
+        let mut b = vlsync_store::segment::SegmentBuilder::new();
+        b.push(seq, vlsync_store::slots::ShardId(0), 1, |_| {}, &[]);
         let mut data = b.header(log_id, ord);
         data.extend_from_slice(&b.body);
         PutPayload::from(data)
@@ -3071,7 +3078,7 @@ mod tests {
         let m = &crate::metrics::LEASE_RENEW_ERRORS;
         let store = Store::memory(None);
         let (h, hd) = host();
-        let id = format!("lease-metrics-{}", crate::tid::now_micros());
+        let id = format!("lease-metrics-{}", vlsync_atproto::tid::now_micros());
         let restarts0 = crate::metrics::PEER_TAKEOVERS.with_label_values(&["restart"]).get();
         let a = join(cfg(&id), store.clone()).await.unwrap();
         let (timed0, conflicts0) =
@@ -3125,16 +3132,16 @@ mod tests {
         for ord in 0..3 {
             store
                 .raw
-                .put(&crate::nodelog::segment_path(&store, log, ord), segment(log, ord, 100 + ord as i64))
+                .put(&vlsync_firehose::log::segment_path(&store, log, ord), segment(log, ord, 100 + ord as i64))
                 .await
                 .unwrap();
         }
         for ord in 4..6u64 {
-            let mut b = crate::segment::SegmentBuilder::new();
-            b.push(200 + ord as i64, crate::slots::ShardId(0), 1, |_| {}, &[]);
+            let mut b = vlsync_store::segment::SegmentBuilder::new();
+            b.push(200 + ord as i64, vlsync_store::slots::ShardId(0), 1, |_| {}, &[]);
             let mut data = b.sealed_header(log, ord, 3);
             data.extend_from_slice(&b.body);
-            store.raw.put(&crate::nodelog::segment_path(&store, log, ord), PutPayload::from(data)).await.unwrap();
+            store.raw.put(&vlsync_firehose::log::segment_path(&store, log, ord), PutPayload::from(data)).await.unwrap();
         }
         let a = join(cfg("a"), store.clone()).await.unwrap();
         assert_eq!(a.fence(log).await.unwrap(), (3, 102), "fence at the hole; last seq from the durable prefix");
@@ -3143,7 +3150,7 @@ mod tests {
         let r = store
             .raw
             .put_opts(
-                &crate::nodelog::segment_path(&store, log, 3),
+                &vlsync_firehose::log::segment_path(&store, log, 3),
                 segment(log, 3, 103),
                 PutOptions { mode: PutMode::Create, ..Default::default() },
             )
@@ -3200,7 +3207,11 @@ mod tests {
         assert_eq!(*hb.floors.lock(), vec![1000], "the releaser's seqs bound the new owner's");
 
         // a dies with a segment in flight; b fences a's log and takes over
-        store.raw.put(&crate::nodelog::segment_path(&store, &a.log_id, 7), segment(&a.log_id, 7, 5000)).await.unwrap();
+        store
+            .raw
+            .put(&vlsync_firehose::log::segment_path(&store, &a.log_id, 7), segment(&a.log_id, 7, 5000))
+            .await
+            .unwrap();
         // b keeps renewing (as its renew loop would) while a's lease goes
         // stale; it must not take a's shards before ttl + skew of b's time
         for _ in 0..5 {
@@ -3221,7 +3232,7 @@ mod tests {
         let r = store
             .raw
             .put_opts(
-                &crate::nodelog::segment_path(&store, &a.log_id, 8),
+                &vlsync_firehose::log::segment_path(&store, &a.log_id, 8),
                 PutPayload::from_static(b"zombie"),
                 PutOptions { mode: PutMode::Create, ..Default::default() },
             )
@@ -3337,11 +3348,11 @@ mod tests {
     #[tokio::test]
     async fn joiner_waits_until_its_seqs_pass_the_floors() {
         let store = Store::memory(None);
-        let id = format!("floors-{}", crate::tid::now_micros());
+        let id = format!("floors-{}", vlsync_atproto::tid::now_micros());
         let a = join(cfg(&id), store.clone()).await.unwrap();
         // a's previous incarnation's merger may have settled up to 300 ms
         // ahead of our clock
-        let cap = crate::nodelog::seq_floor(crate::tid::now_micros() + 300_000);
+        let cap = vlsync_firehose::log::seq_floor(vlsync_atproto::tid::now_micros() + 300_000);
         let mut lease = a.lease.read().clone();
         lease.wm_cap = cap;
         a.put_json(&a.path(&format!("nodes/{id}")), &lease, PutMode::Overwrite).await.unwrap();
@@ -3352,7 +3363,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(300)).await;
         b.step(&hb_dyn).await.unwrap();
         assert!(b.joined() && b.owned().len() == 8);
-        assert!(crate::nodelog::seq_floor(crate::tid::now_micros()) > cap);
+        assert!(vlsync_firehose::log::seq_floor(vlsync_atproto::tid::now_micros()) > cap);
     }
 
     /// A shard whose close failed (its barrier never became durable) is
@@ -3406,7 +3417,10 @@ mod tests {
         for ord in 0..segs {
             store
                 .raw
-                .put(&crate::nodelog::segment_path(store, &d.log_id, ord), segment(&d.log_id, ord, 100 + ord as i64))
+                .put(
+                    &vlsync_firehose::log::segment_path(store, &d.log_id, ord),
+                    segment(&d.log_id, ord, 100 + ord as i64),
+                )
                 .await
                 .unwrap();
         }
@@ -4232,7 +4246,7 @@ mod tests {
         }
         a.shutdown(&ha_dyn).await.unwrap();
         assert_eq!(stalls.stalled.load(Ordering::SeqCst), 2, "two failed fence PUTs, then one that landed");
-        assert!(crate::nodelog::first_free(&store, &a.log_id).await.unwrap().1, "our log is fenced");
+        assert!(vlsync_firehose::log::first_free(&store, &a.log_id).await.unwrap().1, "our log is fenced");
         assert!(a.get_json::<NodeLease>(&a.path("nodes/a")).await.unwrap().is_none(), "lease dropped");
     }
 
@@ -4246,7 +4260,10 @@ mod tests {
         for ord in 0..3 {
             store
                 .raw
-                .put(&crate::nodelog::segment_path(&store, &a.log_id, ord), segment(&a.log_id, ord, 100 + ord as i64))
+                .put(
+                    &vlsync_firehose::log::segment_path(&store, &a.log_id, ord),
+                    segment(&a.log_id, ord, 100 + ord as i64),
+                )
                 .await
                 .unwrap();
         }
@@ -4254,7 +4271,7 @@ mod tests {
         let lists = a.store_lists();
         a.shutdown(&ha_dyn).await.unwrap();
         assert_eq!(a.store_lists(), lists, "no fence scan");
-        assert_eq!(crate::nodelog::first_free(&store, &a.log_id).await.unwrap(), (3, true));
+        assert_eq!(vlsync_firehose::log::first_free(&store, &a.log_id).await.unwrap(), (3, true));
     }
 
     /// A fence that keeps failing: shutdown gives up after its budget and
@@ -4281,7 +4298,7 @@ mod tests {
         );
         assert!(stalls.stalled.load(Ordering::SeqCst) >= 3, "retried with backoff");
         assert_eq!(ha.lost.load(Ordering::SeqCst), 0, "no fail-stop from the cluster: the caller exits");
-        assert!(!crate::nodelog::first_free(&store, &a.log_id).await.unwrap().1, "not fenced");
+        assert!(!vlsync_firehose::log::first_free(&store, &a.log_id).await.unwrap().1, "not fenced");
         let (lease, _) = a.get_json::<NodeLease>(&a.path("nodes/a")).await.unwrap().expect("lease kept");
         assert_eq!(lease.log_id, a.log_id);
         // renewals stopped: the lease goes quiet, so peers presume us dead
@@ -4293,7 +4310,7 @@ mod tests {
         stalls.armed.lock().clear();
         let a2 = lone_join(cfg("a"), store.clone()).await.unwrap();
         assert!(a2.fenced_logs().contains_key(&a.log_id));
-        assert!(crate::nodelog::first_free(&store, &a.log_id).await.unwrap().1);
+        assert!(vlsync_firehose::log::first_free(&store, &a.log_id).await.unwrap().1);
         // or, without a restart, a peer takes over once the lease is quiet
         // (covered by dead_peer_with_future_clock_is_taken_over)
     }
@@ -4363,7 +4380,7 @@ mod tests {
         refusals();
         let store = Store::memory(None);
         put_version(&store, 2, None).await;
-        let id = format!("old-{}", crate::tid::now_micros());
+        let id = format!("old-{}", vlsync_atproto::tid::now_micros());
         let err = join(levels(&id, 1, 1), store.clone()).await.err().expect("refused");
         assert!(format!("{err:#}").contains(version::EXIT_REASON), "{err:#}");
         assert_eq!(refused(&id).len(), 1, "fail-stop 7 hook ran once");
@@ -4375,15 +4392,15 @@ mod tests {
         );
         // a build that can no longer read the active level, and one that is
         // older than a raise in progress, are refused too
-        let id2 = format!("new-{}", crate::tid::now_micros());
+        let id2 = format!("new-{}", vlsync_atproto::tid::now_micros());
         assert!(join(levels(&id2, 3, 4), store.clone()).await.is_err());
         assert_eq!(refused(&id2).len(), 1);
         put_version(&store, 1, Some(2)).await;
-        let id3 = format!("mid-{}", crate::tid::now_micros());
+        let id3 = format!("mid-{}", vlsync_atproto::tid::now_micros());
         assert!(join(levels(&id3, 1, 1), store.clone()).await.is_err());
         assert!(refused(&id3)[0].contains("raising"), "{:?}", refused(&id3));
         // one that can run it joins
-        assert!(join(levels(&format!("ok-{}", crate::tid::now_micros()), 1, 2), store.clone()).await.is_ok());
+        assert!(join(levels(&format!("ok-{}", vlsync_atproto::tid::now_micros()), 1, 2), store.clone()).await.is_ok());
     }
 
     /// An operator forced the active level past a running node's window: its
@@ -4392,7 +4409,7 @@ mod tests {
     async fn running_node_seeing_a_level_past_it_fail_stops() {
         refusals();
         let store = Store::memory(None);
-        let id = format!("run-{}", crate::tid::now_micros());
+        let id = format!("run-{}", vlsync_atproto::tid::now_micros());
         let a = join(levels(&id, 1, 1), store.clone()).await.unwrap();
         let (_, ha) = host();
         a.step(&ha).await.unwrap();
@@ -4414,7 +4431,7 @@ mod tests {
     async fn finalize_raises_only_when_every_live_node_can() {
         refusals();
         let store = Store::memory(None);
-        let old_id = format!("fin-old-{}", crate::tid::now_micros());
+        let old_id = format!("fin-old-{}", vlsync_atproto::tid::now_micros());
         let old = join(levels(&old_id, 1, 1), store.clone()).await.unwrap();
         let new = join(levels("fin-new", 1, 2), store.clone()).await.unwrap();
         assert_eq!(new.cluster_version().unwrap().active, 1, "created by the level-1 build");
@@ -4439,7 +4456,7 @@ mod tests {
         // a finalize that died after its target: nodes that can't run the
         // target refuse until a finalize at the active level clears it
         put_version(&store, 2, Some(3)).await;
-        let stuck = format!("fin-stuck-{}", crate::tid::now_micros());
+        let stuck = format!("fin-stuck-{}", vlsync_atproto::tid::now_micros());
         assert!(join(levels(&stuck, 1, 2), store.clone()).await.is_err());
         assert_eq!(new.finalize_level(2, "op").await.unwrap().target, None);
         assert_eq!(new.read_version().await.unwrap().unwrap().0.target, None);
@@ -4515,7 +4532,7 @@ mod tests {
         let store = Store::memory(None);
         put_version(&store, 1, None).await;
         let new = join(levels("race-new", 1, 2), store.clone()).await.unwrap();
-        let old_id = format!("race-old-{}", crate::tid::now_micros());
+        let old_id = format!("race-old-{}", vlsync_atproto::tid::now_micros());
         let n = new.clone();
         let raise = Box::pin(async move {
             assert_eq!(n.finalize_level(2, "op").await.unwrap().active, 2, "the joiner had no lease yet");
@@ -4536,7 +4553,7 @@ mod tests {
             let store = Store::memory(None);
             put_version(&store, 1, None).await;
             let new = join(levels(&format!("racer-new-{i}"), 1, 2), store.clone()).await.unwrap();
-            let old_id = format!("racer-old-{i}-{}", crate::tid::now_micros());
+            let old_id = format!("racer-old-{i}-{}", vlsync_atproto::tid::now_micros());
             let (n, s, oid) = (new.clone(), store.clone(), old_id.clone());
             let raise = tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_micros(rand::random::<u64>() % 3000)).await;
@@ -4699,7 +4716,7 @@ mod tests {
         let ttl = Duration::from_secs(ttl_s);
         let (renew_every, skew) = (ttl / 5, ttl / 5);
         let gap = lease_key_gap(renew_every);
-        let floor = crate::throttle::CTL_WRITE_FLOOR.min(renew_every);
+        let floor = vlsync_store::throttle::CTL_WRITE_FLOOR.min(renew_every);
         let (mut sends, mut tick, mut now) = (Vec::new(), Duration::ZERO, Duration::ZERO);
         let (mut valid_until, mut last_end, mut writes) = (ttl - skew, None::<Duration>, 0);
         for _ in 0..40 {

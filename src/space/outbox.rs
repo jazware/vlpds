@@ -27,12 +27,12 @@
 //! never a scan of the outbox.
 
 use crate::state::SpaceId;
-use crate::tid::Tid;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
+use vlsync_atproto::tid::Tid;
 
 pub const RETRY_BASE: Duration = Duration::from_secs(60);
 pub const RETRY_MAX: Duration = Duration::from_secs(3600);
@@ -667,7 +667,7 @@ mod tests {
     #[test]
     fn a_failing_authority_holds_up_no_one_else() {
         let o = Outbox::default();
-        let now = || crate::tid::Tid::from_parts(crate::tid::now_micros(), 0);
+        let now = || vlsync_atproto::tid::Tid::from_parts(vlsync_atproto::tid::now_micros(), 0);
         let sid = |i: usize| {
             let mut s = [0; 16];
             s[..8].copy_from_slice(&(i as u64).to_be_bytes());
@@ -709,13 +709,27 @@ mod tests {
     fn retries_back_off() {
         let o = Outbox::default();
         let sid = [1; 16];
-        o.enqueue("did:a", sid, "at://s", crate::tid::Tid::from_parts(crate::tid::now_micros(), 0), [0; 32], true);
+        o.enqueue(
+            "did:a",
+            sid,
+            "at://s",
+            vlsync_atproto::tid::Tid::from_parts(vlsync_atproto::tid::now_micros(), 0),
+            [0; 32],
+            true,
+        );
         let s = send(&o);
         o.finish(&s[0], &Outcome::Retry("503".into()));
         assert!(send(&o).is_empty(), "backed off");
         assert_eq!(o.len(), 1);
         // a newer write sends at once
-        o.enqueue("did:a", sid, "at://s", crate::tid::Tid::from_parts(crate::tid::now_micros() + 1, 0), [0; 32], true);
+        o.enqueue(
+            "did:a",
+            sid,
+            "at://s",
+            vlsync_atproto::tid::Tid::from_parts(vlsync_atproto::tid::now_micros() + 1, 0),
+            [0; 32],
+            true,
+        );
         let s = send(&o);
         assert_eq!(s.len(), 1);
         o.finish(&s[0], &Outcome::Refused("400".into()));
@@ -745,7 +759,7 @@ mod tests {
     fn waiting_rows_leave_the_age_gauge() {
         let o = Outbox::default();
         let sid = [3; 16];
-        o.enqueue("did:w", sid, "at://s", Tid::from_parts(crate::tid::now_micros(), 0), [0; 32], true);
+        o.enqueue("did:w", sid, "at://s", Tid::from_parts(vlsync_atproto::tid::now_micros(), 0), [0; 32], true);
         let s = send(&o);
         assert!(oldest(&o).is_some());
         o.finish(&s[0], &Outcome::Wait);

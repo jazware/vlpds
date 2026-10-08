@@ -96,8 +96,8 @@ pub fn now_secs() -> i64 {
 
 /// A TID `offset` from now (`TID.fromTime`), with a random clock id.
 pub fn tid_at(offset_us: i64) -> String {
-    let micros = (vlpds::tid::now_micros() as i64 + offset_us) as u64;
-    vlpds::tid::Tid::from_parts(micros, rand::random::<u64>() % 1024).to_string()
+    let micros = (vlsync_atproto::tid::now_micros() as i64 + offset_us) as u64;
+    vlsync_atproto::tid::Tid::from_parts(micros, rand::random::<u64>() % 1024).to_string()
 }
 
 /// `TID.nextStr()`: a fresh TID, later than `after` if given.
@@ -105,8 +105,8 @@ pub fn next_tid(after: Option<&str>) -> String {
     let t = tid_at(0);
     match after {
         Some(a) if t.as_str() <= a => {
-            let p = vlpds::tid::Tid::parse(a).unwrap();
-            vlpds::tid::Tid::from_parts(p.micros() + 1, 0).to_string()
+            let p = vlsync_atproto::tid::Tid::parse(a).unwrap();
+            vlsync_atproto::tid::Tid::from_parts(p.micros() + 1, 0).to_string()
         }
         _ => t,
     }
@@ -146,7 +146,7 @@ impl Net {
         let mut pds = Vec::new();
         for i in 0..=extra {
             let url = plc.url.clone();
-            let rot = Arc::new(vlpds::crypto::Keypair::generate());
+            let rot = Arc::new(vlsync_atproto::crypto::Keypair::generate());
             pds.push(
                 TestServer::spawn_with(|c| {
                     use_plc(c, url, rot);
@@ -227,7 +227,7 @@ impl Net {
         let i = *self.hosts.lock().get(&owner.did).expect("a Net account");
         let p = self.pds[i].app.partitions.for_key(&owner.did).expect("the authority's shard");
         let prefix = state::space_prefix(state::SPACE_WRITER_FAMILY, &owner.did, &state::space_id(space));
-        let mut it = p.db.scan(prefix.clone()..state::prefix_end(&prefix)).await.unwrap();
+        let mut it = p.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await.unwrap();
         let mut dids = Vec::new();
         while let Some(kv) = it.next().await.unwrap() {
             dids.push(String::from_utf8_lossy(&kv.key[prefix.len()..]).into_owned());
@@ -579,7 +579,7 @@ pub async fn raw_post(base: &str, nsid: &str, body: J, headers: &[(String, Strin
 
 /// A space token signed by `key` as `iss` (the reference's
 /// `createSpaceToken`), for tokens no endpoint would mint.
-pub fn space_token(ty: TokenType, key: &vlpds::crypto::Keypair, m: Mint) -> String {
+pub fn space_token(ty: TokenType, key: &vlsync_atproto::crypto::Keypair, m: Mint) -> String {
     token::encode(ty, &m, "ES256K", now_secs(), &token::new_jti(), |b| Ok::<_, ()>(key.sign(b))).unwrap()
 }
 
@@ -604,7 +604,7 @@ pub struct MockService {
     pub did: String,
     pub url: String,
     pub service_id: String,
-    pub key: Arc<vlpds::crypto::Keypair>,
+    pub key: Arc<vlsync_atproto::crypto::Keypair>,
     calls: Arc<Mutex<Vec<Call>>>,
     respond: Arc<Mutex<(u16, J)>>,
     /// Answers used once each, ahead of `respond`.
@@ -621,7 +621,7 @@ impl MockService {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
         let (did, url) = (format!("did:web:127.0.0.1%3A{}", addr.port()), format!("http://{addr}"));
-        let key = Arc::new(vlpds::crypto::Keypair::generate());
+        let key = Arc::new(vlsync_atproto::crypto::Keypair::generate());
         let service: Vec<J> = services
             .iter()
             .map(|(id, ty)| json!({"id": format!("#{id}"), "type": ty, "serviceEndpoint": url}))

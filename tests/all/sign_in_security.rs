@@ -279,7 +279,7 @@ async fn put_row(s: &TestServer, did: &str, name: &str, v: &J) {
     s.app
         .put_private(
             did,
-            vec![vlpds::segment::Mutation {
+            vec![vlsync_store::segment::Mutation {
                 key: vlpds::state::private_key(did, name).into(),
                 val: Some(serde_json::to_vec(v).unwrap().into()),
             }],

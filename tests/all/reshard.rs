@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use vlpds::slots::ShardId;
+use vlsync_store::slots::ShardId;
 
 const SHARDS: u32 = 6;
 
@@ -137,7 +137,7 @@ fn cluster(n: &TestServer) -> &vlpds::cluster::Cluster {
     n.app.cluster.as_deref().unwrap()
 }
 
-fn layout(n: &Node) -> Arc<vlpds::slots::Layout> {
+fn layout(n: &Node) -> Arc<vlsync_store::slots::Layout> {
     cluster(&n.s).layout()
 }
 
@@ -150,7 +150,7 @@ fn owned(n: &Node) -> Vec<ShardId> {
 /// Until every live node routes by the same layout with no op in flight,
 /// holding `want_version` or later, and its shards are each open on exactly
 /// one live node. Returns that layout.
-async fn settled(nodes: &[&Node], want_version: u64, timeout: Duration) -> Arc<vlpds::slots::Layout> {
+async fn settled(nodes: &[&Node], want_version: u64, timeout: Duration) -> Arc<vlsync_store::slots::Layout> {
     let deadline = Instant::now() + timeout;
     loop {
         let live: Vec<&&Node> = nodes.iter().filter(|n| n.alive()).collect();
@@ -341,7 +341,7 @@ async fn diagnose(n: &TestServer, a: &Acked) {
     eprintln!(
         "DIAG {} slot {} rev {} layout v{} routes to shard {} of {:?}",
         a.uri,
-        vlpds::slots::slot_of(&a.did),
+        vlsync_store::slots::slot_of(&a.did),
         a.rev,
         l.version,
         l.shard_of(&a.did),
@@ -433,7 +433,7 @@ async fn merge(n: &TestServer, left: ShardId, right: ShardId) -> ShardId {
 }
 
 /// Two adjacent shards of `l` held by different nodes.
-fn cross_pair(l: &vlpds::slots::Layout, nodes: &[&Node]) -> (ShardId, ShardId) {
+fn cross_pair(l: &vlsync_store::slots::Layout, nodes: &[&Node]) -> (ShardId, ShardId) {
     let owner = |s: ShardId| nodes.iter().position(|n| owned(n).contains(&s));
     let pair = l.shards.windows(2).find(|w| owner(w[0].id) != owner(w[1].id)).expect("adjacent shards on two nodes");
     (pair[0].id, pair[1].id)
@@ -731,7 +731,7 @@ async fn list_repos_across_layout_changes() {
     let set: HashSet<String> = got.iter().cloned().collect();
     assert_eq!(set.len(), got.len(), "a repo listed twice");
     assert!(want.is_subset(&set), "missing {:?}", want.difference(&set).collect::<Vec<_>>());
-    let order: Vec<(u16, String)> = got.iter().map(|d| (vlpds::slots::slot_of(d), d.clone())).collect();
+    let order: Vec<(u16, String)> = got.iter().map(|d| (vlsync_store::slots::slot_of(d), d.clone())).collect();
     assert!(order.windows(2).all(|w| w[0] < w[1]), "pages in (slot, DID) order");
 }
 
@@ -836,7 +836,7 @@ async fn repeated_splits_and_merges_under_write_load() {
 /// are the fixed-width ones, and no id was handed out twice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn shard_ids_past_u16_end_to_end() {
-    use vlpds::slots::{Layout, ShardId};
+    use vlsync_store::slots::{Layout, ShardId};
     let store = Arc::new(object_store::memory::InMemory::new());
     let seeded = Layout { next_id: ShardId(65_534), ..Layout::uniform(SHARDS) };
     object_store::ObjectStoreExt::put(
@@ -872,7 +872,7 @@ async fn shard_ids_past_u16_end_to_end() {
     let slots_in = |accts: &[TestAccount]| -> std::collections::BTreeSet<u32> {
         accts
             .iter()
-            .map(|x| vlpds::slots::slot_of(&x.did) as u32)
+            .map(|x| vlsync_store::slots::slot_of(&x.did) as u32)
             .filter(|s| (child.lo..child.hi).contains(s))
             .collect()
     };

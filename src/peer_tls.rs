@@ -19,7 +19,6 @@
 use anyhow::{bail, ensure, Context, Result};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::{ResolvesClientCert, WebPkiServerVerifier};
-use rustls::crypto::CryptoProvider;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
@@ -71,12 +70,6 @@ fn init_metrics() {
 
 pub fn server_handshake_failed() {
     HANDSHAKE_FAILURES.with_label_values(&["server"]).inc();
-}
-
-/// ring: reqwest and lettre already link it.
-pub fn provider() -> Arc<CryptoProvider> {
-    static P: LazyLock<Arc<CryptoProvider>> = LazyLock::new(|| Arc::new(rustls::crypto::ring::default_provider()));
-    P.clone()
 }
 
 #[derive(Debug, Clone)]
@@ -164,7 +157,7 @@ struct Material {
 
 impl Material {
     fn from_pem(ca_pem: &[u8], cert_pem: &[u8], key_pem: &[u8]) -> Result<Material> {
-        let p = provider();
+        let p = vlsync_atproto::http::tls_provider();
         let cas: Vec<CertificateDer<'static>> =
             CertificateDer::pem_slice_iter(ca_pem).collect::<Result<_, _>>().context("reading the CA file (PEM)")?;
         ensure!(!cas.is_empty(), "no certificate in the CA file");
@@ -378,7 +371,7 @@ impl PeerTls {
 
     /// ALPN http/1.1 is for log stream upgrades.
     pub fn server_config(self: &Arc<Self>) -> Arc<rustls::ServerConfig> {
-        let mut c = rustls::ServerConfig::builder_with_provider(provider())
+        let mut c = rustls::ServerConfig::builder_with_provider(vlsync_atproto::http::tls_provider())
             .with_protocol_versions(&[&rustls::version::TLS13])
             .expect("TLS 1.3 with the ring provider")
             .with_client_cert_verifier(Arc::new(ClientAuth(self.clone())))
@@ -388,7 +381,7 @@ impl PeerTls {
     }
 
     pub fn client_config(self: &Arc<Self>, expect: Expect, alpn: &[&[u8]]) -> rustls::ClientConfig {
-        let mut c = rustls::ClientConfig::builder_with_provider(provider())
+        let mut c = rustls::ClientConfig::builder_with_provider(vlsync_atproto::http::tls_provider())
             .with_protocol_versions(&[&rustls::version::TLS13])
             .expect("TLS 1.3 with the ring provider")
             .dangerous()
@@ -426,7 +419,12 @@ fn verify12(
     cert: &CertificateDer<'_>,
     dss: &DigitallySignedStruct,
 ) -> Result<HandshakeSignatureValid, rustls::Error> {
-    rustls::crypto::verify_tls12_signature(message, cert, dss, &provider().signature_verification_algorithms)
+    rustls::crypto::verify_tls12_signature(
+        message,
+        cert,
+        dss,
+        &vlsync_atproto::http::tls_provider().signature_verification_algorithms,
+    )
 }
 
 fn verify13(
@@ -434,11 +432,16 @@ fn verify13(
     cert: &CertificateDer<'_>,
     dss: &DigitallySignedStruct,
 ) -> Result<HandshakeSignatureValid, rustls::Error> {
-    rustls::crypto::verify_tls13_signature(message, cert, dss, &provider().signature_verification_algorithms)
+    rustls::crypto::verify_tls13_signature(
+        message,
+        cert,
+        dss,
+        &vlsync_atproto::http::tls_provider().signature_verification_algorithms,
+    )
 }
 
 fn schemes() -> Vec<SignatureScheme> {
-    provider().signature_verification_algorithms.supported_schemes()
+    vlsync_atproto::http::tls_provider().signature_verification_algorithms.supported_schemes()
 }
 
 #[derive(Debug)]

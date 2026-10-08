@@ -7,8 +7,8 @@
 //! unconfigured case.
 
 use crate::common::*;
-use vlpds::crypto::Keypair;
 use vlpds::plc::mock::MockPlc;
+use vlsync_atproto::crypto::Keypair;
 
 /// Registers a did:plc with `key` as its `#atproto` and `#atproto_label` key.
 async fn register(plc: &MockPlc, handle: &str, key: &Keypair) -> String {

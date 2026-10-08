@@ -168,7 +168,7 @@ const RESCAN_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 const RESCAN_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn now_secs() -> i64 {
-    crate::tid::now_micros() as i64 / 1_000_000
+    vlsync_atproto::tid::now_micros() as i64 / 1_000_000
 }
 
 impl Spaces {
@@ -273,7 +273,7 @@ impl Spaces {
 
     /// Re-reads the revocations object; cached credentials it newly
     /// revokes are dropped.
-    pub async fn refresh_revocations(&self, store: &crate::store::Store) -> anyhow::Result<()> {
+    pub async fn refresh_revocations(&self, store: &vlsync_store::store::Store) -> anyhow::Result<()> {
         let added = self.revocations.refresh(store, now_secs()).await?;
         self.credentials.invalidate(&added);
         Ok(())
@@ -288,7 +288,7 @@ impl Spaces {
     /// Ok(Ok(true)): the object was written.
     pub async fn revoke(
         &self,
-        store: &crate::store::Store,
+        store: &vlsync_store::store::Store,
         space: &str,
         aud: &str,
         jtis: &[String],
@@ -317,7 +317,7 @@ impl Spaces {
     /// Loads the revocations (credential reads answer 503 until a load
     /// succeeds), then keeps them fresh in the background: every
     /// [`revocations::REFRESH_EVERY`], or at once when woken by a peer.
-    pub async fn start_revocations(self: &Arc<Self>, store: crate::store::Store) {
+    pub async fn start_revocations(self: &Arc<Self>, store: vlsync_store::store::Store) {
         if self.revocations.started.swap(true, std::sync::atomic::Ordering::AcqRel) {
             return;
         }
@@ -393,14 +393,14 @@ impl Spaces {
     pub fn spawn_outbox_rescan(
         self: Arc<Self>,
         table: std::sync::Weak<crate::partitions::PartitionTable>,
-        shards: Vec<(crate::slots::ShardId, Arc<slatedb::Db>)>,
+        shards: Vec<(vlsync_store::slots::ShardId, Arc<slatedb::Db>)>,
         overflow: bool,
     ) {
         if shards.is_empty() {
             return;
         }
         // the lease epoch, while `db` is still the shard's
-        let owned = move |shard: crate::slots::ShardId, db: &Arc<slatedb::Db>| {
+        let owned = move |shard: vlsync_store::slots::ShardId, db: &Arc<slatedb::Db>| {
             table.upgrade().and_then(|t| t.get(shard)).filter(|p| Arc::ptr_eq(&p.db, db)).map(|p| p.epoch)
         };
         tokio::spawn(async move {
@@ -452,7 +452,7 @@ impl Spaces {
         use crate::state::{self, SpaceId};
         let opts = slatedb::config::ScanOptions::default();
         let mut scan = state::FamilyScan::new(db, state::SPACE_NOTIFY_FAMILY, None, &opts).await?;
-        let now = crate::tid::now_micros();
+        let now = vlsync_atproto::tid::now_micros();
         let mut spaces: Vec<(String, SpaceId)> = Vec::new();
         while let Some(kv) = scan.next().await? {
             let Some((did, sid)) = rows::did_sid_head(&kv.key) else { continue };
@@ -473,7 +473,7 @@ impl Spaces {
             }
             let prefix = state::space_prefix(state::SPACE_SEQ_FAMILY, &authority, &sid);
             let desc = slatedb::config::ScanOptions::default().with_order(slatedb::IterationOrder::Descending);
-            let mut it = db.scan_with_options(prefix.clone()..state::prefix_end(&prefix), &desc).await?;
+            let mut it = db.scan_with_options(prefix.clone()..vlsync_store::keys::prefix_end(&prefix), &desc).await?;
             let Some(last) = it.next().await? else { continue };
             let Some(space_rev) = rows::seq_rev(&last.key) else { continue };
             let rows::SeqRow { prev, writer } = rows::SeqRow::decode(&last.value)?;
@@ -581,7 +581,7 @@ mod tests {
     /// space here rather than leaving its credentials readable.
     #[tokio::test]
     async fn a_failed_revoke_blocks_the_space() {
-        let store = crate::store::Store {
+        let store = vlsync_store::store::Store {
             raw: Arc::new(object_store::memory::InMemory::new()),
             prefix: "t".into(),
             latency: None,
@@ -653,7 +653,7 @@ mod tests {
 
     #[test]
     fn did_key_algs() {
-        let k256 = crate::crypto::Keypair::generate().did_key();
+        let k256 = vlsync_atproto::crypto::Keypair::generate().did_key();
         assert_eq!(did_key_alg(&k256), Some("ES256K"));
         let p256 = vectors::VECTORS["httpsig"][0]["keyDid"].as_str().unwrap();
         assert_eq!(did_key_alg(p256), Some("ES256"));
@@ -662,7 +662,7 @@ mod tests {
         assert!(verify_did_key("did:plc:abc", b"x", &[0; 64], false).is_err());
         assert!(verify_did_key(&k256, b"x", &[0; 70], false).is_err());
         // a hybrid-encoded point (0x06/0x07 prefix) of a real key
-        let key = crate::crypto::Keypair::generate();
+        let key = vlsync_atproto::crypto::Keypair::generate();
         let sig = key.sign(b"x");
         let pk = secp256k1::PublicKey::from_slice(&key.public_key_sec1()).unwrap().serialize_uncompressed();
         let mut hybrid = vec![0xe7, 0x01, 6 | (pk[64] & 1)];

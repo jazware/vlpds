@@ -18,13 +18,13 @@
 use super::import_budget::Reservation;
 use super::repo::{imported_record_blobs, parse_import, ImportedRecord};
 use super::*;
-use crate::car_order::{Next, Walk};
-use crate::mst::{self, Node};
 use crate::mst_lazy::StreamBuilder;
 use futures::StreamExt;
 use std::io::{Read, Write as _};
 use std::time::Duration;
 use tokio::sync::mpsc;
+use vlsync_atproto::car_order::{Next, Walk};
+use vlsync_atproto::mst::{self, Node};
 
 /// Chunks queued for the parser: hyper's are up to a few hundred KB.
 const QUEUE: usize = 32;
@@ -257,7 +257,7 @@ fn stream(input: &mut Input, sink: &mut Sink) -> Result<(Bytes, u64, u64, crate:
     let roots = car::read_header(&header).map_err(|_| Stop::Depart)?;
     let [root] = roots[..] else { return Err(Stop::Depart) };
     let (c, commit) = input.block().ok_or(Stop::Depart)?;
-    if c != root || root.codec != crate::cid::CODEC_DAG_CBOR {
+    if c != root || root.codec != vlsync_atproto::cid::CODEC_DAG_CBOR {
         return Err(Stop::Depart);
     }
     let commit = Value::decode(&commit).map_err(|_| Stop::Depart)?;
@@ -283,7 +283,8 @@ fn stream(input: &mut Input, sink: &mut Sink) -> Result<(Bytes, u64, u64, crate:
                     return Err(Stop::Depart);
                 }
                 let path = std::str::from_utf8(&key).map_err(|_| Stop::Depart)?;
-                if !super::syntax::valid_record_path(path) || cid.codec != crate::cid::CODEC_DAG_CBOR {
+                if !vlsync_atproto::syntax::valid_record_path(path) || cid.codec != vlsync_atproto::cid::CODEC_DAG_CBOR
+                {
                     return Err(Stop::Depart);
                 }
                 let (c, b) = input.block().ok_or(Stop::Depart)?;
@@ -523,9 +524,9 @@ impl Input {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cbor::key_cmp;
-    use crate::mst::Tree;
     use std::collections::HashMap;
+    use vlsync_atproto::cbor::key_cmp;
+    use vlsync_atproto::mst::Tree;
 
     struct Repo {
         commit: (Cid, Vec<u8>),
@@ -581,7 +582,7 @@ mod tests {
 
     impl Repo {
         fn streamed(&self) -> Vec<u8> {
-            crate::car_order::write_car((self.commit.0, &self.commit.1), self.data, &self.blocks).unwrap()
+            vlsync_atproto::car_order::write_car((self.commit.0, &self.commit.1), self.data, &self.blocks).unwrap()
         }
 
         /// Commit, then the other blocks by CID.
@@ -855,18 +856,18 @@ mod tests {
             let data = tree.write_diff_blocks(&mut bs).unwrap();
             let map: HashMap<Cid, Vec<u8>> = bs.into_iter().collect();
             let cm = commit(data);
-            cases.push((name, crate::car_order::write_car((cm.0, &cm.1), data, &map).unwrap()));
+            cases.push((name, vlsync_atproto::car_order::write_car((cm.0, &cm.1), data, &map).unwrap()));
         }
         // a header with two roots, and garbage
         let mut two = Vec::new();
         let mut h = Vec::new();
-        crate::cbor::write_map_head(&mut h, 2);
-        crate::cbor::write_text(&mut h, "roots");
-        crate::cbor::write_array_head(&mut h, 2);
-        crate::cbor::write_cid(&mut h, &r.commit.0);
-        crate::cbor::write_cid(&mut h, &r.commit.0);
-        crate::cbor::write_text(&mut h, "version");
-        crate::cbor::write_uint(&mut h, 1);
+        vlsync_atproto::cbor::write_map_head(&mut h, 2);
+        vlsync_atproto::cbor::write_text(&mut h, "roots");
+        vlsync_atproto::cbor::write_array_head(&mut h, 2);
+        vlsync_atproto::cbor::write_cid(&mut h, &r.commit.0);
+        vlsync_atproto::cbor::write_cid(&mut h, &r.commit.0);
+        vlsync_atproto::cbor::write_text(&mut h, "version");
+        vlsync_atproto::cbor::write_uint(&mut h, 1);
         car::write_varint(&mut two, h.len() as u64);
         two.extend_from_slice(&h);
         for (c, b) in &blocks {

@@ -11,10 +11,10 @@
 //! one length per collection (TIDs), so there are few runs. STAR (proposals
 //! #114) is bytewise with no index: one run, and a second encoder.
 
-use crate::cbor;
-use crate::cid::Cid;
 use sha2::{Digest, Sha256};
 use std::ops::Range;
+use vlsync_atproto::cbor;
+use vlsync_atproto::cid::Cid;
 
 /// A space repo's paths and CIDs in `sR`'s bytewise order, packed.
 #[derive(Default)]
@@ -165,7 +165,7 @@ impl<'a> RepoEncoder<'a> for Car<'a> {
             self.index_len += buf.len();
             buf.clear();
         }
-        self.index_cid = Some(Cid { codec: crate::cid::CODEC_DAG_CBOR, digest: h.finalize().into() });
+        self.index_cid = Some(Cid { codec: vlsync_atproto::cid::CODEC_DAG_CBOR, digest: h.finalize().into() });
     }
 
     fn prelude(&mut self, out: &mut Vec<u8>, max: usize) -> bool {
@@ -182,11 +182,11 @@ impl<'a> RepoEncoder<'a> for Car<'a> {
                 cbor::write_cid(&mut h, &index_cid);
                 cbor::write_text(&mut h, "version");
                 cbor::write_uint(&mut h, 1);
-                crate::car::write_varint(out, h.len() as u64);
+                vlsync_atproto::car::write_varint(out, h.len() as u64);
                 out.extend_from_slice(&h);
-                crate::car::write_block(out, &commit_cid, &self.commit);
+                vlsync_atproto::car::write_block(out, &commit_cid, &self.commit);
                 let cid = index_cid.to_bytes();
-                crate::car::write_varint(out, (cid.len() + self.index_len) as u64);
+                vlsync_atproto::car::write_varint(out, (cid.len() + self.index_len) as u64);
                 out.extend_from_slice(&cid);
                 cbor::write_map_head(out, self.entries.expect("begun").len());
                 (0, 0)
@@ -197,7 +197,7 @@ impl<'a> RepoEncoder<'a> for Car<'a> {
     }
 
     fn record(&mut self, cid: &Cid, bytes: &[u8], out: &mut Vec<u8>) {
-        crate::car::write_block(out, cid, bytes);
+        vlsync_atproto::car::write_block(out, cid, bytes);
     }
 }
 
@@ -228,7 +228,7 @@ mod tests {
         assert_eq!(flat(&e, &canonical_runs(&e)), want);
         assert!(canonical_runs(&Entries::default()).is_empty());
         // one collection of TIDs: one run
-        let tids: Vec<String> = (0..50).map(|i| format!("c.o/{}", crate::tid::Tid(1_000_000 + i))).collect();
+        let tids: Vec<String> = (0..50).map(|i| format!("c.o/{}", vlsync_atproto::tid::Tid(1_000_000 + i))).collect();
         let e = entries(&tids.iter().map(String::as_str).collect::<Vec<_>>());
         assert_eq!(canonical_runs(&e).len(), 1);
     }
@@ -253,7 +253,7 @@ mod tests {
             car.record(e.cid(i), e.path(i).as_bytes(), &mut out);
         }
         let index = car.index_block();
-        let (roots, blocks) = crate::car::read_car(&out).unwrap();
+        let (roots, blocks) = vlsync_atproto::car::read_car(&out).unwrap();
         assert_eq!(roots, vec![Cid::dag_cbor(&[0xa0]), Cid::dag_cbor(&index)]);
         assert_eq!(blocks[1].1, &index[..]);
         let decoded = cbor::Value::decode(&index).unwrap();

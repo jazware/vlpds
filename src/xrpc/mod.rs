@@ -44,7 +44,6 @@ mod space_import;
 mod space_ops;
 pub mod staged_import;
 mod sync;
-pub mod syntax;
 mod webui;
 pub use account_stats::{export_account_totals, scan_totals, totals, totals_loading};
 pub use blobs::spawn_blob_gc;
@@ -65,27 +64,29 @@ pub use sync::{
     export_memory_bytes, find_record, set_export_prefetch_max_bytes, size_export_prefetch_pool, stream_export,
     ExportChunkTx, DEFAULT_EXPORT_STALL, DEFAULT_MAX_EXPORTS,
 };
+use vlsync_atproto::cbor::blob_refs;
+use vlsync_atproto::xrpc::{XrpcError, SIGNATURE_FAULT};
 pub use webui::WebUi;
 
 #[allow(unused_imports)]
 mod prelude {
     pub(crate) use crate::auth::Jwt;
-    pub(crate) use crate::car;
-    pub(crate) use crate::cbor::Value;
-    pub(crate) use crate::cid::Cid;
-    pub(crate) use crate::crypto::{self, Keypair};
-    pub(crate) use crate::firehose::Firehose;
     pub(crate) use crate::metrics;
     pub(crate) use crate::partition::Partition;
     pub(crate) use crate::state::{self, Account, Head};
     pub(crate) use crate::stats::STATS;
-    pub(crate) use crate::store::Store;
-    pub(crate) use crate::tid::TidClock;
     pub(crate) use crate::worker::{
         CommitAck, CreateRepoReq, WorkerMsg, Workers, Write, WriteError, WriteOutcome, WriteReq,
     };
     pub(crate) use axum::body::{Body, Bytes as AxBytes};
     pub(crate) use axum::extract::{State, WebSocketUpgrade};
+    pub(crate) use vlsync_atproto::car;
+    pub(crate) use vlsync_atproto::cbor::Value;
+    pub(crate) use vlsync_atproto::cid::Cid;
+    pub(crate) use vlsync_atproto::crypto::{self, Keypair};
+    pub(crate) use vlsync_atproto::tid::TidClock;
+    pub(crate) use vlsync_firehose::firehose::Firehose;
+    pub(crate) use vlsync_store::store::Store;
     // XRPC-envelope rejections (400 InvalidRequest / 413) instead of axum's.
     pub(crate) use super::extract::{Json, Query};
     pub(crate) use axum::http::{header, HeaderMap, StatusCode};
@@ -123,7 +124,7 @@ pub struct App {
     pub imports: Arc<import_budget::ImportBudget>,
     pub admin_token: String,
     pub config: Arc<crate::server::Config>,
-    pub did_resolver: Arc<crate::did_resolver::DidResolver>,
+    pub did_resolver: Arc<vlsync_atproto::did_resolver::DidResolver>,
     /// None = single node owning every partition.
     pub cluster: Option<Arc<crate::cluster::Cluster>>,
     pub http: crate::http::PeerClient,
@@ -138,8 +139,8 @@ pub struct App {
     /// None = DIDs minted locally and never registered (dev only).
     pub plc: Option<Arc<crate::plc::Plc>>,
     pub ui: Arc<WebUi>,
-    /// Objects and bytes in the bucket by component (crate::store_stats).
-    pub store_stats: Arc<crate::store_stats::StoreStats>,
+    /// Objects and bytes in the bucket by component (vlsync_store::store_stats).
+    pub store_stats: Arc<vlsync_store::store_stats::StoreStats>,
     /// `--spaces` (src/space): space repo heads, the notifyWrite outbox,
     /// revocations. None without the flag.
     pub spaces: Option<Arc<crate::space::Spaces>>,
@@ -231,35 +232,6 @@ impl App {
     }
 }
 
-#[derive(Clone)]
-pub struct XrpcError {
-    pub status: StatusCode,
-    pub error: String,
-    pub message: String,
-}
-
-impl XrpcError {
-    pub fn bad(error: &str, message: impl Into<String>) -> XrpcError {
-        XrpcError { status: StatusCode::BAD_REQUEST, error: error.into(), message: message.into() }
-    }
-    pub fn auth(message: &str) -> XrpcError {
-        XrpcError { status: StatusCode::UNAUTHORIZED, error: "AuthenticationRequired".into(), message: message.into() }
-    }
-    pub fn internal(message: impl Into<String>) -> XrpcError {
-        XrpcError {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            error: "InternalServerError".into(),
-            message: message.into(),
-        }
-    }
-    pub fn unavailable(error: &str, message: impl Into<String>) -> XrpcError {
-        XrpcError { status: StatusCode::SERVICE_UNAVAILABLE, error: error.into(), message: message.into() }
-    }
-    pub fn from_err(e: impl std::fmt::Display) -> XrpcError {
-        XrpcError::internal(e.to_string())
-    }
-}
-
 impl From<WriteError> for XrpcError {
     fn from(e: WriteError) -> XrpcError {
         match e {
@@ -279,21 +251,11 @@ impl From<WriteError> for XrpcError {
 
 pub const KEY_UNAVAILABLE: &str = "KeyUnavailable";
 
-/// A signature failed verification after signing (src/crypto.rs): nothing
-/// was emitted, retry.
-pub const SIGNATURE_FAULT: &str = "SignatureFault";
-
 /// Shed with a 503 rather than queue behind a login/sign-up flood.
 impl From<crate::state::Argon2Busy> for XrpcError {
     fn from(e: crate::state::Argon2Busy) -> XrpcError {
         crate::metrics::ARGON2_SHED.inc();
         XrpcError::unavailable("Overloaded", e.to_string())
-    }
-}
-
-impl From<crate::crypto::SignatureFault> for XrpcError {
-    fn from(e: crate::crypto::SignatureFault) -> XrpcError {
-        XrpcError::unavailable(SIGNATURE_FAULT, e.to_string())
     }
 }
 
@@ -308,18 +270,6 @@ impl From<crate::secrets::SecretError> for XrpcError {
     }
 }
 
-impl IntoResponse for XrpcError {
-    fn into_response(self) -> Response {
-        let unavailable = self.status == StatusCode::SERVICE_UNAVAILABLE;
-        let mut r = (self.status, Json(json!({"error": self.error, "message": self.message}))).into_response();
-        // every 503 here is transient (shard moving, shedding, repo loading)
-        if unavailable {
-            r.headers_mut().insert(header::RETRY_AFTER, axum::http::HeaderValue::from_static("1"));
-        }
-        r
-    }
-}
-
 pub type XResult<T> = Result<T, XrpcError>;
 
 fn no_partitions() -> XrpcError {
@@ -328,7 +278,7 @@ fn no_partitions() -> XrpcError {
 
 pub fn router(app: Arc<App>) -> Router {
     let r = Router::new()
-        .route("/xrpc/_health", get(|| async { Json(json!({"version": crate::version::version()})) }))
+        .route("/xrpc/_health", get(|| async { Json(json!({"version": crate::build::version()})) }))
         .route("/metrics", get(|| async { metrics::render() }))
         // locally served XRPC methods; debug builds check their output schemas
         .merge(extract::debug_output_layer(
@@ -528,7 +478,7 @@ pub fn inactive_error(status: &str) -> String {
 /// new owner (which re-runs any conditional write's checks).
 pub(crate) async fn write_private_local(
     p: &crate::partition::Partition,
-    muts: Vec<crate::segment::Mutation>,
+    muts: Vec<vlsync_store::segment::Mutation>,
 ) -> Result<(), XrpcError> {
     let (tx, rx) = oneshot::channel();
     let entry = crate::partition::LogEntry {
@@ -638,7 +588,7 @@ impl App {
 
     /// Private (non-repo) state, through the partition log without firehose
     /// events.
-    pub async fn put_private(&self, did: &str, muts: Vec<crate::segment::Mutation>) -> Result<(), XrpcError> {
+    pub async fn put_private(&self, did: &str, muts: Vec<vlsync_store::segment::Mutation>) -> Result<(), XrpcError> {
         if let Some(owner) = self.remote_owner(did) {
             return internal::forward_put_private(self, &owner, did, muts).await;
         }
@@ -717,35 +667,4 @@ impl App {
             (Err(_), Ok(_)) => Err(XrpcError::internal("account mutation did not run")),
         }
     }
-}
-
-/// Distinct blob CIDs of a stored record, in walk order, typed and legacy
-/// (`{"cid", "mimeType"}`) refs alike, as the reference's `enumBlobRefs`
-/// with `allowLegacy: true, strict: false`. Writes refuse legacy refs, but
-/// migrated-in repos hold them, and an unindexed ref would be missing from
-/// listMissingBlobs/listBlobs and collected by the blob GC.
-pub fn blob_refs(v: &Value, out: &mut Vec<Cid>) {
-    fn walk(v: &Value, out: &mut Vec<Cid>, seen: &mut std::collections::HashSet<Cid>) {
-        match v {
-            Value::Map(m) => {
-                let found = match (v.get("$type"), v.get("ref"), v.get("cid"), v.get("mimeType")) {
-                    (Some(Value::Text(t)), Some(Value::Link(c)), ..) if t == "blob" => Some(*c),
-                    (None, _, Some(Value::Text(c)), Some(Value::Text(mime))) if m.len() == 2 && !mime.is_empty() => {
-                        Cid::parse(c).ok()
-                    }
-                    _ => None,
-                };
-                if let Some(c) = found.filter(|c| seen.insert(*c)) {
-                    out.push(c);
-                }
-                for (_, child) in m {
-                    walk(child, out, seen);
-                }
-            }
-            Value::Array(a) => a.iter().for_each(|c| walk(c, out, seen)),
-            _ => {}
-        }
-    }
-    let mut seen = out.iter().copied().collect();
-    walk(v, out, &mut seen);
 }

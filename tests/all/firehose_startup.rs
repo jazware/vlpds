@@ -105,7 +105,7 @@ pub(crate) async fn s3_union(s: &TestServer, acked: &[String]) -> Vec<(i64, Vec<
     let union = loop {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1 << 16);
         let st = s3.clone();
-        let job = tokio::spawn(async move { vlpds::backfill::backfill(&st, 0, i64::MAX, &tx).await });
+        let job = tokio::spawn(async move { vlsync_firehose::backfill::backfill(&st, 0, i64::MAX, &tx).await });
         let mut all = Vec::new();
         while let Some((seq, frame)) = rx.recv().await {
             all.push((seq, frame.to_vec()));

@@ -10,8 +10,8 @@ use axum::extract::{Query, State};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use vlpds::crypto::Keypair;
 use vlpds::plc::mock::MockPlc;
+use vlsync_atproto::crypto::Keypair;
 
 /// An AppView stand-in answering resolveHandle from `handles` (400
 /// "Unable to resolve handle" otherwise, 500 for `boom.*`), counting calls.

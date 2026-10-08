@@ -55,7 +55,7 @@ async fn get_account_keys(State(app): AppState, Auth(creds): Auth, Query(q): Que
                 .collect();
             out["verificationMethods"] = json!(methods);
             out["alsoKnownAs"] = doc["alsoKnownAs"].clone();
-            out["pds"] = json!(crate::did_resolver::service_endpoint(&doc, "#atproto_pds"));
+            out["pds"] = json!(vlsync_atproto::did_resolver::service_endpoint(&doc, "#atproto_pds"));
         }
         Err(e) => out["didDocError"] = json!(e.to_string()),
     }

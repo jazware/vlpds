@@ -9,11 +9,11 @@
 
 use super::authn::Credentials;
 use super::*;
-use crate::did_resolver;
 use axum::extract::Request;
 use axum::http::{Method, Uri};
 use std::borrow::Cow;
 use std::time::Duration;
+use vlsync_atproto::did_resolver;
 
 /// Private-state name of the stored preferences (JSON array).
 const PREFS_KEY: &str = "prefs:app.bsky";
@@ -487,7 +487,7 @@ struct CachedAcct {
     key_id: u64,
     status: Option<String>,
     /// (partition, epoch) it was read in
-    part: (crate::slots::ShardId, u64),
+    part: (vlsync_store::slots::ShardId, u64),
 }
 
 /// (iss, aud, lxm, key id, jwt)
@@ -797,7 +797,7 @@ async fn send(
             let rb = if target.trusted {
                 crate::http::proxy().request(f.method, &url)
             } else {
-                crate::http::guarded(app.config.dev_mode).request(f.method, &url).map_err(|e| {
+                vlsync_atproto::http::guarded(app.config.dev_mode).request(f.method, &url).map_err(|e| {
                     tracing::warn!(endpoint = %target.url, "proxy target refused: {e}");
                     upstream_failure("Upstream service unreachable")
                 })?
@@ -1168,7 +1168,7 @@ fn mod_service_prefs_did(app: &App, headers: &HeaderMap, uri: &Uri) -> XResult<S
     let did = reqwest::Url::parse(&format!("http://x/?{}", uri.query().unwrap_or("")))
         .ok()
         .and_then(|u| u.query_pairs().find(|(k, _)| k == "did").map(|(_, v)| v.into_owned()))
-        .filter(|d| super::syntax::valid_did(d))
+        .filter(|d| vlsync_atproto::syntax::valid_did(d))
         .ok_or_else(|| XrpcError::bad("InvalidRequest", "Invalid or missing did parameter"))?;
     Ok(did)
 }
@@ -1252,7 +1252,7 @@ async fn put_preferences(
         .collect();
     stored.extend(values.iter().filter(|p| pref_type(p) != Some(DECLARED_AGE_PREF)).cloned());
     let val = Bytes::from(serde_json::to_vec(&stored).map_err(XrpcError::from_err)?);
-    let m = crate::segment::Mutation { key: Bytes::from(state::private_key(&did, PREFS_KEY)), val: Some(val) };
+    let m = vlsync_store::segment::Mutation { key: Bytes::from(state::private_key(&did, PREFS_KEY)), val: Some(val) };
     app.put_private(&did, vec![m]).await?;
     Ok(StatusCode::OK.into_response())
 }
