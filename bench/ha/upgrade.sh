@@ -22,11 +22,14 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PKG="$(cd "$HERE/../.." && pwd)"
-# The oldest "previous release" these scenarios can run against: the first
-# build with peer mTLS as the only node-to-node transport (--peer-tls-dir;
-# hactl's NODE_ARGS use it, and an older build's cleartext peers can't talk
-# to a newer one). Found by the flag's introduction, so it survives rebases.
-PREV_PINNED="$(git -C "$PKG" log --reverse --format=%h -S'peer_tls_dir: Option' -- src/main.rs | head -1)"
+# The oldest "previous release" a rolling upgrade to this tree is promised
+# to work from: the first build that writes 40-byte repo stats rows (S/, the
+# repo's bytes) and filter counts in the totals rows. That change got no
+# feature level, so older builds can't read what newer ones write and the
+# upgrade from them is one-way (docs/operations/upgrades.md, "Upgrading from
+# builds before 2026-10-06"). Found by a line that commit introduced, so it
+# survives rebases.
+PREV_PINNED="$(git -C "$PKG" log --reverse --format=%h -S'LEN_COUNTS: usize = 24' -- src/state.rs | head -1)"
 export VLPDS_UPGRADE_DIR="${VLPDS_UPGRADE_DIR:-$PKG/target/upgrade}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$VLPDS_UPGRADE_DIR/target}"
 export VLPDS_BIN_DIR="${VLPDS_BIN_DIR:-$VLPDS_UPGRADE_DIR/new}"

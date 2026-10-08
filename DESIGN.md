@@ -5259,8 +5259,8 @@ active level and is restored only by a build whose window contains it).
   finalize; either the raise aborts or the node exits 7). **(built:
   `bench/ha/upgrade.sh` builds into `target/upgrade/` the previous release
   (`VLPDS_PREV_REV`, else the newest `vlpds-v*` tag in HEAD, else the
-  pinned `a9d1df7`, the first build with levels: an older one ignores
-  `cluster/version` and can't be refused), cached per rev, and this tree
+  first build with 40-byte repo stats rows, 2026-10-06: the upgrade from
+  an older one is one-way), cached per rev, and this tree
   plain and with `--features test-level`, then runs hactl `upgrade-rolling`,
   `upgrade-rolling-l1` (the real release path, no format change: finalize
   to 2 is refused), `upgrade-rollback` (also: finalize is refused while an

@@ -58,7 +58,8 @@ Peers talk mTLS only (DESIGN.md "Exposure"): node `i`'s peer
 listener is on `BASE_PORT+800+i`, behind its peer faultproxy (`+200+i`, the
 advertised `https://` address); containers publish it on `+1400+i`.
 `bench/ha/upgrade.sh`'s default previous release is the first build with
-`--peer-tls-dir` (older builds' cleartext peers can't join).
+40-byte repo stats rows (2026-10-06): older builds can't read them, so the
+upgrade from one of those is one-way (docs/operations/upgrades.md).
 
 **Harness changes for the new design:**
 - **Shard mapping:** the probe mapping now follows `src/slots.rs`: `(top 16 bits of sha256(did)) * N / 65536`.
