@@ -1,4 +1,4 @@
-//! Signing hardening (src/crypto.rs): with faults injected into an account's
+//! Signing hardening (vlsync-atproto/src/crypto.rs): with faults injected into an account's
 //! signatures (a flipped signature bit, or a flipped bit of the scalar while
 //! signing), no faulty signature reaches the firehose or a client, the
 //! write retries once with a fresh nonce and otherwise fails cleanly (503

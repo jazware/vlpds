@@ -2033,7 +2033,7 @@ async fn issue_tokens(
         "cnf": {"jkt": s.dpop_jkt},
         "sid": s.id,
     });
-    // signed and verified (src/crypto.rs) before the session row names the
+    // signed and verified (vlsync-atproto/src/crypto.rs) before the session row names the
     // new token: a signature fault (503) never stores a token id that no
     // client received
     let access = keys(app).server.sign("at+jwt", &claims).map_err(|e| unavailable(&e.to_string()))?;

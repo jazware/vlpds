@@ -79,7 +79,7 @@ edges:
   - { from: n2.r, to: out.l70, label: write active, labelAt: [28.5, 9.4] }
 ```
 
-- A level is an integer in `src/version.rs`. Each persisted or wire format change gets the next
+- A level is an integer in `vlsync-store/src/version.rs`. Each persisted or wire format change gets the next
   one. A level is either persistent (it puts new bytes in the bucket) or wire-only.
 - A build runs `MIN_LEVEL..=MAX_LEVEL`. It reads everything in that window and writes the active
   level, so a new build at level L writes exactly what the old one writes.
@@ -97,7 +97,7 @@ edges:
 
 ```steps
 - title: Pre-flight
-  body: "Run `vlpds admin cluster status`. Every node should be healthy, with `Feature level: L active`. The new build's `MIN_LEVEL` must be ≤ L (it's in `src/version.rs`, along with which levels are persistent)."
+  body: "Run `vlpds admin cluster status`. Every node should be healthy, with `Feature level: L active`. The new build's `MIN_LEVEL` must be ≤ L (it's in `vlsync-store/src/version.rs`, along with which levels are persistent)."
 - title: Roll the new build
   body: "Do it exactly like a rolling deploy. Also check that each restarted node's row shows the new rev and a window reaching L+1, and that `vlpds_format_errors_total` stays flat."
 - title: Soak at level L

@@ -1,4 +1,4 @@
-//! Storage stats (src/store_stats.rs, src/xrpc/console_storage.rs): object
+//! Storage stats (vlsync-store/src/store_stats.rs, src/xrpc/console_storage.rs): object
 //! counts by component kept from the node's own requests, seeded by one
 //! capped backfill, gathered from every node; and getConfig's peer TLS and
 //! secret-file extras.

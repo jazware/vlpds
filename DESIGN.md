@@ -626,7 +626,7 @@ load it should stay flat (a rising rate means pool churn).
 | public | PLC, requestCrawl, Cloud KMS (5 s per call) | h2 by ALPN on https, HTTP/1.1 on http with 1,024 idle per host; idle close 60 s; h2 PING 20 s / 10 s; TCP keepalive; connect 5 s, read 30 s |
 | proxy | configured AppView / report service | `http://`: hyper HTTP/1.1 connections, one pool per host with a slot per IO thread: a connection goes back to the slot of the thread that finished its body, a request takes from its own slot, else from another slot, else connects; at most 1,024 connections per host (idle + busy; past that a request waits for one, `vlpds_http_client_pool_waits_total`); idle close 60 s, retry once if a reused connection was closed before the request went out; `https://`: public's settings as one client per IO thread. No read timeout: the proxy arms a 10 s head deadline and a 30 s body-idle timer only while the upstream makes it wait. Responses up to 128 KiB (by Content-Length) are read whole before the client gets them (the connection goes back at once); larger ones stream through unbuffered under the write-stall deadline (below); compressed ones as the upstream encoded them (Content-Encoding/-Length kept, never decoded or re-compressed; the client's Accept-Encoding is forwarded, for the read-after-write methods only its decodable codings: §8); a client that goes away mid-body closes the upstream connection. Request bodies go upstream as the client encoded them (the server's request decompression covers local routes only), and an h1 connection whose upload is still going when its response ends is not pooled. At most 64 proxied requests per account in flight on its owner (until each body is done); more are 429 `RateLimitExceeded`. CORS preflights are answered locally (no auth, no upstream) |
 | guarded | user-derived URLs: did:web, handle `.well-known`, OAuth client metadata, lexicons, DID-doc service endpoints | public's settings, 32 idle per host, plus a resolver that drops non-public addresses (outside dev mode); pair with `check_outbound_url` |
-| S3 (object_store) | log, state and control-plane stores (three clients, separate pools) | HTTP/1.1 only; requests in flight bounded per client (`src/objlimit.rs`, below) and as many connections kept idle, so they are reused, never churned; idle close 15 s (S3 closes at ~20 s), connect 2 s, 30 s total |
+| S3 (object_store) | log, state and control-plane stores (three clients, separate pools) | HTTP/1.1 only; requests in flight bounded per client (`vlsync-store/src/objlimit.rs`, below) and as many connections kept idle, so they are reused, never churned; idle close 15 s (S3 closes at ~20 s), connect 2 s, 30 s total |
 
 Why: an HTTP/1.1 peer pool smaller than the forwarding concurrency opened a
 connection per request and collapsed a 3-node cluster at 50k/s; one h2
@@ -645,7 +645,7 @@ concurrency in connections as tasks hopped threads (laptop A/B, 6 IO
 threads: 369-398 connections at 256 in flight, 185-202 at 64; now exactly
 256 and 64-65), at the same ~39-40 µs CPU per proxied request.
 
-**Object-store clients: bounded in flight (`src/objlimit.rs`).** An HTTP
+**Object-store clients: bounded in flight (`vlsync-store/src/objlimit.rs`).** An HTTP
 client opens a connection whenever every pooled one is busy and keeps only
 its idle cap afterwards; the rest close into TIME_WAIT. Unbounded, a
 takeover at 12k writes/s (shard opens, replay, then a cold repo load for
@@ -997,7 +997,7 @@ the per-node-log design of "Planet scale" items 1–5 (`src/cluster.rs`,
   read like the plain numbers in logs and the admin API.
 - **One log per node incarnation.** A node group-commits every shard's entries,
   tagged `(shard, epoch)` (u32 shard id, u64 epoch; segment format
-  `VLSEG06`, `src/segment.rs`), into `log/{log_id}/{ordinal}.seg`. Up to K
+  `VLSEG06`, `vlsync-store/src/segment.rs`), into `log/{log_id}/{ordinal}.seg`. Up to K
   segment PUTs are in flight (`--log-inflight`, default 4), each written with
   `If-None-Match: *` at its ordinal; completions are finalized strictly in
   ordinal order (see "Pipelined segment PUTs"). A write is acked only after
@@ -1605,7 +1605,7 @@ subscriber, which resumes from its cursor: skipping to the ring would drop
 stored events behind an OutdatedCursor. OutdatedCursor now means only "past
 the retained floor" (or no store at all).
 
-### Online shard split/merge (`src/reshard.rs`, `src/slots.rs`)
+### Online shard split/merge (`src/reshard.rs`, `vlsync-store/src/slots.rs`)
 
 The slot space stays fixed (65,536 slots, `slot = top 16 bits of
 sha256(routing key)`). What changes online is how slots group into shards:
@@ -4051,7 +4051,7 @@ rotation and rewrap, cache, KEK parsing, the dev-KEK rules) and
   racing writes; with KMS down, 503 `KeyUnavailable` with nothing written,
   while reads and getRepo work; writes resume after recovery.
 
-### Signing hardening (`src/crypto.rs`)
+### Signing hardening (`vlsync-atproto/src/crypto.rs`)
 With deterministic ECDSA, one faulty signature (Rowhammer, glitching, a bad
 DIMM) next to a correct one over the same message gives away the key, and
 commit signatures are public on the firehose. So, for every signature that
@@ -4954,7 +4954,7 @@ roll back a bad build, and never be able to strand data in a format a
 running node can't read.
 
 **Built (phase 1, steps 1-5 of the plan below):** level 1 = the formats
-of day one (VLSEG06 etc., `src/version.rs` `LEVELS`; this build runs
+of day one (VLSEG06 etc., `vlsync-store/src/version.rs` `LEVELS`; this build runs
 `1..=1`); `cluster/version` with the startup gate, the post-lease re-check,
 exit 7 `incompatible_level`, per-TTL observation and the raise protocol
 (`Cluster::finalize_level`, `vlpds.admin.setFeatureLevel`, `vlpds admin
@@ -4984,7 +4984,7 @@ effect at the next segment). Not built yet: everything under "Later".
 
 | Format | Where | Version marker | Unknown-version behavior |
 |---|---|---|---|
-| Log segment | `log/{log_id}/{ord:012}.seg`, `src/segment.rs` | magic `VLSEG06\n` (level 1) is the whole version; `codec` byte (0 none, 1 zstd) | **(built)** `parse_header` accepts every magic of the build's levels (`version::segment_magics`, `SegHeader.level`); others: "bad segment magic", `vlpds_format_errors_total{format="segment"}`, as is an unknown codec. Replay: shard can't open; apply: fail-stop 4; follower: retry loop |
+| Log segment | `log/{log_id}/{ord:012}.seg`, `vlsync-store/src/segment.rs` | magic `VLSEG06\n` (level 1) is the whole version; `codec` byte (0 none, 1 zstd) | **(built)** `parse_header` accepts every magic of the build's levels (`version::segment_magics`, `SegHeader.level`); others: "bad segment magic", `vlpds_format_errors_total{format="segment"}`, as is an unknown codec. Replay: shard can't open; apply: fail-stop 4; follower: retry loop |
 | Fence | same path, `VLFENCE\n` + node id | magic | n/a (stable) |
 | Entry muts | inside segments | none: raw SlateDB key/value bytes, plus muts *derived* by the reader from `#commit` frames and the repo generation the entry carries (`derive_commit_muts`, top bit of `mut_count`, then the generation) | an old reader writes new-format bytes blindly into state |
 | Head `h/` | `state.rs` `Head::encode` | none (fixed binary: cid ‖ cid ‖ rev ‖ block) | `decode` "short head" or garbage |
@@ -5028,7 +5028,7 @@ old node silently rewrites a new node's objects.
   may bundle several changes from one release). A build declares
   `MIN_LEVEL..=MAX_LEVEL`: it reads and writes everything at `MAX_LEVEL`
   and below, and it can still run a cluster whose active level is
-  `MIN_LEVEL`. Levels are in a table in `src/version.rs`, each with a
+  `MIN_LEVEL`. Levels are in a table in `vlsync-store/src/version.rs`, each with a
   name, a description and `persistent: bool` (does it put new bytes in
   the bucket, or only gate wire behavior).
 - **Readers accept every level in their window; writers emit `active`.**
@@ -5291,7 +5291,7 @@ active level and is restored only by a build whose window contains it).
 1. **Baseline (0.5 d).** Land the pending breaking changes (VLSEG06 shard
    ids, anything else queued) the old way, then declare **level 1** = the
    formats in production on day one, and record its fixtures.
-2. **`src/version.rs` + control object (2 d).** Level table,
+2. **`vlsync-store/src/version.rs` + control object (2 d).** Level table,
    `cluster/version` CAS, lease fields, startup + post-lease checks, exit
    7, per-step observation, `version::active()` plumbed to the writers
    that exist today (segment sequencer, control objects). **(built: the

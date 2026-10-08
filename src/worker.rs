@@ -45,7 +45,7 @@ pub enum WriteError {
     /// Signing key couldn't be unwrapped; nothing was applied.
     KeyUnavailable(String),
     /// The commit signature failed verification twice (suspected hardware
-    /// fault, src/crypto.rs); nothing was applied or emitted.
+    /// fault, vlsync-atproto/src/crypto.rs); nothing was applied or emitted.
     SignatureFault(String),
 }
 
@@ -1807,7 +1807,7 @@ pub fn spawn_preload(
 }
 
 /// The signed commit block, verified before anything can sequence it
-/// (src/crypto.rs). Err: the signature failed twice (suspected hardware
+/// (vlsync-atproto/src/crypto.rs). Err: the signature failed twice (suspected hardware
 /// fault): nothing may be emitted for this commit.
 pub fn sign_commit(
     did: &str,

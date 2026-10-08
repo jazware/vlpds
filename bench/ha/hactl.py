@@ -135,7 +135,7 @@ def peer_tls_context(node_id):
 
 
 def partition_of(did, n=PARTITIONS):
-    """src/slots.rs: top 16 bits of sha256(did), uniform contiguous ranges."""
+    """vlsync-store/src/slots.rs: top 16 bits of sha256(did), uniform contiguous ranges."""
     slot = int.from_bytes(hashlib.sha256(did.encode()).digest()[:2], "big")
     return slot * n // 65536
 
@@ -1486,7 +1486,7 @@ def _zstd_decompress(data, size):
 
 
 def parse_log_object(b):
-    """VLSEG06 segment (src/segment.rs) -> {'kind': 'segment', ordinal, prefix_end, first_seq, last_seq, seqs};
+    """VLSEG06 segment (vlsync-store/src/segment.rs) -> {'kind': 'segment', ordinal, prefix_end, first_seq, last_seq, seqs};
     VLFENCE -> {'kind': 'fence', by}. Entries: seq i64 | shard u32 | epoch u64 | frame_len u32 | frame | muts."""
     if b[:8] == b"VLFENCE\n":
         return {"kind": "fence", "by": b[8:].decode(errors="replace")}

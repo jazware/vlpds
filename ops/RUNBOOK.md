@@ -140,7 +140,7 @@ curl -s -u "admin:$VLPDS_ADMIN_TOKEN" http://NODE:2583/xrpc/vlpds.admin.getClust
 | 9 | `critical_task_panicked` | A thread or task the node can't run without panicked. That's a repo worker thread (`repo_worker`), the log sequencer or finalizer (`log_sequencer`, `log_finalizer`), or the firehose merger (`firehose_merger`). It's a bug, and the panic message and location are on stderr just before. Peers take its shards over and the restart is clean | the panic (`thread '...' panicked at src/...`), then `critical task panicked: fail-stop (exit 9)` (`task` field) |
 
 **How the previous process ended** is a metric on the next one
-(`src/lifecycle.rs`). Each fail-stop writes its `reason` and code to the
+(`vlsync-store/src/lifecycle.rs`). Each fail-stop writes its `reason` and code to the
 exit-state file just before exiting (`--exit-state-file`, default
 `vlpds-exit-<node-id>.json` in `--cache-dir`, and with neither set nothing is
 kept). The next start exports `vlpds_last_exit_reason_info{reason,code}` = 1 for
@@ -1051,7 +1051,7 @@ across nodes, and the store provider's status page.
 
 **Means:** for 5 minutes, over 1/s of this node's own object-store requests
 failed (`result` `error` or `timeout`) on one key component outside shard state.
-They're counted at the bottom of vlpds' store clients (`src/objstats.rs`). The
+They're counted at the bottom of vlpds' store clients (`vlsync-store/src/objstats.rs`). The
 components are the control plane (`ctl_lease`, `ctl_assign`, `ctl_writer`,
 `ctl_version`), `log_segment` (segment PUTs, fences, replay, firehose backfill
 and follower catch-up), `retention_report`, `account_index` and `blob`. Shard
@@ -1072,7 +1072,7 @@ status.
 **Means:** for 10 minutes, over 0.05/s of this node's object-store answers were
 429 Too Many Requests or 503 SlowDown on one key kind
 (`vlpds_object_store_throttled_total{kind}`). object_store retries both inside
-its client, so they're counted at the HTTP layer (`src/throttle.rs`), one per
+its client, so they're counted at the HTTP layer (`vlsync-store/src/throttle.rs`), one per
 answer. A 503 without SlowDown is an outage and isn't counted here. `lease` is
 the control plane (node leases, assignments, writer claims, the cluster
 version), by key for single-object requests and by `prefix=` for LISTs. A bulk
@@ -1160,7 +1160,7 @@ requests failed (`result` `error` or `timeout`) on one `state_*` component
 (`state_wal`, `state_manifest`, `state_sst`, `state_compactions`,
 `state_gc_boundary`, `state_other`). Shard state is SlateDB's traffic (WAL,
 memtable flushes, manifests, SST reads, compaction, GC). vlpds counts it under
-SlateDB (`vlpds_object_store_requests_total`, `src/objstats.rs`), like
+SlateDB (`vlpds_object_store_requests_total`, `vlsync-store/src/objstats.rs`), like
 [VlpdsObjectStoreRequestErrors](#vlpdsobjectstorerequesterrors) does for every
 other component. SlateDB retries, and a persistent apply failure exits 4.
 
@@ -2150,7 +2150,7 @@ the DID's keys are rewritten. Remove it from DIDs only if it leaked.
 ### Rolling upgrade, finalize, rollback
 
 Every format a node persists or sends belongs to a **feature level**
-(`src/version.rs`, DESIGN.md "Rolling upgrades and format versioning"). A
+(`vlsync-store/src/version.rs`, DESIGN.md "Rolling upgrades and format versioning"). A
 build runs levels `MIN_LEVEL..=MAX_LEVEL`, and its release notes list them and
 say whether each is persistent. The cluster's active level is in
 `cluster/version`, and every node writes that level's formats whatever its

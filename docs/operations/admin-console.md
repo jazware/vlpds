@@ -361,8 +361,8 @@ with the error, if it fails.
 
 ### Storage stats
 
-Every PUT, copy and DELETE a node makes passes the request counter (`src/objstats.rs`), which also
-keeps objects and bytes by key component (`src/store_stats.rs`). A PUT knows its size. A DELETE
+Every PUT, copy and DELETE a node makes passes the request counter (`vlsync-store/src/objstats.rs`), which also
+keeps objects and bytes by key component (`vlsync-store/src/store_stats.rs`). A PUT knows its size. A DELETE
 doesn't, so each node remembers the size of every key it has written, read or seen in a LIST its
 background jobs already run (retention lists the segments it deletes, SlateDB's GC its SSTs, the
 blob sweep the blobs), up to 262,144 keys. A change it has to guess is counted as uncertain: a

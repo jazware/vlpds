@@ -1,4 +1,4 @@
-//! importRepo of a CAR in the streamable block order (src/car_order.rs)
+//! importRepo of a CAR in the streamable block order (vlsync-atproto/src/car_order.rs)
 //! takes the one-pass parse; any other order is parsed buffered. Both give
 //! the same repo, and bodies that break off or run over the cap are refused.
 //! The per-CAR cases (wrong CIDs, missing blocks, refusals matching the

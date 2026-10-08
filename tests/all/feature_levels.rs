@@ -1,4 +1,4 @@
-//! Feature levels end to end (src/version.rs, DESIGN.md "Rolling upgrades
+//! Feature levels end to end (vlsync-store/src/version.rs, DESIGN.md "Rolling upgrades
 //! and format versioning"): in-process nodes posing as builds with
 //! different level windows share one store. getClusterStatus shows the
 //! active level, each node's rev and window and the banner fields; the

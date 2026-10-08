@@ -1,5 +1,5 @@
 //! importRepo's body, parsed as it arrives when the CAR is in the
-//! streamable block order (src/car_order.rs): one pass verifies the commit
+//! streamable block order (vlsync-atproto/src/car_order.rs): one pass verifies the commit
 //! block, every node's and record's CID, and key order, holding only the
 //! nodes on the path from the root, and hands the records out in batches as
 //! they arrive (to `staged_import`, which stages them), with the canonical

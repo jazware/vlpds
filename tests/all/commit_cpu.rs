@@ -1,8 +1,8 @@
 //! The write path's CPU work changed without changing its output: commit
-//! signatures (RFC 6979 nonce on hardware SHA-256, src/crypto.rs; hedged
+//! signatures (RFC 6979 nonce on hardware SHA-256, vlsync-atproto/src/crypto.rs; hedged
 //! with fresh nonce data since) and the getBlocks node index keying each
 //! written node by its own first value instead of its subtree's leftmost key
-//! (src/mst.rs `subtree_key`).
+//! (vlsync-atproto/src/mst.rs `subtree_key`).
 use crate::common::*;
 use std::collections::HashSet;
 
