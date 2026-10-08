@@ -1485,34 +1485,63 @@ def _zstd_decompress(data, size):
         return subprocess.run(["zstd", "-d", "-c"], input=data, capture_output=True, check=True).stdout
 
 
+class SegmentFormatError(ValueError):
+    pass
+
+
+# magic -> header fields between count and codec (vlsync-store segment.rs, version.rs)
+SEG_FORMATS = {b"VLSEG06\n": ">", b"VLSEGT1\n": ">Q"}
+
+
 def parse_log_object(b):
-    """VLSEG06 segment (vlsync-store/src/segment.rs) -> {'kind': 'segment', ordinal, prefix_end, first_seq, last_seq, seqs};
-    VLFENCE -> {'kind': 'fence', by}. Entries: seq i64 | shard u32 | epoch u64 | frame_len u32 | frame | muts."""
+    """A log object (vlsync-store/src/segment.rs) -> {'kind': 'segment', log_id, ordinal, prefix_end,
+    first_seq, last_seq, seqs}, {'kind': 'fence', by}, or {'kind': 'missing'} for no bytes (pruned).
+    Raises SegmentFormatError on a magic, codec or layout this parser doesn't know."""
+    if not b:
+        return {"kind": "missing"}
     if b[:8] == b"VLFENCE\n":
         return {"kind": "fence", "by": b[8:].decode(errors="replace")}
-    if b[:8] not in (b"VLSEG06\n", b"VLSEGT1\n"):
-        return {"kind": "unknown"}
+    extra = SEG_FORMATS.get(b[:8])
+    if extra is None:
+        raise SegmentFormatError(f"unknown log object magic {b[:8]!r}: hactl.parse_log_object needs the new format")
+    try:
+        return _parse_segment(b, extra)
+    except (struct.error, IndexError) as e:
+        raise SegmentFormatError(f"{b[:7].decode()} segment truncated or misparsed: {e}") from None
+
+
+def _parse_segment(b, extra):
     o = 8
     (n,) = struct.unpack_from(">H", b, o)
     o += 2
     log_id = b[o:o + n].decode()
     o += n
-    if b[:8] == b"VLSEGT1\n":  # the test feature level: + checksum u64 before codec
-        ordinal, prefix_end, first_seq, last_seq, count, _sum, codec, body_len = struct.unpack_from(">QQqqIQBI", b, o)
-        o += 49
-    else:
-        ordinal, prefix_end, first_seq, last_seq, count, codec, body_len = struct.unpack_from(">QQqqIBI", b, o)
-        o += 41
+    ordinal, prefix_end, first_seq, last_seq, count = struct.unpack_from(">QQqqI", b, o)
+    o += 36
+    checksum = struct.unpack_from(extra, b, o)
+    o += struct.calcsize(extra)
+    codec, body_len = struct.unpack_from(">BI", b, o)
+    o += 5
     if codec == 1:  # zstd body behind the uncompressed header
         b = b[:o] + _zstd_decompress(b[o:], body_len)
+    elif codec != 0:
+        raise SegmentFormatError(f"segment {ordinal} of {log_id}: unknown codec {codec}")
+    if len(b) - o != body_len:
+        raise SegmentFormatError(f"segment {ordinal} of {log_id}: body is {len(b) - o} bytes, header says {body_len}")
+    if checksum and int.from_bytes(hashlib.sha256(b[o:]).digest()[:8], "big") != checksum[0]:
+        raise SegmentFormatError(f"segment {ordinal} of {log_id}: body checksum mismatch")
     seqs = []
     for _ in range(count):
         seq, _shard, _epoch, flen = struct.unpack_from(">qIQI", b, o)
         o += 24 + flen
         (mc,) = struct.unpack_from(">I", b, o)
         o += 4
-        if mc & 0x80000000:  # bits 16-30 count muts derived from the frame (not stored)
+        if mc & 0x80000000:
+            # bits 16-30 count muts derived from the frame (not stored), then the repo generation (LEB128)
             mc &= 0xFFFF
+            while b[o] & 0x80:
+                o += 1
+            o += 1
         for _ in range(mc):
             (kl,) = struct.unpack_from(">H", b, o)
             o += 2 + kl
@@ -1520,6 +1549,8 @@ def parse_log_object(b):
             o += 4 + (0 if vl == 0xFFFFFFFF else vl)
         if flen:
             seqs.append(seq)
+    if o != len(b):
+        raise SegmentFormatError(f"segment {ordinal} of {log_id}: {len(b) - o} bytes after its {count} entries")
     return {"kind": "segment", "log_id": log_id, "ordinal": ordinal, "prefix_end": prefix_end,
             "first_seq": first_seq, "last_seq": last_seq, "seqs": seqs}
 

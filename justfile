@@ -49,6 +49,10 @@ upgrade-ci scenario="upgrade-rolling":
     cargo test --features test-level --test level_gating
     VLPDS_HA_S3=127.0.0.1:9260 bench/ha/upgrade.sh --minio {{scenario}}
 
+# bench/ha/hactl.py's log segment parser against the golden segments this build writes
+ha-parser-test:
+    python3 -m unittest bench/ha/test_hactl.py
+
 # Local MinIO (build/docker-compose.yml) on :9000 (console :9001), with the `vlpds` bucket created
 minio:
     docker compose -f build/docker-compose.yml up -d --build --wait minio
