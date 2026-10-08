@@ -30,7 +30,7 @@ facts:
 Upgrading vlpds means restarting each node on a new image, one at a time. Every format a node
 persists or sends belongs to a **feature level**, and every node writes the cluster's active level
 no matter what its build can do. So mixed versions are safe, and rolling back is just a redeploy
-until you finalize.
+until you finalize. The few exceptions are listed under [Compatibility contract](#compatibility-contract).
 
 > [!NOTE]
 > Today every release runs level 1 only (`baseline`), so there hasn't been a level to finalize yet.
@@ -128,7 +128,12 @@ under [Rolling upgrade, finalize, rollback](https://github.com/jazware/vlpds/blo
 - { value: "objects", label: tolerant both ways, note: "shared control objects keep fields an older node doesn't know", tone: blue }
 ```
 
-Every release keeps these promises, so a rolling upgrade and a rollback are always safe.
+Releases keep these promises, so a rolling upgrade or a rollback between two builds that run the
+same feature level is safe. There are two exceptions. Once you turn on Spaces, the cluster can't go
+back to a build from before Spaces (see the Spaces item below). And builds from before
+2026-10-06 changed stored rows without a level, so the upgrade from one of them is one-way (see
+[Upgrading from builds before 2026-10-06](#upgrading-from-builds-before-2026-10-06)). A format change
+that ships without a level is a bug, and this page lists each one with what to do about it.
 
 - Upgrade one window at a time. A build only starts if the active level is inside its window, and
   skipping releases is fine whenever that holds. A build drops support for level L (raises
@@ -151,6 +156,25 @@ Every release keeps these promises, so a rolling upgrade and a rollback are alwa
 
 The format inventory (every persisted and wire format, and how it's versioned) is in DESIGN.md under
 "Rolling upgrades and format versioning".
+
+## Upgrading from builds before 2026-10-06
+
+Builds from 2026-10-06 on store more in each repo's stats row (40 bytes, up from 24) and keep
+account filter counts in the totals rows. That change didn't get a feature level, so nothing stops
+an older build from starting on the new data. An older build can't read the new stats rows, so
+every repo load fails with "repo stats of 40 bytes" and getRepo and writes return 500. It fails
+safely. Nothing gets corrupted, and starting the new build again fixes it.
+
+That means the upgrade from a build before 2026-10-06 is one-way. Once the new build has run, you
+can't roll back to the old one. A rolling upgrade hits the same errors, since shards move between
+new and old nodes while it runs. So for a cluster, stop every node and then start them all on the
+new build. A single node upgrades the usual way.
+
+The upgrade also drops users' unused TOTP recovery codes. Builds before 2026-10-05 kept them in the
+TOTP row, and later builds keep one shared set for TOTP and passkeys, so they don't read the old
+codes. The old codes stop working right away, and the next write of the TOTP row (the next TOTP
+sign-in, for example) erases them. The authenticator app keeps working. So tell users who have TOTP
+on to get a new set of recovery codes on the Security page.
 
 ## Testing an upgrade
 
