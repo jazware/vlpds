@@ -133,7 +133,7 @@ impl ServerKey {
     }
 
     /// Hedged and verified before it is returned, as commit signatures are
-    /// (src/crypto.rs). Err: failed twice.
+    /// (vlsync-atproto/src/crypto.rs). Err: failed twice.
     pub fn sign(&self, typ: &str, payload: &J) -> Result<String, vlsync_atproto::crypto::SignatureFault> {
         use p256::ecdsa::signature::RandomizedSigner;
         use p256::elliptic_curve::{common::getrandom::SysRng, rand_core::UnwrapErr};
@@ -425,6 +425,9 @@ mod tests {
     #[test]
     fn server_key_faults_are_caught() {
         use vlsync_atproto::crypto::fault::{inject, Fault};
+        // the three faults below reach the fail-stop count, which would end
+        // this test binary (vlsync-atproto only skips the exit in its own tests)
+        vlsync_atproto::crypto::set_fail_stop_hook(Some(std::sync::Arc::new(|_| {})));
         let a = ServerKey::derive("fault-test");
         let id = a.sk.verifying_key().to_sec1_point(true);
         let failures = || vlsync_atproto::crypto::SIGNATURE_VERIFY_FAILURES.with_label_values(&["oauth_token"]).get();
