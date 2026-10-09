@@ -1316,5 +1316,9 @@ mod tests {
         assert_eq!(status(router(&app), "/xrpc/_health").await, 200);
         assert_eq!(status(metrics_router(&app), "/metrics").await, 200);
         assert_ne!(status(metrics_router(&app), "/debug/pprof/profile").await, 404);
+        // a loopback peer gets the heap without the admin token (501: this
+        // test process runs without jemalloc's sampler)
+        let heap = status(metrics_router(&app), "/debug/pprof/heap").await;
+        assert!(heap != 404 && heap != 401, "{heap}");
     }
 }

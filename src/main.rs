@@ -9,6 +9,10 @@ mod tokio_console;
 #[cfg(feature = "jemalloc")]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+// jemalloc's heap sampler, on from the start, for GET /debug/pprof/heap
+// (src/profiling.rs)
+#[cfg(feature = "jemalloc")]
+vlsync_heapprof::malloc_conf!();
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -1143,6 +1147,8 @@ fn main() -> anyhow::Result<()> {
     read_secret_files(&mut args)?;
     vlpds::config_report::record(vlpds::config_report::from_matches(&cmd, &matches, |id| effective_secret(&args, id)));
     init_logging(args.log_format)?;
+    #[cfg(feature = "jemalloc")]
+    vlsync_heapprof::log_status();
     vlsync_store::lifecycle::install_panic_hook();
     raise_nofile_limit();
     let node_id = args.node_id.clone().unwrap_or_else(|| "single".into());

@@ -5056,6 +5056,7 @@ dependencies = [
  "unicode-segmentation",
  "vlatproto",
  "vlsync-firehose",
+ "vlsync-heapprof",
  "vlsync-slatedb",
  "vlsync-store",
  "x509-parser",
@@ -5085,6 +5086,21 @@ dependencies = [
  "tracing",
  "vlatproto",
  "vlsync-store",
+]
+
+[[package]]
+name = "vlsync-heapprof"
+version = "0.1.0"
+source = "git+https://github.com/jazware/vlsync?rev=34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf#34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf"
+dependencies = [
+ "axum",
+ "backtrace",
+ "flate2",
+ "parking_lot",
+ "tikv-jemalloc-ctl",
+ "tikv-jemalloc-sys",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

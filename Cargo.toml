@@ -20,7 +20,7 @@ exclude = ["bench", "checker-rs", "passkey-differential", "deps"]
 
 [features]
 default = ["jemalloc", "slatedb-metrics"]
-jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl", "vlsync-store/jemalloc"]
+jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl", "vlsync-store/jemalloc", "dep:vlsync-heapprof"]
 # The test binary (benches) on jemalloc, the server's allocator: the system
 # allocator costs an export ~1.5x the instructions (DESIGN "Measured")
 bench-jemalloc = ["jemalloc"]
@@ -92,6 +92,8 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "for
 tokio-tungstenite = { version = "0.29", features = ["__rustls-tls"] }
 tikv-jemallocator = { version = "0.7", optional = true }
 tikv-jemalloc-ctl = { version = "0.7", features = ["stats"], optional = true }
+# GET /debug/pprof/heap: jemalloc's heap sampler, on from the start, as pprof
+vlsync-heapprof = { git = "https://github.com/jazware/vlsync", rev = "34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf", features = ["axum"], optional = true }
 mimalloc = { version = "0.1", optional = true }
 pyroscope = { version = "2.1", default-features = false, features = ["backend-pprof-rs"], optional = true }
 prost = { version = "0.14", optional = true }

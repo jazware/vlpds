@@ -2,8 +2,12 @@
 //! continuous Pyroscope agent (`--pyroscope-url`) or on-demand
 //! `GET /debug/pprof/profile?seconds=N` (admin token; pprof protobuf, or a
 //! flamegraph with `format=svg`). Both use the one SIGPROF sampler, so the
-//! endpoint answers 409 while the agent runs. Heap profiling is not wired
-//! up: jemalloc_pprof needs Linux (/proc maps).
+//! endpoint answers 409 while the agent runs.
+//!
+//! Heap profiles are always on with jemalloc (vlsync-heapprof): `GET
+//! /debug/pprof/heap` answers the heap in use as pprof, to a peer on the
+//! node's loopback that no proxy forwarded (yeetd's scrapes) or with the
+//! admin token.
 
 use crate::xrpc::App;
 use axum::extract::{Query, State};
@@ -66,7 +70,22 @@ pub fn start_pyroscope(_url: &str, _node_id: &str, _rev: &str) -> anyhow::Result
 }
 
 pub fn routes() -> Router<Arc<App>> {
-    Router::new().route("/debug/pprof/profile", get(profile))
+    Router::new().route("/debug/pprof/profile", get(profile)).route("/debug/pprof/heap", get(heap))
+}
+
+async fn heap(State(app): State<Arc<App>>, req: axum::extract::Request) -> Response {
+    #[cfg(feature = "jemalloc")]
+    {
+        if !vlsync_heapprof::from_loopback(&req) && !admin_ok(&app, req.headers()) {
+            return text(StatusCode::UNAUTHORIZED, "admin token required (Authorization: Bearer <admin token>)");
+        }
+        vlsync_heapprof::handler().await
+    }
+    #[cfg(not(feature = "jemalloc"))]
+    {
+        let _ = (app, req);
+        text(StatusCode::NOT_IMPLEMENTED, "heap profiles need jemalloc (the default `jemalloc` feature)")
+    }
 }
 
 #[derive(Deserialize)]

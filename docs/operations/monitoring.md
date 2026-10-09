@@ -88,7 +88,7 @@ nodes:
   - { id: metrics, label: "--metrics-listen", sub: "127.0.0.1:9583", at: [13, 4], size: [9, 2.6], tone: accent }
   - { id: peer, label: "--peer-listen", sub: "mTLS · e.g. :2584", at: [13, 8], size: [9, 2.6], tone: accent }
   - { id: l1, label: "XRPC · OAuth · UI", sub: "404s /internal/*", at: [26, 0], size: [10, 2.6], shape: note, tone: muted }
-  - { id: l2, label: "/metrics · /debug/pprof", sub: pprof only if built in, at: [26, 4], size: [10, 2.6], shape: note, tone: muted }
+  - { id: l2, label: "/metrics · /debug/pprof", sub: heap always · CPU if built in, at: [26, 4], size: [10, 2.6], shape: note, tone: muted }
   - { id: l3, label: "everything + /internal/*", sub: forwards · log streams, at: [26, 8], size: [10, 2.6], shape: note, tone: muted }
 edges:
   - clients -> listen
@@ -104,8 +104,14 @@ edges:
   `--metrics-listen app` does the same in production. That makes it public unless the proxy in
   front blocks `/metrics` (the Ansible Caddy blocks it, along with `/internal/*`, `/debug/*`,
   `/admin` and `vlpds.admin.*`).
-- `/debug/pprof` only exists in a build with `--features profiling` (`just profile <node:port>`
-  takes a CPU profile). That build can also push continuous profiles to Pyroscope with
+- `/debug/pprof/heap` is the heap in use as a pprof profile, like a Go service's: jemalloc samples
+  one allocation in every 512 KiB from the start, and each request writes out the stacks of the
+  sampled allocations still live (`go tool pprof -top heap.pb.gz`). A peer on the node's own
+  loopback that no proxy forwarded gets it without auth, anyone else needs the admin token.
+  `vlpds_jemalloc_bytes{stat}` tells live data (`allocated`) from pages jemalloc holds
+  (`resident`). `_RJEM_MALLOC_CONF=prof_active:false` turns the sampler off.
+- `/debug/pprof/profile` (CPU) only exists in a build with `--features profiling` (`just profile
+  <node:port>` takes one). That build can also push continuous profiles to Pyroscope with
   `--pyroscope-url`.
 - Every node exports its own view, so per-node gauges (`vlpds_owned_partitions`, `vlpds_accounts`
   for the shards it holds) sum across nodes. `vlpds_build_info{rev}` names the build, and
