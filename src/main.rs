@@ -3,6 +3,9 @@ use std::time::Duration;
 use vlpds::server::{self, Config};
 use vlsync_store::store::S3Config;
 
+/// TOKIO_CONSOLE_* (docs/operations/monitoring.md, "tokio-console").
+mod tokio_console;
+
 #[cfg(feature = "jemalloc")]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
@@ -1197,8 +1200,8 @@ fn init_logging(format: LogFormat) -> anyhow::Result<()> {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,slatedb=warn".into());
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let ansi = !no_color && std::io::stderr().is_terminal();
-    let console = console_bind();
-    if let Ok(Some(addr)) = console {
+    let console = tokio_console::settings();
+    if let Ok(Some(c)) = &console {
         // The console layer needs tokio's trace-level spans, which the level
         // filter would drop, so the filter goes on the log layer alone.
         let fmt = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
@@ -1207,11 +1210,11 @@ fn init_logging(format: LogFormat) -> anyhow::Result<()> {
             LogFormat::Text => fmt.with_ansi(ansi).boxed(),
         };
         tracing_subscriber::registry()
-            .with(console_layer(addr))
+            .with(tokio_console::layer(c))
             .with(fmt.with_filter(filter))
             .try_init()
             .map_err(|e| anyhow::anyhow!("logging: {e}"))?;
-        tracing::info!(%addr, "tokio-console listening");
+        tracing::info!(settings = ?c, "tokio-console listening");
         return Ok(());
     }
     let b = tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr);
@@ -1224,40 +1227,6 @@ fn init_logging(format: LogFormat) -> anyhow::Result<()> {
         tracing::warn!("{e}");
     }
     Ok(())
-}
-
-/// TOKIO_CONSOLE_BIND turns on tokio-console's server
-/// (docs/operations/monitoring.md, "tokio-console") in a build with `--cfg tokio_unstable`, as the images are. Its
-/// gRPC API has no auth, so only a loopback address is taken.
-fn console_bind() -> Result<Option<std::net::SocketAddr>, String> {
-    let v = std::env::var("TOKIO_CONSOLE_BIND").unwrap_or_default();
-    if v.is_empty() {
-        return Ok(None);
-    }
-    let addr: std::net::SocketAddr =
-        v.parse().map_err(|e| format!("TOKIO_CONSOLE_BIND={v}: {e}; tokio-console stays off"))?;
-    if !addr.ip().is_loopback() {
-        return Err(format!("TOKIO_CONSOLE_BIND={v} isn't a loopback address; tokio-console stays off"));
-    }
-    if !cfg!(tokio_unstable) {
-        return Err(
-            "TOKIO_CONSOLE_BIND is set, but this build has no --cfg tokio_unstable; tokio-console stays off".into()
-        );
-    }
-    Ok(Some(addr))
-}
-
-#[cfg(tokio_unstable)]
-fn console_layer<S>(addr: std::net::SocketAddr) -> impl tracing_subscriber::Layer<S>
-where
-    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-{
-    console_subscriber::ConsoleLayer::builder().server_addr(addr).spawn()
-}
-
-#[cfg(not(tokio_unstable))]
-fn console_layer<S: tracing::Subscriber>(_: std::net::SocketAddr) -> impl tracing_subscriber::Layer<S> {
-    tracing_subscriber::layer::Identity::new()
 }
 
 /// None: on the app port.

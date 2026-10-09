@@ -355,9 +355,26 @@ Logs keep their format and level filter.
   instrumented paths: about 60 ns more per task spawn, 55 ns per timer and 3 ns per channel
   message in a spawn-only microbenchmark (+21% there). An HTTP endpoint under keep-alive load
   measured within noise.
-- **On.** The console records every task and resource (each channel, timer and lock), and keeps
-  finished tasks for an hour. Code that sends a lot through channels pays most: the same
-  microbenchmark's channel ping-pong ran 24x slower with the console on and its spawns 3.4x, while
-  the HTTP benchmark didn't move. On a busy node, turn it on briefly and off again.
+- **On.** The console records every task and resource (each channel, timer and lock). Code that
+  sends a lot through channels pays most: the same microbenchmark's channel ping-pong ran 24x
+  slower with the console on and its spawns 3.4x, while the HTTP benchmark didn't move. On a busy
+  node, turn it on briefly and off again.
+- **Retention.** The console keeps finished tasks, resources and async ops for
+  `TOKIO_CONSOLE_RETENTION`, 60 s by default (`500ms`, `60s`, `5m`, `1h` or bare seconds), so it
+  shows only the last minute of finished tasks. Live tasks show for as long as they run.
+  console-subscriber's own default is an hour, and a process that spawns many short-lived tasks
+  holds every one of them for that hour. Each task costs the console about 50 KiB, live or
+  finished, most of it two latency histograms, so the console holds about 50 KiB for every live
+  task and every task spawned within the retention. In a 10-minute test of 100 fresh HTTP
+  connections a second (a task each), a relay with an hour's retention grew 4.9 MiB a second to
+  2790 MiB and was still climbing, with 60 s it held flat at 343 MiB from the first minute on, and
+  with the console off it stayed at 29 MiB. At 800 connections a second, 60 s still held 2386 MiB,
+  so on a node that spawns tasks that fast, set a shorter retention. Retention bounds memory only.
+  The CPU cost of tokio's instrumentation stays while the console is on.
+- **Buffers.** `TOKIO_CONSOLE_BUFFER_CAPACITY` (16384 by default, against console-subscriber's
+  102400) caps the events queued for the console's aggregator. Past it they're dropped, and the
+  console says how many. `TOKIO_CONSOLE_CLIENT_BUFFER_CAPACITY` (64 by default, a minute of
+  updates, against 4096) caps the updates queued for each console client. A client that falls
+  further behind is disconnected. An unparseable or zero value keeps the console off and logs why.
 - A binary built without `--cfg tokio_unstable` (a plain `cargo build`) logs that
   `TOKIO_CONSOLE_BIND` is set and stays off.
