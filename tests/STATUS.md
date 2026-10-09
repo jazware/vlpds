@@ -64,7 +64,7 @@ Performance sanity check (`vlpds --memory --no-rate-limits`, 500 accounts, `load
 | write p50 / p99 | 1.0–1.2 ms / 2.4–57 ms | 1.0–1.2 ms / 8.6–222 ms |
 
 These are equal within the noise of a loaded machine. The tail latencies swing by 10× between runs of the *same* binary.
-`sync.getRepo` (CPU-bound MST/CAR code in the crate) may be ~5% slower. Use `--release` (fat LTO, unchanged) for real benchmarks.
+`sync.getRepo` (CPU-bound MST/CAR code in the crate) may be ~5% slower. Use `--release` (thin LTO) for real benchmarks.
 
 ## Results
 

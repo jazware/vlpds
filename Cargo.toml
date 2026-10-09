@@ -158,13 +158,11 @@ name = "level_gating"
 path = "tests/level_gating.rs"
 required-features = ["test-level"]
 
-# Fat LTO + 1 codegen unit: ~4 min of a release build is this crate's
-# single-threaded optimization and LTO, but cheaper settings cost runtime
-# (A/B on a 16-core Zen 5 box, bench/results/buildspeed-ab-2026-10-03:
-# 3 rounds, CPU/commit noise about +-1%): thin LTO
-# with 16 units +2.5-3.4% CPU per commit and -3-4% read ops/s (x86-64-v3
-# wins back ~1 point); fat LTO with 16 units CPU/commit within noise but reads
-# -1.3%; no LTO +10-11% CPU/commit and -15% reads.
+# Thin LTO + 16 codegen units: fat LTO with 1 unit spent ~2.5-3 min of
+# every image build in a single-threaded link on builders CI shares, for
+# this runtime (A/B on a 16-core Zen 5 box, bench/results/buildspeed-ab-2026-10-03:
+# 3 rounds, CPU/commit noise about +-1%): thin +2.5-3.4% CPU per commit and
+# -3-4% read ops/s against fat; no LTO +10-11% CPU/commit and -15% reads.
 # tokio-console (TOKIO_CONSOLE_BIND, docs/operations/monitoring.md) in builds with
 # --cfg tokio_unstable: the images set it. Plain builds don't compile it in.
 [target.'cfg(tokio_unstable)'.dependencies]
@@ -176,8 +174,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)"] }
 
 [profile.release]
 opt-level = 3
-lto = "fat"
-codegen-units = 1
+lto = "thin"
+codegen-units = 16
 # keep symbols for profiling (sample/perf/pprof)
 debug = 1
 
