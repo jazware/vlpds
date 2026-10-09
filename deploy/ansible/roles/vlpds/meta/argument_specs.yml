@@ -370,9 +370,6 @@ argument_specs:
       vlpds_trusted_proxies:
         description: See defaults/main.yml (vlpds_trusted_proxies).
         type: list
-      vlpds_pyroscope_url:
-        description: "Continuous CPU profiles to Pyroscope (needs an image built with features=profiling). Alloy's pyroscope.receive_http on the host: http://host.docker.internal:4100"
-        type: str
       vlpds_extra_env:
         description: Extra VLPDS_* env vars / flags, for anything not covered above.
         type: dict

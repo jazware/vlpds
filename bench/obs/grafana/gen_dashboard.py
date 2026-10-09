@@ -23,8 +23,9 @@ Copies:
   Grafana selects the first Prometheus by name instead (the bench has one).
 - deploy/ansible/roles/monitoring/files/dashboards/ in the monorepo this
   was developed in, when that directory exists: a deployment's Grafana, the
-  variables pre-set to its Prometheus / Pyroscope uids (PROD_* below), no
-  `__inputs`.
+  Prometheus variable pre-set to its uid (PROD_PROM_UID below), no
+  `__inputs`. That Grafana has no Pyroscope, so this copy leaves out the
+  CPU profile row and its pickers.
 
 VLPDS_PROM_UID (a uid, or `default`: the default datasource) /
 VLPDS_PYRO_UID / VLPDS_DASH_OUT (a directory) render one extra pre-set copy
@@ -44,9 +45,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 BENCH_DIR = os.path.join(HERE, "dashboards")
 PROD_DIR = os.path.normpath(os.path.join(HERE, "../../../../../deploy/ansible/roles/monitoring/files/dashboards"))
-# Datasource uids of that deployment's Grafana.
+# The Prometheus datasource uid of that deployment's Grafana.
 PROD_PROM_UID = "P4169E866C3094E38"
-PROD_PYRO_UID = "P02E4190217B50628"
 
 PROM = {"type": "prometheus", "uid": "${ds_prometheus}"}
 PYRO = {"type": "grafana-pyroscope-datasource", "uid": "${ds_pyroscope}"}
@@ -944,6 +944,7 @@ ts("S3 errors / in flight", [t(f"sum(rate(minio_s3_requests_errors_total{{{C}}}{
 ts("Bucket usage", [t(f"sum by (instance) (minio_cluster_usage_total_bytes{{{C}}})", "{{instance}}")], "bytes")
 
 # ============================================================== profiles
+PROFILE_ROWS_FROM = len(D.panels)
 row("CPU profile (Pyroscope; nodes run with --pyroscope-url)")
 D.add({
     "type": "flamegraph", "id": D.nid(), "title": "CPU flamegraph (dashboard time range, selected nodes)", "datasource": PYRO, "gridPos": D.place(24, 16),
@@ -985,11 +986,23 @@ PLUGIN_NAMES = {"prometheus": "Prometheus", "grafana-pyroscope-datasource": "Gra
                 "state-timeline": "State timeline", "flamegraph": "Flame Graph"}
 
 
-def render(template, prom_uid=None, pyro_uid=None):
+def without_profiles(d):
+    """For a Grafana with no Pyroscope: the profile row goes, with the pickers
+    only it reads (`node` exists for the flamegraph's label selector)."""
+    if d["uid"] == "vlpds-internals":
+        d["panels"] = d["panels"][:PROFILE_ROWS_FROM]
+    d["templating"]["list"] = [v for v in d["templating"]["list"] if v["name"] not in ("ds_pyroscope", "node")]
+    assert PYRO["type"] not in json.dumps(d), "a Pyroscope panel outside the profile row"
+    return d
+
+
+def render(template, prom_uid=None, pyro_uid=None, profiles=True):
     """prom_uid None: the import-ready copy (__inputs). Otherwise both pickers
     are pre-set (a uid, or `default`); an unset Pyroscope picker selects the
     first Pyroscope datasource."""
     d = template()
+    if not profiles:
+        d = without_profiles(d)
     for v in d["templating"]["list"]:
         uid = {"ds_prometheus": prom_uid or DS_INPUT, "ds_pyroscope": pyro_uid}.get(v["name"]) if v["type"] == "datasource" else None
         if uid:
@@ -1073,16 +1086,16 @@ def main():
         out = os.environ.get("VLPDS_DASH_OUT", "")
         if not out or os.path.abspath(out) == BENCH_DIR:
             sys.exit("VLPDS_DASH_OUT: a directory other than the import-ready copy's (bench/obs/grafana/dashboards)")
-        outs = [(out, os.environ.get("VLPDS_PROM_UID", "default"), os.environ.get("VLPDS_PYRO_UID"))]
+        outs = [(out, os.environ.get("VLPDS_PROM_UID", "default"), os.environ.get("VLPDS_PYRO_UID"), True)]
     else:
-        outs = [(BENCH_DIR, None, None)]
+        outs = [(BENCH_DIR, None, None, True)]
         if os.path.isdir(PROD_DIR):
-            outs.append((PROD_DIR, PROD_PROM_UID, PROD_PYRO_UID))
+            outs.append((PROD_DIR, PROD_PROM_UID, None, False))
     stale = []
-    for out_dir, prom_uid, pyro_uid in outs:
+    for out_dir, prom_uid, pyro_uid, profiles in outs:
         for name, template, panels in dashboards:
             path = os.path.join(out_dir, name)
-            body = render(template, prom_uid, pyro_uid)
+            body = render(template, prom_uid, pyro_uid, profiles)
             old = open(path).read() if os.path.exists(path) else None
             if check:
                 if old != body:
@@ -1091,7 +1104,7 @@ def main():
             if old != body:
                 with open(path, "w") as f:
                     f.write(body)
-            print(f"{'wrote' if old != body else 'unchanged'} {os.path.relpath(path)}: {count(panels)} panels")
+            print(f"{'wrote' if old != body else 'unchanged'} {os.path.relpath(path)}: {count(json.loads(body)['panels'])} panels")
     if stale:
         print("stale (run python3 bench/obs/grafana/gen_dashboard.py):\n  " + "\n  ".join(stale), file=sys.stderr)
         sys.exit(1)

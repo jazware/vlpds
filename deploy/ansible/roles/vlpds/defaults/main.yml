@@ -305,11 +305,6 @@ vlpds_space_oplog_retention: ""
 vlpds_rate_limits: true
 vlpds_trusted_proxies: ["{{ vlpds_docker_subnet }}"]
 
-# Continuous CPU profiles to Pyroscope (needs an image built with
-# features=profiling). Alloy's pyroscope.receive_http on the host:
-#   http://host.docker.internal:4100
-vlpds_pyroscope_url: ""
-
 # Extra VLPDS_* env vars / flags, for anything not covered above.
 vlpds_extra_env: {}
 vlpds_extra_args: []

@@ -21,8 +21,8 @@ file). Every series and log line carries `cluster=<deploy_env>` and
 
 With `alloy_pyroscope_enabled`, Alloy also receives profiles on
 `alloy_pyroscope_listen_port` (vlpds images built with profiling push there
-when `vlpds_pyroscope_url` is `http://host.docker.internal:<port>`) and
-forwards them to `alloy_pyroscope_url`.
+with `vlpds_extra_env: {VLPDS_PYROSCOPE_URL: "http://host.docker.internal:<port>"}`)
+and forwards them to `alloy_pyroscope_url`.
 
 ## Privilege modes
 

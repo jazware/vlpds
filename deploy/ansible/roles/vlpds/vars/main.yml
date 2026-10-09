@@ -101,7 +101,6 @@ _vlpds_env_base:
   VLPDS_SPACE_OPLOG_RETENTION: "{{ vlpds_space_oplog_retention }}"
   VLPDS_NO_RATE_LIMITS: "{{ '' if vlpds_rate_limits | bool else 'true' }}"
   VLPDS_TRUSTED_PROXIES: "{{ vlpds_trusted_proxies | join(',') }}"
-  VLPDS_PYROSCOPE_URL: "{{ vlpds_pyroscope_url }}"
   # Cluster membership (vlpds_cluster_enabled); unset = a lone node.
   VLPDS_PEER_LISTEN: "{{ ('0.0.0.0:2584') if vlpds_cluster_enabled | bool else '' }}"
   VLPDS_ADVERTISE_URL: "{{ ('https://' ~ vlpds_peer_host ~ ':' ~ vlpds_peer_port) if vlpds_cluster_enabled | bool else '' }}"

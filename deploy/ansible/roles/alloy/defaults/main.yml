@@ -64,8 +64,8 @@ alloy_docker_host: >-
      if alloy_docker_socket_proxy | bool else 'unix:///var/run/docker.sock' }}
 
 # Pyroscope: receive profiles on alloy_pyroscope_listen_port (vlpds images
-# built with profiling push there when vlpds_pyroscope_url is
-# http://host.docker.internal:<port>) and forward them to
+# built with profiling push there when vlpds_extra_env sets
+# VLPDS_PYROSCOPE_URL to http://host.docker.internal:<port>) and forward them to
 # alloy_pyroscope_url. The receiver listens on every interface: keep the
 # port closed in the firewall.
 alloy_pyroscope_enabled: false
