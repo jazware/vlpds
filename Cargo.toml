@@ -44,11 +44,11 @@ test-level = ["vlsync-store/test-level"]
 [dependencies]
 # The storage layer and the firehose vlpds shares with vlRelay and delta
 # (vlsync), and atproto (vlatproto)
-vlsync-store = { git = "https://github.com/jazware/vlsync", rev = "0769b290d9c278c980a1167201c90539125da206" }
+vlsync-store = { git = "https://github.com/jazware/vlsync", rev = "f42dc7eb02494b0cd22250a163271c9ea2291796" }
 vlatproto = { git = "https://github.com/jazware/vlatproto", rev = "186c75bfd8b10e800f08586cbb69804e709d6ce1" }
-vlsync-firehose = { git = "https://github.com/jazware/vlsync", rev = "0769b290d9c278c980a1167201c90539125da206" }
+vlsync-firehose = { git = "https://github.com/jazware/vlsync", rev = "f42dc7eb02494b0cd22250a163271c9ea2291796" }
 # the SlateDB fork every vlsync user builds against (its Cargo.toml lists the patches)
-slatedb = { package = "vlsync-slatedb", git = "https://github.com/jazware/vlsync", rev = "0769b290d9c278c980a1167201c90539125da206" }
+slatedb = { package = "vlsync-slatedb", git = "https://github.com/jazware/vlsync", rev = "f42dc7eb02494b0cd22250a163271c9ea2291796" }
 # the SST block cache (partition.rs BlockCache): SlateDB's FoyerCache can't be resized
 foyer = "0.22"
 # log segment body compression (vlsync-store/src/segment.rs; the same zstd SlateDB links)
@@ -96,7 +96,7 @@ mimalloc = { version = "0.1", optional = true }
 pyroscope = { version = "2.1", default-features = false, features = ["backend-pprof-rs"], optional = true }
 prost = { version = "0.14", optional = true }
 inferno = { version = "0.12", default-features = false, optional = true }
-slate-metrics = { git = "https://github.com/jazware/vlsync", rev = "0769b290d9c278c980a1167201c90539125da206", optional = true }
+slate-metrics = { git = "https://github.com/jazware/vlsync", rev = "f42dc7eb02494b0cd22250a163271c9ea2291796", optional = true }
 prometheus = { version = "0.14", default-features = false }
 hyper = { version = "1", features = ["server", "client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service"] }
