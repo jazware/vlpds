@@ -226,10 +226,10 @@ struct Args {
     #[arg(long, env = "VLPDS_FIREHOSE_MAX_LAG_MB", default_value_t = 128)]
     firehose_max_lag_mb: usize,
     /// Cursor backfill: segment read-ahead per subscriber (MiB, all logs together).
-    #[arg(long, env = "VLPDS_BACKFILL_READAHEAD_MB", default_value_t = 64)]
+    #[arg(long, env = "VLPDS_BACKFILL_READAHEAD_MB", default_value_t = vlsync_firehose::backfill::DEFAULT_READAHEAD_BYTES >> 20)]
     backfill_readahead_mb: usize,
     /// Cursor backfill: segment cache shared by subscribers replaying the same range (MiB).
-    #[arg(long, env = "VLPDS_BACKFILL_CACHE_MB", default_value_t = 256)]
+    #[arg(long, env = "VLPDS_BACKFILL_CACHE_MB", default_value_t = vlsync_firehose::backfill::DEFAULT_CACHE_BYTES >> 20)]
     backfill_cache_mb: usize,
     /// Cursor backfills running at once; more wait for a slot. Read-ahead
     /// memory is at most this x --backfill-readahead-mb.
