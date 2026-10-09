@@ -4096,7 +4096,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slate-metrics"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=9ba9edd1b97f8de20965769e195aba294114976d#9ba9edd1b97f8de20965769e195aba294114976d"
+source = "git+https://github.com/jazware/vlsync?rev=34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf#34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf"
 dependencies = [
  "parking_lot",
  "prometheus",
@@ -5066,7 +5066,7 @@ dependencies = [
 [[package]]
 name = "vlsync-firehose"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=9ba9edd1b97f8de20965769e195aba294114976d#9ba9edd1b97f8de20965769e195aba294114976d"
+source = "git+https://github.com/jazware/vlsync?rev=34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf#34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf"
 dependencies = [
  "anyhow",
  "axum",
@@ -5090,7 +5090,7 @@ dependencies = [
 [[package]]
 name = "vlsync-slatedb"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=9ba9edd1b97f8de20965769e195aba294114976d#9ba9edd1b97f8de20965769e195aba294114976d"
+source = "git+https://github.com/jazware/vlsync?rev=34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf#34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf"
 dependencies = [
  "slatedb",
  "slatedb-common",
@@ -5099,7 +5099,7 @@ dependencies = [
 [[package]]
 name = "vlsync-store"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=9ba9edd1b97f8de20965769e195aba294114976d#9ba9edd1b97f8de20965769e195aba294114976d"
+source = "git+https://github.com/jazware/vlsync?rev=34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf#34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf"
 dependencies = [
  "anyhow",
  "async-trait",
