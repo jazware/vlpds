@@ -73,6 +73,9 @@ ARG VLPDS_FEATURES=""
 # with debug = 0 cargo also strips std's): ~half the image. Symbols stay, so
 # panics and backtraces still name functions.
 ENV CARGO_PROFILE_RELEASE_DEBUG=0
+# tokio-console compiled in, off until TOKIO_CONSOLE_BIND is set (docs/operations/monitoring.md).
+# --build-arg RUSTFLAGS= builds without it.
+ARG RUSTFLAGS="--cfg tokio_unstable"
 # Unset builds with every core; benchbox-image.sh lowers it while the batch
 # pipeline runs.
 ARG CARGO_BUILD_JOBS
