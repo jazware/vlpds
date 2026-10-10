@@ -362,17 +362,9 @@ async fn gathers_every_node() {
     let store: Arc<object_store::memory::InMemory> = Arc::new(object_store::memory::InMemory::new());
     let a = cluster_node("cons-a", store.clone(), 4, |_| {}).await;
     let b = cluster_node("cons-b", store.clone(), 4, |_| {}).await;
-    eventually(Duration::from_secs(20), || async {
-        [&a, &b]
-            .iter()
-            .all(|s| {
-                let c = s.app.cluster.as_ref().unwrap();
-                c.peers().iter().any(|l| l.node_id != c.cfg.node_id)
-            })
-            .then_some(())
-    })
-    .await
-    .expect("two-node cluster formed");
+    // Seeing each other isn't enough: until b takes its half of the shards
+    // from a, a scan mid-move answers missingShards and leaves accounts out.
+    balanced(&[&a, &b]).await;
     let mut accts = Vec::new();
     for _ in 0..4 {
         let acct = a.create_account("cgat").await;
