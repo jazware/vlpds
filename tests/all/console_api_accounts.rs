@@ -89,24 +89,25 @@ async fn repo_bytes_and_recount() {
     let check = admin_get(&s, "vlpds.admin.checkRepo", &[("did", &a.did)]).await;
     let counted = &check["stats"]["counted"];
     let r = row(admin_get(&s, "vlpds.admin.listAccounts", &[("q", &a.did)]).await);
-    // creates add their exact size
+    // creates add their exact size, and nodes are always exact
     assert_eq!(r["recordBytes"], counted["recordBytes"], "{r} {check}");
+    assert_eq!(r["mstBytes"], counted["nodeBytes"], "{r} {check}");
     assert!(r["mstBytes"].as_u64().unwrap() > 0, "{r}");
     assert_eq!(r["repoBytes"].as_u64(), Some(r["recordBytes"].as_u64().unwrap() + r["mstBytes"].as_u64().unwrap()));
     assert_eq!(check["ok"], true, "bytes kept close aren't a problem: {check}");
 
-    // deletes take the mean: close, then exact after a recount
+    // deleted records take the mean record size: close, then exact after a
+    // recount; nodes stay exact
     for p in &posts[..15] {
         s.delete_record(&a, p.collection(), p.rkey()).await.ok();
     }
     let check = admin_get(&s, "vlpds.admin.checkRepo", &[("did", &a.did)]).await;
     let counted = check["stats"]["counted"].clone();
     let r = row(admin_get(&s, "vlpds.admin.listAccounts", &[("q", &a.did)]).await);
-    let (kept, exact) = (
-        r["repoBytes"].as_f64().unwrap(),
-        (counted["recordBytes"].as_u64().unwrap() + counted["nodeBytes"].as_u64().unwrap()) as f64,
-    );
-    assert!((kept - exact).abs() / exact < 0.25, "kept {kept}, exact {exact}");
+    assert_eq!(r["mstBytes"], counted["nodeBytes"], "{r} {check}");
+    let (kept, exact) = (r["recordBytes"].as_f64().unwrap(), counted["recordBytes"].as_f64().unwrap());
+    // the deleted posts are the smallest: the mean takes off too much (19%)
+    assert!((kept - exact).abs() / exact < 0.25, "records kept {kept}, exact {exact}");
     let rc = s.xrpc.post("vlpds.admin.recountRepo", &json!({"did": a.did}), &Auth::Admin).await.ok();
     assert_eq!(rc["after"], counted, "{rc}");
     let r = row(admin_get(&s, "vlpds.admin.listAccounts", &[("q", &a.did)]).await);

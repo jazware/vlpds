@@ -530,9 +530,9 @@ pub struct RepoStats {
 /// A repo's size as the console shows it: its record blocks plus its MST
 /// node blocks (leaves included), what a getRepo CAR holds less the commit
 /// and the CAR framing. Not the bytes the repo's rows take in the bucket
-/// (keys, indexes, compression). A full count is exact; a commit keeps it
-/// without reading what it replaces, so between counts it is close, not
-/// exact (see `RepoBytes::commit`).
+/// (keys, indexes, compression). A full count is exact. Commits keep the
+/// nodes exact; they don't read the records they replace, so between counts
+/// the records are close, not exact (see `RepoBytes::commit`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RepoBytes {
     pub records: u64,
@@ -546,19 +546,28 @@ impl RepoBytes {
 
     /// A commit's change, from what the commit has in hand. A created
     /// record adds its size. An updated record is taken to be the size it
-    /// was (the old block isn't read), and a deleted one the repo's mean
-    /// record size. Nodes the commit wrote add their size; each one it
-    /// replaced takes the repo's mean node size. Only for commits that
-    /// change the counts: one that only updates records changes nothing. `before` is the counts
-    /// before the commit; `created` the created records' bytes, `deleted`
-    /// how many it deleted; `written` the bytes of the nodes it added and
-    /// `gone` how many it lost.
-    pub fn commit(&mut self, before: &RepoStats, created: u64, deleted: u64, written: u64, gone: u64) {
+    /// was and a deleted one the repo's mean record size: the commit
+    /// doesn't read the rows it replaces. Nodes are exact: the commit's
+    /// walks loaded every node it replaced, with its size. `before` is the
+    /// counts before the commit; `created` the created records' bytes,
+    /// `deleted` how many it deleted; `written` the bytes of the nodes it
+    /// added, `gone` those of the ones it lost, and `gone_unsized` how many
+    /// more it lost without a known size (none expected; they take the
+    /// mean node size).
+    pub fn commit(
+        &mut self,
+        before: &RepoStats,
+        created: u64,
+        deleted: u64,
+        written: u64,
+        gone: u64,
+        gone_unsized: u64,
+    ) {
         let mean = |total: u64, n: u64| total.checked_div(n).unwrap_or(0);
         let rec_mean = mean(self.records, before.records);
         let node_mean = mean(self.nodes, before.nodes);
         self.records = (self.records + created).saturating_sub(deleted * rec_mean);
-        self.nodes = (self.nodes + written).saturating_sub(gone * node_mean);
+        self.nodes = (self.nodes + written).saturating_sub(gone + gone_unsized * node_mean);
     }
 }
 

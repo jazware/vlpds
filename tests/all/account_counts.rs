@@ -3,7 +3,8 @@
 //! histories (creates, updates, deletes, applyWrites batches, coalesced
 //! concurrent writes, backlink prunes, blob refs, imports, rebuilds) they
 //! equal a full walk of the repo (`repo_stats::walk`) and the tree of its
-//! exported CAR; also after a kill and replay of the log.
+//! exported CAR, and the kept node bytes equal the walk's; also after a
+//! kill and replay of the log.
 
 use crate::common::*;
 use rand::{rngs::StdRng, Rng, SeedableRng};
@@ -61,6 +62,10 @@ async fn check(s: &TestServer, a: &TestAccount, what: &str) {
         "{what}: checkAccountStatus vs walk ({walked:?})"
     );
     assert_eq!(st["repoCommit"], json!(repo.root.to_string()), "{what}");
+    let kept = p.db.get(vlpds::state::repo_stats_key(&a.did)).await.unwrap();
+    if let Some(kept) = kept.map(|v| vlpds::state::RepoStats::decode(&v).unwrap()).and_then(|k| k.bytes) {
+        assert_eq!(kept.nodes, walked.bytes.unwrap().nodes, "{what}: node bytes vs walk");
+    }
 }
 
 async fn upload_blobs(s: &TestServer, a: &TestAccount, n: u8) -> Vec<J> {

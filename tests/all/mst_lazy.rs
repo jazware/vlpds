@@ -74,13 +74,17 @@ struct Lockstep {
     lazy: Option<LazyTree>,
     root: Cid,
     pm: i32,
+    /// Node bytes kept from each commit's `Persist`, as the worker keeps
+    /// them (`state::RepoBytes::commit`).
+    node_bytes: u64,
 }
 
 impl Lockstep {
     fn new(mut reference: Tree, pm: i32) -> Lockstep {
         let root = reference.root_cid().unwrap();
         let store = MemStore::from_tree(&reference, pm);
-        Lockstep { reference, store, lazy: None, root, pm }
+        let node_bytes = vlpds::repo_stats::tree_bytes(&reference).unwrap();
+        Lockstep { reference, store, lazy: None, root, pm, node_bytes }
     }
 
     /// One commit. `cold`: reopen from the store; else keep the loaded
@@ -118,6 +122,14 @@ impl Lockstep {
         let (root, persist) = lazy.write_diff_blocks(&mut blocks).unwrap();
         assert_eq!(root, ref_root, "root cid (pm {})", self.pm);
         assert_eq!(blocks, ref_blocks, "commit blocks (sync 1.1 proof) (pm {})", self.pm);
+        assert_eq!(persist.gone_unsized, 0, "every replaced node's size known (pm {})", self.pm);
+        self.node_bytes = self.node_bytes + persist.added_bytes - persist.gone_bytes;
+        assert_eq!(
+            self.node_bytes,
+            vlpds::repo_stats::tree_bytes(&self.reference).unwrap(),
+            "node bytes (pm {})",
+            self.pm
+        );
 
         self.store.apply(&persist);
         for op in ops {
@@ -235,6 +247,7 @@ fn heap_memo_matches_full_walk() {
         let mut root = reference.root_cid().unwrap();
         let mut store = MemStore::from_tree(&reference, pm);
         let mut lazy = LazyTree::open(root, pm, &store).unwrap();
+        let mut node_bytes = vlpds::repo_stats::tree_bytes(&reference).unwrap();
         let mut memo = mst_lazy::HeapMemo::default();
         let check = |lazy: &LazyTree, memo: &mut mst_lazy::HeapMemo, after: &str| {
             assert_eq!(
@@ -286,6 +299,9 @@ fn heap_memo_matches_full_walk() {
             let mut blocks = Vec::new();
             let (r, persist) = lazy.write_diff_blocks(&mut blocks).unwrap();
             check(&lazy, &mut memo, "write");
+            // after reopens, whole loads and partial unloads too
+            assert_eq!(persist.gone_unsized, 0, "seed {seed}");
+            node_bytes = node_bytes + persist.added_bytes - persist.gone_bytes;
             store.apply(&persist);
             for op in &ops {
                 match op {
@@ -298,6 +314,17 @@ fn heap_memo_matches_full_walk() {
                 }
             }
             track_live(&mut live, &ops);
+            let mut full: Vec<(mst_lazy::Key, Cid)> = Vec::new();
+            for (k, c) in &store.records {
+                full.push((k.clone(), *c));
+            }
+            let mut t = mst_lazy::build_tree(&full).unwrap();
+            assert_eq!(t.root_cid().unwrap(), r, "seed {seed}");
+            assert_eq!(
+                node_bytes,
+                vlpds::repo_stats::tree_bytes(&t).unwrap(),
+                "seed {seed}: node bytes at step {step}"
+            );
             root = r;
             match rng.gen_range(0..8) {
                 0 => lazy.unload(rng.gen_range(0..3)),
@@ -344,6 +371,22 @@ fn rebuild_and_fallback() {
     }
     assert!(lazy.stats.fallbacks > 0);
     assert_eq!(exported(root, 1, &store).0, all_blocks(&reference));
+    // nodes loaded by a fallback know their size: deletes through them
+    // keep the node bytes exact
+    let mut fb = LazyTree::open(root, 1, &store).unwrap();
+    let mut gone_ref = reference.clone();
+    for (k, _) in recs.iter().step_by(29) {
+        fb.remove(k, &store).unwrap();
+        gone_ref.remove(k).unwrap();
+    }
+    assert!(fb.stats.fallbacks > 0);
+    let (r, persist) = fb.write_diff_blocks(&mut Vec::new()).unwrap();
+    assert_eq!(r, gone_ref.root_cid().unwrap());
+    assert_eq!(persist.gone_unsized, 0);
+    assert_eq!(
+        vlpds::repo_stats::tree_bytes(&reference).unwrap() + persist.added_bytes - persist.gone_bytes,
+        vlpds::repo_stats::tree_bytes(&gone_ref).unwrap()
+    );
     // a store with no nodes at all: the whole tree from records
     let bare = MemStore { nodes: HashMap::new(), records: store.records.clone() };
     assert_eq!(exported(root, 1, &bare).0, all_blocks(&reference));

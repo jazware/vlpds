@@ -73,10 +73,13 @@ pub struct Persist {
     /// Change in the tree's node count (nodes with entries, leaves
     /// included): written nodes it didn't hold, less the ones it lost.
     pub node_delta: i64,
-    /// Bytes of the written nodes it didn't hold, and how many it lost
+    /// Bytes of the written nodes it didn't hold, and of the ones it lost
     /// (`state::RepoBytes::commit`).
     pub added_bytes: u64,
-    pub gone: u64,
+    pub gone_bytes: u64,
+    /// Lost nodes whose size wasn't known (none expected): they take the
+    /// repo's mean node size.
+    pub gone_unsized: u64,
 }
 
 impl Persist {
@@ -99,6 +102,7 @@ fn finish_sized(height: i32, entries: Vec<Entry>, keep_leaves: bool) -> Result<(
     encode_node(&n, &mut buf)?;
     n.cid = Some(Cid::dag_cbor(&buf));
     let len = buf.len();
+    n.block_len = vlatproto::mst::block_len(len);
     if height >= 1 || keep_leaves {
         n.bytes = Some(Arc::from(buf));
     }
@@ -563,9 +567,10 @@ pub struct LazyTree {
     pub tree: Tree,
     persist_min: i32,
     /// Nodes (leaves too) on this batch's mutation walks, by their last
-    /// written cid: (cid, a key in the node's subtree, height). Replaced
-    /// persisted ones are deleted; the rest of the tree is unchanged.
-    seen: Vec<(Cid, Key, i32)>,
+    /// written cid: (cid, a key in the node's subtree, height, that
+    /// version's block length). Replaced persisted ones are deleted; the
+    /// rest of the tree is unchanged.
+    seen: Vec<(Cid, Key, i32, u32)>,
     pub stats: LoadStats,
 }
 
@@ -627,14 +632,14 @@ impl LazyTree {
             // an earlier op of the batch changed it
             if note {
                 if let Some(c) = n.cid {
-                    path.push((c, n.height));
+                    path.push((c, n.height, n.block_len));
                 }
             }
             let Some(idx) = idx else {
                 // the path ends in a node with keys (one without has a child
                 // to go on to): any of them is in every path node's subtree
                 if let Some(k) = any_key(n) {
-                    seen.extend(path.into_iter().map(|(c, h)| (c, k.clone(), h)));
+                    seen.extend(path.into_iter().map(|(c, h, l)| (c, k.clone(), h, l)));
                 }
                 return Ok(());
             };
@@ -655,7 +660,7 @@ impl LazyTree {
 
     /// [`walk`](Self::walk)'s notes if every node on it is loaded, without
     /// `Arc::make_mut`.
-    fn loaded_path(&self, key: &[u8], mut mode: Mode, note: bool) -> Option<Vec<(Cid, Key, i32)>> {
+    fn loaded_path(&self, key: &[u8], mut mode: Mode, note: bool) -> Option<Vec<(Cid, Key, i32, u32)>> {
         let mut n: &Node = &self.tree.root;
         let mut path = Vec::new();
         for _ in 0..=MAX_DEPTH {
@@ -665,12 +670,12 @@ impl LazyTree {
             let idx = step(n, key, &mut mode);
             if note {
                 if let Some(c) = n.cid {
-                    path.push((c, n.height));
+                    path.push((c, n.height, n.block_len));
                 }
             }
             let Some(idx) = idx else {
                 return Some(match any_key(n) {
-                    Some(k) => path.into_iter().map(|(c, h)| (c, k.clone(), h)).collect(),
+                    Some(k) => path.into_iter().map(|(c, h, l)| (c, k.clone(), h, l)).collect(),
                     None => Vec::new(),
                 });
             };
@@ -847,7 +852,8 @@ impl LazyTree {
         let empty = *vlatproto::mst::EMPTY_ROOT;
         let mut kept = HashSet::new();
         let mut gone: HashMap<Cid, i32> = HashMap::new();
-        for (c, k, h) in std::mem::take(&mut self.seen) {
+        let (mut gone_bytes, mut gone_unsized) = (0u64, 0u64);
+        for (c, k, h, len) in std::mem::take(&mut self.seen) {
             if c == empty || kept.contains(&c) || gone.contains_key(&c) {
                 continue;
             }
@@ -857,6 +863,11 @@ impl LazyTree {
                 }
                 false => {
                     gone.insert(c, h);
+                    debug_assert!(len > 0, "replaced node {c} of unknown size");
+                    match len {
+                        0 => gone_unsized += 1,
+                        l => gone_bytes += l as u64,
+                    }
                 }
             };
         }
@@ -868,7 +879,6 @@ impl LazyTree {
             added_bytes += b.len() as u64;
         }
         let node_delta = added as i64 - gone.len() as i64;
-        let gone_n = gone.len() as u64;
         let deletes = gone.into_iter().filter(|(_, h)| *h >= self.persist_min).map(|(c, _)| c).collect();
         // every written node at a persisted height, proof-only neighbours
         // (already stored) included: exactly what replay derives from the
@@ -878,7 +888,7 @@ impl LazyTree {
             .filter(|(c, _)| heights.get(c).is_some_and(|h| *h >= self.persist_min))
             .cloned()
             .collect();
-        Ok((root, Persist { puts, deletes, node_delta, added_bytes, gone: gone_n }))
+        Ok((root, Persist { puts, deletes, node_delta, added_bytes, gone_bytes, gone_unsized }))
     }
 
     /// Whether the written tree holds node `cid` (at `height`, on the path

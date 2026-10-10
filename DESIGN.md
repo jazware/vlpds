@@ -236,8 +236,10 @@ swappable.
     nodes, distinct referenced blobs) and the console's repo bytes (record
     blocks, node blocks); 5 × u64, or 3 in a row from before bytes were
     counted, which the repo's next load counts. A stored mut of each commit
-    that changes the counts (see "checkAccountStatus counts"); the bytes are
-    kept close without reading what a commit replaces
+    that changes the counts or the bytes (see "checkAccountStatus counts").
+    The node bytes are exact (a commit's walks loaded every node it
+    replaces, each with its block's length); a commit doesn't read the
+    records it replaces, so the record bytes are kept close
     (`state::RepoBytes::commit`) and made exact by `vlpds.admin.recountRepo`.
   - `a/{did}`, `n/{handle}` → account. The account row carries the repo
     signing key only wrapped under the KEK (`Account::wrapped_signing_key`,
@@ -3055,7 +3057,7 @@ from one snapshot (`state::RepoStats` at `S/{did}`):
 
 `S/` is a stored mut after the derived ones (replay can't derive it from
 the #commit frame: it needs the previous counts), written only when a
-count changed (`worker::tests::bench_commit_cpu`, base vs this: +50 B
+count or the bytes changed (`worker::tests::bench_commit_cpu`, base vs this: +50 B
 state and +54-56 B segment per commit, +0.3-0.6 µs of 33-40 µs CPU).
 `repo_stats::walk` counts from scratch (the records, the tree rebuilt from
 them, `b/`). `tests/all/account_counts.rs` runs random histories (creates,

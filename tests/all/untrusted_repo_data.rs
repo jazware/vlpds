@@ -104,7 +104,8 @@ fn dag_car(did: &str, kp: &Keypair, rpath: &str, fan: usize, levels: i32) -> Vec
     };
     let mut child: Option<Cid> = None;
     for h in 0..=levels {
-        let mut n = Node { height: h, entries: Vec::new(), cid: None, dirty: true, stub: false, bytes: None };
+        let mut n =
+            Node { height: h, entries: Vec::new(), cid: None, dirty: true, stub: false, bytes: None, block_len: 0 };
         let link = |c: Option<Cid>| c.map(|c| Entry::Child { node: None, cid: Some(c) });
         n.entries.extend(link(child));
         for k in keys_at(h) {

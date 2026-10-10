@@ -536,7 +536,7 @@ function Placement({ did, row, mode }: { did: string; row?: AccountRow | null; m
           ['MST nodes', row.mstNodes === undefined ? '—' : fmtNum(row.mstNodes)],
           [
             'Repo size',
-            <span title="Record blocks + MST node blocks, kept close by each commit; a recount makes it exact">
+            <span title="Record blocks + MST node blocks: nodes exact, records kept close by each commit; a recount makes it exact">
               {row.repoBytes === undefined ? (
                 '—'
               ) : (

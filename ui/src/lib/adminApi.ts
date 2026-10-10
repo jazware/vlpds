@@ -92,7 +92,7 @@ export type AccountRow = {
   mstNodes?: number
   /** Distinct blobs the records reference. */
   blobs?: number
-  /** Record blocks + MST node blocks (what a getRepo CAR carries). Close, not exact, between recounts (recountRepo); absent until the repo's next load counts it. */
+  /** Record blocks + MST node blocks (what a getRepo CAR carries). The record part is close, not exact, between recounts (recountRepo); the node part is exact; absent until the repo's next load counts it. */
   repoBytes?: number
   recordBytes?: number
   mstBytes?: number

@@ -414,11 +414,12 @@ takes the same requests, and resets any drift.
 
 `repoBytes` is the repo's record blocks plus its MST node blocks, leaves included: what a
 `getRepo` CAR carries, less the commit and the framing. It is not what the repo's rows take in
-the bucket. It rides in the repo's counts row (`S/`), which the commits that change the counts
-already write, so it costs no read and no extra write. A created record adds its exact size and
-a new node its own. The blocks a commit replaces aren't read, so a deleted record takes off the
-repo's mean record size, a replaced node the mean node size, and an update is taken to keep the
-record's size: close, not exact. `recountRepo` makes it exact again. A counts row written before
+the bucket. It rides in the repo's counts row (`S/`), which a commit writes with its other rows
+when its counts or bytes change, so it costs no read. A created record adds its exact size and
+a new node its own. The MST nodes stay exact: a commit has every node it replaces loaded, with
+its size. The records it replaces aren't read, so a deleted record takes off the repo's mean
+record size and an update is taken to keep the record's size: `recordBytes` is close, not exact.
+`recountRepo` makes it exact again. A counts row written before
 bytes were counted has none (`repoBytes` is absent). The repo's next load counts them, which reads
 the whole repo once.
 

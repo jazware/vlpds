@@ -120,17 +120,21 @@ mod tests {
     }
 
     #[test]
-    fn commits_keep_bytes_close() {
+    fn commits_keep_bytes() {
         let before =
             RepoStats { records: 10, nodes: 4, blobs: 0, bytes: Some(RepoBytes { records: 1000, nodes: 400 }) };
         let mut b = before.bytes.unwrap();
         // two creates of 150 bytes and one delete (the mean, 100); a new
-        // node of 120 bytes and one replaced (the mean, 100)
-        b.commit(&before, 300, 1, 120, 1);
-        assert_eq!(b, RepoBytes { records: 1200, nodes: 420 });
+        // node of 120 bytes replacing one of 90
+        b.commit(&before, 300, 1, 120, 90, 0);
+        assert_eq!(b, RepoBytes { records: 1200, nodes: 430 });
+        // a replaced node of unknown size takes the mean
+        let mut u = before.bytes.unwrap();
+        u.commit(&before, 0, 0, 120, 0, 1);
+        assert_eq!(u.nodes, 420);
         // never below zero
         let mut z = RepoBytes { records: 10, nodes: 0 };
-        z.commit(&RepoStats { records: 1, ..Default::default() }, 0, 5, 0, 3);
+        z.commit(&RepoStats { records: 1, ..Default::default() }, 0, 5, 0, 30, 3);
         assert_eq!(z, RepoBytes::default());
     }
 

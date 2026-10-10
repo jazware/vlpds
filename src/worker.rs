@@ -3019,12 +3019,11 @@ fn flush(st: &mut RepoState, batch: Batch, clock_id: u64, src: &dyn Source) -> a
         extra.push(Mutation { key: state::mst_node_key(&st.did, gen, c).into(), val: None });
     }
     extra.append(&mut coll_muts);
-    // a commit that leaves the counts alone (updates) leaves the bytes too:
-    // `S/` is written only when the counts change
-    if st.stats.counts() != stats_before.counts() {
-        if let Some(b) = st.stats.bytes.as_mut() {
-            b.commit(&stats_before, created_bytes, deleted, persist.added_bytes, persist.gone);
-        }
+    // updates alone leave the bytes as they were (node blocks keep their
+    // sizes: every CID is 36 bytes), so `S/` is written only when a count
+    // or the bytes change
+    if let Some(b) = st.stats.bytes.as_mut() {
+        b.commit(&stats_before, created_bytes, deleted, persist.added_bytes, persist.gone_bytes, persist.gone_unsized);
     }
     if st.stats != stats_before {
         extra.push(put(state::repo_stats_key(&st.did), st.stats.encode()));
@@ -4178,6 +4177,95 @@ mod tests {
         let (reply, snap) = oneshot::channel();
         w.send(WorkerMsg::Snapshot(SnapshotReq { did: did.clone(), reply, permit: None })).unwrap();
         assert!(matches!(snap.await.unwrap(), Err(WriteError::RepoNotFound)));
+    }
+
+    /// Commits that replace nodes all over a deep tree (creates, updates and
+    /// deletes, on trees loaded whole and lazily by fresh workers) keep the
+    /// node bytes in `S/` equal to a full count.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn commits_keep_node_bytes_exact() {
+        use rand::{rngs::StdRng, Rng, SeedableRng};
+        let (part, mut rx) = test_partition().await;
+        let db = part.db.clone();
+        let p2 = part.clone();
+        let route: PartitionLookup = Arc::new(move |_: &str| Some(p2.clone()));
+        let did: Arc<str> = "did:plc:nodebytes".into();
+        let mut rng = StdRng::seed_from_u64(11);
+        let mut live: Vec<String> = Vec::new();
+        let mut next = 0u64;
+        let record = |rng: &mut StdRng| Bytes::from("r".repeat(rng.gen_range(10..400)));
+        for round in 0..4 {
+            // a fresh worker loads the repo lazily from its rows
+            let workers = spawn(1, 100, route.clone(), tokio::runtime::Handle::current());
+            let w = workers.senders[0].clone();
+            if round == 0 {
+                let (m, created) = create_req(&did).await;
+                w.send(m).unwrap();
+                apply(&db, rx.recv().await.unwrap()).await;
+                created.await.unwrap().unwrap();
+            }
+            let commits = if round == 0 { 15 } else { 60 };
+            for _ in 0..commits {
+                let mut writes = Vec::new();
+                let mut paths = HashSet::new();
+                let n = if round == 0 { MAX_COMMIT_OPS } else { rng.gen_range(1..=6) };
+                for _ in 0..n {
+                    let pick = (!live.is_empty()).then(|| live[rng.gen_range(0..live.len())].clone());
+                    let op = match (rng.gen_range(0..3), pick) {
+                        (1, Some(rkey)) if round > 0 => {
+                            let bytes = record(&mut rng);
+                            Write::Update {
+                                collection: "app.test.thing".into(),
+                                rkey,
+                                cid: Cid::dag_cbor(&bytes),
+                                bytes,
+                                blobs: Vec::new(),
+                                swap: None,
+                                must_exist: true,
+                            }
+                        }
+                        (2, Some(rkey)) if round > 0 => {
+                            Write::Delete { collection: "app.test.thing".into(), rkey, swap: None }
+                        }
+                        _ => {
+                            next += 1;
+                            let bytes = record(&mut rng);
+                            Write::Create {
+                                collection: "app.test.thing".into(),
+                                rkey: Tid((next * 7919 % 100_003) << 20).to_string(),
+                                cid: Cid::dag_cbor(&bytes),
+                                bytes,
+                                blobs: Vec::new(),
+                                prune_backlinks: false,
+                            }
+                        }
+                    };
+                    if !paths.insert(op.path()) {
+                        continue;
+                    }
+                    match &op {
+                        Write::Create { rkey, .. } => live.push(rkey.clone()),
+                        Write::Delete { rkey, .. } => live.retain(|r| r != rkey),
+                        Write::Update { .. } => {}
+                    }
+                    writes.push(op);
+                }
+                let (reply, done) = oneshot::channel();
+                let req = WriteReq { did: did.clone(), writes, swap_commit: None, reply, claim: None, permit: None };
+                w.send(WorkerMsg::Write(req)).unwrap();
+                apply(&db, rx.recv().await.unwrap()).await;
+                done.await.unwrap().unwrap();
+            }
+            let kept = state::RepoStats::decode(&db.get(state::repo_stats_key(&did)).await.unwrap().unwrap()).unwrap();
+            let walked = crate::repo_stats::walk(&*db, &did, 0).await.unwrap();
+            assert_eq!(walked.records, live.len() as u64, "round {round}");
+            assert!(walked.nodes > 300, "a deep tree: {walked:?}");
+            assert_eq!(kept.counts(), walked.counts(), "round {round}");
+            assert_eq!(kept.bytes.unwrap().nodes, walked.bytes.unwrap().nodes, "round {round}: node bytes");
+            if round == 0 {
+                assert_eq!(kept.bytes, walked.bytes, "creates alone keep the record bytes exact too");
+            }
+        }
     }
 
     /// CPU per commit of the worker's commit path plus its ack, one
