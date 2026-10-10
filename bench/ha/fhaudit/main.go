@@ -1,7 +1,9 @@
 // fhaudit: firehose completeness audit for HA tests. Records every create
 // seen on a node's subscribeRepos and writes it to -out on SIGINT/SIGTERM; the
 // harness requires every acked create to appear (a stalled or gappy merge
-// shows up as missing creates even when per-repo chains look clean).
+// shows up as missing creates even when per-repo chains look clean). While it
+// runs, <out>.seq holds the newest commit seq so far: the harness waits on it
+// for a replay to reach the end.
 package main
 
 import (
@@ -14,6 +16,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -56,6 +59,19 @@ func main() {
 	var lastTime string
 	reason := "interrupted"
 	prefix := *collection + "/"
+	var newest atomic.Int64
+	newest.Store(-1)
+	go func() {
+		written := int64(-2)
+		for range time.Tick(100 * time.Millisecond) {
+			if n := newest.Load(); n != written {
+				tmp := *out + ".seq.tmp"
+				if os.WriteFile(tmp, []byte(strconv.FormatInt(n, 10)), 0o644) == nil && os.Rename(tmp, *out+".seq") == nil {
+					written = n
+				}
+			}
+		}
+	}()
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
@@ -98,6 +114,7 @@ func main() {
 		}
 		if c.Seq > last {
 			last = c.Seq
+			newest.Store(last)
 		}
 		lastTime = c.Time
 		log = append(log, rec{c.Seq, c.Repo, c.Rev})

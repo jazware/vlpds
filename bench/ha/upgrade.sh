@@ -16,6 +16,8 @@
 #   bench/ha/upgrade.sh upgrade-rolling          # one
 #   bench/ha/upgrade.sh --minio upgrade-rolling  # on a throwaway MinIO container
 #   SKIP_BUILD=1 bench/ha/upgrade.sh ...         # reuse the binaries
+#   BUILD_ONLY=1 bench/ha/upgrade.sh             # build them, run nothing
+#   VLPDS_HA_JOBS=3 bench/ha/upgrade.sh          # three scenarios at once
 #
 # MinIO: $VLPDS_HA_S3 (default 127.0.0.1:9200) with a `vlpds` bucket
 # (minioadmin/minioadmin); --minio starts one there (tmpfs, removed on exit).
@@ -57,7 +59,9 @@ prev_rev() {
 
 if [[ "${SKIP_BUILD:-}" != 1 ]]; then
   REV="$(prev_rev)"
-  SHA="$(git -C "$PKG" rev-parse --short "$REV^{commit}")"
+  # the full id: --short grows with the repo and differs between checkouts,
+  # which rebuilt a kept previous release
+  SHA="$(git -C "$PKG" rev-parse "$REV^{commit}")"
   mkdir -p "$VLPDS_UPGRADE_DIR/prev" "$VLPDS_UPGRADE_DIR/new" "$VLPDS_UPGRADE_DIR/new-tl"
   if [[ "$(cat "$VLPDS_UPGRADE_DIR/prev/REV" 2>/dev/null)" != "$SHA" || ! -x "$VLPDS_UPGRADE_DIR/prev/vlpds" ]]; then
     echo "building the previous release $REV ($SHA)"
@@ -66,7 +70,7 @@ if [[ "${SKIP_BUILD:-}" != 1 ]]; then
     # (from the repo root: in a subdirectory git archive limits a tree to it)
     git -C "$(git -C "$PKG" rev-parse --show-toplevel)" archive "$SHA:$(git -C "$PKG" rev-parse --show-prefix)" | tar -x -C "$src"
     # (no .git in the archive: name the rev for vlpds_build_info / leases)
-    (cd "$src" && VLPDS_GIT_REV="$SHA" cargo build --profile dev-release --bin vlpds)
+    (cd "$src" && VLPDS_GIT_REV="${SHA:0:9}" cargo build --profile dev-release --bin vlpds)
     cp "$CARGO_TARGET_DIR/dev-release/vlpds" "$VLPDS_UPGRADE_DIR/prev/vlpds"
     echo "$SHA" > "$VLPDS_UPGRADE_DIR/prev/REV"
     rm -rf "$src"
@@ -79,7 +83,8 @@ if [[ "${SKIP_BUILD:-}" != 1 ]]; then
   (cd "$HERE/fhaudit" && go build -o fhaudit .)
   (cd "$PKG/checker" && go build -o checker .)
 fi
-echo "previous: $(cat "$VLPDS_UPGRADE_DIR/prev/REV" 2>/dev/null || echo '?')  current: $(git -C "$PKG" rev-parse --short HEAD)$(git -C "$PKG" diff --quiet HEAD -- . || echo '+dirty')"
+[[ "${BUILD_ONLY:-}" == 1 ]] && exit 0
+echo "previous: $(cut -c1-9 "$VLPDS_UPGRADE_DIR/prev/REV" 2>/dev/null || echo '?')  current: $(git -C "$PKG" rev-parse --short HEAD)$(git -C "$PKG" diff --quiet HEAD -- . || echo '+dirty')"
 
 SCEN="${*:-$(python3 "$HERE/hactl.py" list | awk '{print $1}' | grep '^upgrade-' | tr '\n' ' ')}"
 rc=0

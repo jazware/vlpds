@@ -71,6 +71,11 @@ NODE_ARGS = os.environ.get(
 # faultproxy on +200+i (advertised) / +400+i (ctl); S3 proxy +2300+i / +2500+i;
 # containers publish +600+i (public) and +1400+i (peer).
 BASE_PORT = int(os.environ.get("VLPDS_HA_BASE_PORT", "7100"))
+# Native scenarios at once, each in its own process with its own ports
+# (BASE_PORT + LANE_PORTS × lane) and peer TLS dir. Each takes ~1.5 CPUs and
+# up to ~3 GiB on average, 8 nodes for cas-contention.
+JOBS = int(os.environ.get("VLPDS_HA_JOBS", "1"))
+LANE_PORTS = 3000
 # Injected segment PUT latency so PUTs overlap and K > 1 is exercised; 0 = off.
 INJECT_PUT_MS = float(os.environ.get("VLPDS_HA_INJECT_PUT_MS", "25"))
 LOG_INFLIGHT = int(os.environ.get("VLPDS_HA_LOG_INFLIGHT", "4"))
@@ -84,9 +89,18 @@ def base_env():
 
 
 PROCS = []
+LANES = []  # run_lanes' scenario processes: SIGTERM lets each kill its own nodes
 
 
 def cleanup():
+    for p in LANES:
+        if p.poll() is None:
+            p.terminate()
+    for p in LANES:
+        try:
+            p.wait(10)
+        except Exception:
+            pass
     for p in PROCS:
         if p.poll() is None:
             try:
@@ -705,6 +719,13 @@ class FhAudit:
             args += ["-cursor", str(cursor)]
         self.proc = spawn(args, os.path.join(outdir, f"fhaudit-{node.id}{tag}.log"))
 
+    def progress(self):
+        """The newest commit seq seen so far (-1: none yet), None before it says."""
+        try:
+            return int(open(self.out + ".seq").read())
+        except (OSError, ValueError):
+            return None
+
     def stop(self):
         if self.proc.poll() is None:
             self.proc.send_signal(signal.SIGINT)
@@ -716,6 +737,23 @@ class FhAudit:
             return json.load(open(self.out))
         except Exception:
             return None
+
+
+def wait_replays(reps, target, cap, still=2.0):
+    """Until every replay is at the same seq, at least `target` (the newest a
+    live audit or checker saw), and has stood there `still` seconds: then
+    nothing more is coming. At most `cap` seconds; returns the wait."""
+    t0 = time.time()
+    last, since = None, t0
+    while reps and time.time() - t0 < cap:
+        now = [a.progress() for a in reps]
+        if now != last:
+            last, since = now, time.time()
+        elif (None not in now and len(set(now)) == 1 and now[0] >= max(target or 0, 0)
+              and time.time() - since >= still):
+            break
+        time.sleep(0.1)
+    return round(time.time() - t0, 1)
 
 
 def audit_report(data, acked, node):
@@ -913,8 +951,11 @@ def run_load_scenario(ctx, n_nodes, duration, actions, checker_on=0, expect_fina
     if first_seqs and replay:
         cur = min(first_seqs) - 1
         reps = [FhAudit(n, ctx.outdir, tag="-replay", cursor=cur) for n in survivors]
+        seen = [d.get("last_seq") for d in live_raw.values() if d]
+        seen += [c.get("last_seq") for c in [res["checker"]] + res["extra_checkers"]]
         # rejoined nodes backfill the run from S3 segments (slower than the ring)
-        time.sleep(8 if all(not n.exit_codes() and n.started_at < ctx.t0 for n in survivors) else 30)
+        cap = 8 if all(not n.exit_codes() and n.started_at < ctx.t0 for n in survivors) else 30
+        res["replay_wait_s"] = wait_replays(reps, max((s for s in seen if s is not None), default=None), cap)
         replay_raw = {}
         for a in reps:
             data = a.stop()
@@ -2521,10 +2562,12 @@ def s_upgrade_raise_race(ctx):
 
 
 def run_one(name, run_id):
-    fn, desc = SCEN[name]
-    outdir = os.path.join(HERE, "out", run_id, name)
+    """`name` may carry a repeat, `kill9-1of3#2`: a run of its own (out dir,
+    prefix), so one scenario can run many times in one go."""
+    fn, desc = SCEN[name.split("#")[0]]
+    outdir = os.path.join(HERE, "out", run_id, name.replace("#", "-"))
     os.makedirs(outdir, exist_ok=True)
-    prefix = f"ha-{run_id}-{name}"
+    prefix = f"ha-{run_id}-{name.replace('#', '-')}"
     ctx = Ctx(name, outdir, prefix)
     log(f"=== {name}: {desc} (prefix {prefix})")
     t = time.time()
@@ -2580,6 +2623,47 @@ def summarize(r):
             f"| cp req/s {r.get('cp_req_per_s')} |")
 
 
+def run_lanes(names, run_id):
+    """`names` on JOBS lanes, each scenario a `hactl.py run` of its own, in
+    order as lanes free up. Their output is passed through a line at a
+    time, tagged with the scenario where a line doesn't name it."""
+    pending, running, out = list(names), {}, []
+    free = list(range(JOBS))
+    lock = threading.Lock()
+
+    def pump(name, proc):
+        for line in proc.stdout:
+            line = line.rstrip("\n")
+            with lock:
+                print(line if name in line else f"[{name}] {line}", flush=True)
+
+    while pending or running:
+        while pending and free:
+            name, lane = pending.pop(0), free.pop(0)
+            env = dict(os.environ, HA_RUN_ID=run_id, VLPDS_HA_JOBS="1",
+                       VLPDS_HA_BASE_PORT=str(BASE_PORT + LANE_PORTS * lane),
+                       VLPDS_HA_PEER_TLS_DIR=f"{PEER_TLS_DIR}-{lane}")
+            p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "run", name], env=env,
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+            LANES.append(p)
+            t = threading.Thread(target=pump, args=(name, p), daemon=True)
+            t.start()
+            running[name] = (p, t, lane)
+        time.sleep(0.2)
+        for name, (p, t, lane) in list(running.items()):
+            if p.poll() is None:
+                continue
+            t.join()
+            del running[name]
+            free.append(lane)
+            try:
+                v = json.load(open(os.path.join(HERE, "out", run_id, name.replace("#", "-"), "result.json")))["verdict"]
+            except Exception:
+                v = "ERROR"
+            out.append((name, v if p.returncode == 0 or v != "PASS" else "ERROR"))
+    return out
+
+
 def main():
     if len(sys.argv) < 2 or sys.argv[1] == "list":
         for k, (_, d) in SCEN.items():
@@ -2589,16 +2673,22 @@ def main():
     if names == ["all"]:
         names = list(SCEN)
     for n in names:
-        if n not in SCEN:
+        if n.split("#")[0] not in SCEN:
             sys.exit(f"unknown scenario {n}")
     if not os.path.exists(FAULTPROXY):
         subprocess.check_call(["go", "build", "-o", FAULTPROXY, "."], cwd=os.path.join(HERE, "faultproxy"))
     run_id = os.environ.get("HA_RUN_ID", time.strftime("%Y%m%d-%H%M%S"))
     os.makedirs(os.path.join(HERE, "out", run_id), exist_ok=True)
-    verdicts = []
+    # the ctr-* scenarios share container names and the docker network
+    native = [n for n in names if not n.startswith("ctr-")]
+    if len(set(names)) < len(names):
+        sys.exit("a scenario named twice: repeat it as name#2, name#3, ...")
+    verdicts = dict(run_lanes(native, run_id)) if JOBS > 1 and len(native) > 1 else {}
     for n in names:
-        verdicts.append((n, run_one(n, run_id)["verdict"]))
-    print("\n".join(f"{n:18} {v}" for n, v in verdicts))
+        if n not in verdicts:
+            verdicts[n] = run_one(n, run_id)["verdict"]
+    print("\n".join(f"{n:18} {verdicts[n]}" for n in names))
+    verdicts = list(verdicts.items())
     sys.exit(0 if all(v == "PASS" for _, v in verdicts) else 1)
 
 
