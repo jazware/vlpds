@@ -973,35 +973,45 @@ def cp_requests(node):
         return None
 
 
-def judge(res):
+def failures(res):
+    """Why a load scenario fails: [] when it passes."""
+    out = []
     v = res.get("verify", {})
     ck = res.get("checker", {})
-    ok = (v.get("missing") == 0 and v.get("ok")) and ck.get("result") == "PASS"
-    for c in res.get("extra_checkers", []):
-        ok = ok and c.get("result") == "PASS"
-    ok = ok and res.get("final_distribution") is not None and res.get("final_convergence_wait_s") is not None
+    if v.get("missing") != 0 or not v.get("ok"):
+        out.append(f"verify: {v.get('missing')} of {v.get('acked')} acked writes missing (ok={v.get('ok')})")
+    for c in [ck] + res.get("extra_checkers", []):
+        if c.get("result") != "PASS":
+            out.append(f"checker {c.get('node')}: {c.get('result')} {c.get('failures')} {c.get('first_failures')}")
+    if res.get("final_distribution") is None or res.get("final_convergence_wait_s") is None:
+        out.append(f"no final convergence: {res.get('final_distribution')}")
     for a in res.get("fh_live", []):
-        if a.get("node_stayed_up"):
-            ok = ok and a.get("fh_missing") == 0 and not a.get("reorders")
+        if a.get("node_stayed_up") and (a.get("fh_missing") != 0 or a.get("reorders")):
+            out.append(f"live firehose {a.get('node')}: missing {a.get('fh_missing')} reorders {a.get('reorders')}")
     for a in res.get("fh_replay", []):
-        ok = ok and a.get("fh_missing") == 0 and not a.get("reorders") and not a.get("dups") and not a.get("infos")
+        if a.get("fh_missing") != 0 or a.get("reorders") or a.get("dups") or a.get("infos"):
+            out.append(f"replay {a.get('node')}: missing {a.get('fh_missing')} reorders {a.get('reorders')} "
+                       f"dups {a.get('dups')} infos {a.get('infos')} {a.get('error') or ''}".rstrip())
     if len({(a.get("commits"), a.get("last_seq")) for a in res.get("fh_replay", [])}) > 1:
-        ok = False  # nodes disagree on the merged history
+        ends = {a.get("node"): (a.get("commits"), a.get("last_seq")) for a in res.get("fh_replay", [])}
+        out.append(f"replays disagree on the merged history (commits, last seq): {ends}")
     for a in res.get("fh_start", []):
-        ok = ok and a.get("agree") and not a.get("reorders") and not a.get("dups")
+        if not a.get("agree") or a.get("reorders") or a.get("dups"):
+            out.append(f"start audit {a.get('node')}: agree {a.get('agree')} reorders {a.get('reorders')} "
+                       f"dups {a.get('dups')} {a.get('diff')}")
     for k in ("fh_replay_diff", "fh_live_diff"):
         if res.get(k) and not res[k].get("agree", True):
-            ok = False
+            out.append(f"{k}: {res[k].get('pairs')}")
     if res.get("unexpected_exits"):
-        ok = False
-    if res.get("k_fail"):
-        ok = False
+        out.append(f"unexpected exits: {res['unexpected_exits']}")
+    for f in res.get("k_fail") or []:
+        out.append(f"k: {f}")
     # e.g. a zombie must fail-stop (3 = fenced log, 5 = lease lapsed) before any restart
     for nid, allowed in (res.get("expect_exit") or {}).items():
         codes = (res.get("exit_codes") or {}).get(nid) or []
         if not codes or codes[0] not in allowed:
-            ok = False
-    return "PASS" if ok else "FAIL"
+            out.append(f"{nid} exited {codes}, expected first one of {allowed}")
+    return out
 
 
 # ---- actions
@@ -1581,10 +1591,36 @@ def strip_ansi(line):
     return ANSI.sub("", line)
 
 
-def audit_dead_log(prefix, log_id, survivors_logs, fh_files, dead_node=None):
+def spans_of(prefix, log_id):
+    """{(assignment, span start): end} of every span of `log_id` (end None: open)."""
+    out = {}
+    for k in s3_list(f"{prefix}/assign/"):
+        try:
+            a = json.loads(s3_get(k))
+        except Exception:
+            continue
+        for sp in a.get("history", []):
+            if sp.get("log_id") == log_id:
+                out[(k.rsplit("/", 1)[1], sp.get("start"))] = sp.get("end")
+    return out
+
+
+def dead_log(ctx, n, log_id):
+    """Records a log that just died for the audit, with the spans its node
+    had already closed itself (a handoff before the fault: the shard moved
+    on at the release's barrier, below the fence). Read right after the
+    fault, a lease TTL before any peer can fence the log."""
+    ctx.dead_logs.append((n.id, log_id))
+    closed = {k for k, end in spans_of(ctx.prefix, log_id).items() if end is not None}
+    ctx.closed_at_fault = {**getattr(ctx, "closed_at_fault", {}), log_id: closed}
+
+
+def audit_dead_log(prefix, log_id, survivors_logs, fh_files, dead_node=None, closed_at_fault=None):
     """Checks a dead log's end state in S3 against the hole rule:
     - exactly one fence, at the first ordinal that isn't a segment (the first hole);
-    - every assignment span of that log ends at the fence (all fencers agree);
+    - every assignment span of that log still open at the fault ends at the
+      fence (all fencers agree); one its node had closed itself (a handoff
+      before the fault, `closed_at_fault`) ends at or below it;
     - survivors that logged 'fenced dead node's log' name the same ordinal;
     - no seq of a segment past the fence (garbage) is on any firehose audit
       (live, cursor replay, start audits), while the prefix's last seqs are
@@ -1601,16 +1637,12 @@ def audit_dead_log(prefix, log_id, survivors_logs, fh_files, dead_node=None):
     garbage_seqs = {s for o in garbage for s in objs[o]["seqs"]}
     prefix_seqs = [s for o in segs if o < hole for s in objs[o]["seqs"]]
     tail = set(prefix_seqs[-20:])
+    spans = spans_of(prefix, log_id)
     span_ends = {}
-    for k in s3_list(f"{prefix}/assign/"):
-        b = s3_get(k)
-        try:
-            a = json.loads(b)
-        except Exception:
-            continue
-        for sp in a.get("history", []):
-            if sp.get("log_id") == log_id:
-                span_ends.setdefault(str(sp.get("end")), []).append(k.rsplit("/", 1)[1])
+    for (key, _), end in spans.items():
+        span_ends.setdefault(str(end), []).append(key)
+    released = {k: e for k, e in spans.items() if k in (closed_at_fault or set())}
+    fenced = {k: e for k, e in spans.items() if k not in released and e is not None}
     fencers = {}
     for nid, path in survivors_logs.items():
         try:
@@ -1635,12 +1667,13 @@ def audit_dead_log(prefix, log_id, survivors_logs, fh_files, dead_node=None):
         live_on_dead = dead_node and name in (f"fhaudit-{dead_node}.json", f"fhaudit-{dead_node}-start.json")
         if seqs and min(seqs) <= min(tail, default=0) and not live_on_dead:
             tail_seen[name] = len(seqs & tail)
-    closed_ends = {e for e in span_ends if e != "None"}
+    closed_ends = {str(e) for e in fenced.values()}
     out = {
         "log_id": log_id, "objects": len(ords), "first_ordinal": lo, "fence_ordinals": fences, "first_hole": hole,
         "fenced_by": [objs[o].get("by") for o in fences],
         "garbage_ordinals": garbage, "garbage_events": len(garbage_seqs),
         "span_ends": {e: len(v) for e, v in span_ends.items()}, "fencer_logs": fencers,
+        "released_before_fault": {f"{k[0]}@{k[1]}": e for k, e in released.items()},
         "garbage_on_firehose": on_fh, "prefix_tail_seen": tail_seen,
     }
     fails = []
@@ -1648,6 +1681,8 @@ def audit_dead_log(prefix, log_id, survivors_logs, fh_files, dead_node=None):
         fails.append(f"fence {fences} not exactly at first hole {hole}")
     if any(e != str(hole) for e in closed_ends):
         fails.append(f"span ends {sorted(closed_ends)} != fence {hole}")
+    if any(e > hole for e in released.values()):
+        fails.append(f"spans released before the fault end past the fence {hole}: {released}")
     if "None" in span_ends:
         fails.append(f"open spans of a dead log: {span_ends['None']}")
     if any(v != [hole] * len(v) for v in fencers.values()):
@@ -1711,13 +1746,13 @@ def kill_on_hole(idx, label, timeout=15.0, sig=signal.SIGKILL):
                 if above:
                     n.signal(sig)
                     ctx.mark(f"{label}: kill -9 {n.id} with a hole at {hole}, {len(above)} later segment(s) landed {above[:4]} (poll {polls})")
-                    ctx.dead_logs.append((n.id, log_id))
+                    dead_log(ctx, n, log_id)
                     return "fault"
                 after = f"{ctx.prefix}/log/{log_id}/{max(ords[0], hole - 1):012}.seg"
             time.sleep(0.005)
         n.signal(sig)
         ctx.mark(f"{label}: no hole seen in {timeout}s ({polls} polls); kill -9 {n.id} anyway")
-        ctx.dead_logs.append((n.id, log_id))
+        dead_log(ctx, n, log_id)
         return "fault"
     return f
 
@@ -1727,7 +1762,8 @@ def k_audits(ctx, res):
     fh = glob.glob(os.path.join(ctx.outdir, "fhaudit-*.json"))
     res["dead_logs"] = []
     for nid, log_id in ctx.dead_logs:
-        a = audit_dead_log(ctx.prefix, log_id, logs, fh, dead_node=nid)  # a restarted incarnation may fence too
+        a = audit_dead_log(ctx.prefix, log_id, logs, fh, dead_node=nid,  # a restarted incarnation may fence too
+                           closed_at_fault=getattr(ctx, "closed_at_fault", {}).get(log_id))
         a["node"] = nid
         res["dead_logs"].append(a)
         for f in a["fails"]:
@@ -1757,7 +1793,6 @@ def stop_with_puts_held(idx, min_inflight=4, timeout=5.0):
     def f(ctx):
         n = ctx.nodes[idx]
         log_id = n.status()["log"]
-        ctx.dead_logs.append((n.id, log_id))
         n.s3.set(blackhole=1)
         ctx.mark(f"S3 blackhole -> {n.id} (PUTs held at the proxy)")
         end, seen = time.time() + timeout, 0
@@ -1768,6 +1803,7 @@ def stop_with_puts_held(idx, min_inflight=4, timeout=5.0):
                 break
             time.sleep(0.01)
         n.signal(signal.SIGSTOP)
+        dead_log(ctx, n, log_id)
         try:
             _, raw = http("GET", f"http://{n.s3.ctl}/stats")
             ctx.k_info["proxy_at_stop"] = json.loads(raw)
@@ -2017,8 +2053,10 @@ def s_retention_kill9(ctx):
 
     def kill_n2(ctx):
         n = ctx.nodes[1]
-        ctx.dead_logs.append((n.id, n.status()["log"]))
-        return kill(1)(ctx)
+        log_id = n.status()["log"]
+        r = kill(1)(ctx)
+        dead_log(ctx, n, log_id)
+        return r
 
     def start_audit(ctx):
         n = ctx.nodes[1]
@@ -2304,7 +2342,7 @@ def finalize(idx, expect, level=None):
 
 
 def upgrade_checks(ctx, res, finalized, new_formats):
-    """Two-build invariants on top of `judge`: finalize outcomes as expected;
+    """Two-build invariants on top of `failures`: finalize outcomes as expected;
     segments in the test level's format only after a finalize (and then some);
     refused nodes exited 7 and left nothing in the bucket."""
     fails = []
@@ -2492,8 +2530,15 @@ def run_one(name, run_id):
     t = time.time()
     try:
         res = fn(ctx)
-        res["verdict"] = judge(res) if "convergence_s" not in res else (
-            "PASS" if res.get("convergence_s") is not None and res["checker"].get("result") == "PASS" and res["verify"].get("missing") == 0 else "FAIL")
+        if "convergence_s" not in res:
+            res["why"] = failures(res)
+        else:
+            res["why"] = [w for w, bad in (
+                (f"no convergence: {res.get('convergence_s')}", res.get("convergence_s") is None),
+                (f"checker: {res['checker'].get('result')} {res['checker'].get('first_failures')}",
+                 res["checker"].get("result") != "PASS"),
+                (f"verify: {res['verify'].get('missing')} missing", res["verify"].get("missing") != 0)) if bad]
+        res["verdict"] = "FAIL" if res["why"] else "PASS"
     except Exception as e:
         traceback.print_exc()
         res = {"verdict": "ERROR", "error": repr(e), "events": ctx.events}
@@ -2509,6 +2554,9 @@ def run_one(name, run_id):
     with open(os.path.join(HERE, "out", run_id, "summary.md"), "a") as f:
         f.write(line + "\n")
     log(line)
+    if res["verdict"] != "PASS":
+        for w in res.get("why") or [res.get("error")]:
+            log(f"  {name} FAIL: {str(w)[:2000]}")
     return res
 
 
