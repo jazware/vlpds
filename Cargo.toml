@@ -44,11 +44,11 @@ test-level = ["vlsync-store/test-level"]
 [dependencies]
 # The storage layer and the firehose vlpds shares with vlRelay and delta
 # (vlsync), and atproto (vlatproto)
-vlsync-store = { git = "https://github.com/jazware/vlsync", rev = "80a33fc1c2906240834d274c222622e979b1dc85" }
-vlatproto = { git = "https://github.com/jazware/vlatproto", rev = "186c75bfd8b10e800f08586cbb69804e709d6ce1" }
-vlsync-firehose = { git = "https://github.com/jazware/vlsync", rev = "80a33fc1c2906240834d274c222622e979b1dc85" }
+vlsync-store = { git = "https://github.com/jazware/vlsync", rev = "1c2aa0f9369de46faa68df5479b016a8c6b6103b" }
+vlatproto = { git = "https://github.com/jazware/vlatproto", rev = "5dae8a125869cfb5876bb6a3f36258ae0460aa3a" }
+vlsync-firehose = { git = "https://github.com/jazware/vlsync", rev = "1c2aa0f9369de46faa68df5479b016a8c6b6103b" }
 # the SlateDB fork every vlsync user builds against (its Cargo.toml lists the patches)
-slatedb = { package = "vlsync-slatedb", git = "https://github.com/jazware/vlsync", rev = "80a33fc1c2906240834d274c222622e979b1dc85" }
+slatedb = { package = "vlsync-slatedb", git = "https://github.com/jazware/vlsync", rev = "1c2aa0f9369de46faa68df5479b016a8c6b6103b" }
 # the SST block cache (partition.rs BlockCache): SlateDB's FoyerCache can't be resized
 foyer = "0.22"
 # log segment body compression (vlsync-store/src/segment.rs; the same zstd SlateDB links)
@@ -93,12 +93,12 @@ tokio-tungstenite = { version = "0.29", features = ["__rustls-tls"] }
 tikv-jemallocator = { version = "0.7", optional = true }
 tikv-jemalloc-ctl = { version = "0.7", features = ["stats"], optional = true }
 # GET /debug/pprof/heap: jemalloc's heap sampler, on from the start, as pprof
-vlsync-heapprof = { git = "https://github.com/jazware/vlsync", rev = "80a33fc1c2906240834d274c222622e979b1dc85", features = ["axum"], optional = true }
+vlsync-heapprof = { git = "https://github.com/jazware/vlsync", rev = "1c2aa0f9369de46faa68df5479b016a8c6b6103b", features = ["axum"], optional = true }
 mimalloc = { version = "0.1", optional = true }
 pyroscope = { version = "2.1", default-features = false, features = ["backend-pprof-rs"], optional = true }
 prost = { version = "0.14", optional = true }
 inferno = { version = "0.12", default-features = false, optional = true }
-slate-metrics = { git = "https://github.com/jazware/vlsync", rev = "80a33fc1c2906240834d274c222622e979b1dc85", optional = true }
+slate-metrics = { git = "https://github.com/jazware/vlsync", rev = "1c2aa0f9369de46faa68df5479b016a8c6b6103b", optional = true }
 prometheus = { version = "0.14", default-features = false }
 hyper = { version = "1", features = ["server", "client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service"] }
@@ -200,7 +200,8 @@ opt-level = 3
 [profile.test]
 opt-level = 1
 debug = 0
-lto = false
+# false still runs thin LTO across each crate's codegen units
+lto = "off"
 # incremental reuse is per codegen unit: with 16, a one-line edit re-optimizes
 # a sixteenth of the crate (lib rebuild 3-16 s vs ~3 s; suite runtime equal)
 codegen-units = 256
