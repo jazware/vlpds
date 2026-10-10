@@ -6,7 +6,7 @@
 //!
 //! Heap profiles are always on with jemalloc (vlsync-heapprof): `GET
 //! /debug/pprof/heap` answers the heap in use as pprof, to a peer on the
-//! node's loopback that no proxy forwarded (yeetd's scrapes) or with the
+//! node's loopback that no proxy forwarded (a scraper on the node) or with the
 //! admin token.
 
 use crate::xrpc::App;

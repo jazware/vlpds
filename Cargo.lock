@@ -4096,7 +4096,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slate-metrics"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf#34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf"
+source = "git+https://github.com/jazware/vlsync?rev=80a33fc1c2906240834d274c222622e979b1dc85#80a33fc1c2906240834d274c222622e979b1dc85"
 dependencies = [
  "parking_lot",
  "prometheus",
@@ -5067,7 +5067,7 @@ dependencies = [
 [[package]]
 name = "vlsync-firehose"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf#34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf"
+source = "git+https://github.com/jazware/vlsync?rev=80a33fc1c2906240834d274c222622e979b1dc85#80a33fc1c2906240834d274c222622e979b1dc85"
 dependencies = [
  "anyhow",
  "axum",
@@ -5091,12 +5091,13 @@ dependencies = [
 [[package]]
 name = "vlsync-heapprof"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf#34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf"
+source = "git+https://github.com/jazware/vlsync?rev=80a33fc1c2906240834d274c222622e979b1dc85#80a33fc1c2906240834d274c222622e979b1dc85"
 dependencies = [
  "axum",
  "backtrace",
  "flate2",
  "parking_lot",
+ "tempfile",
  "tikv-jemalloc-ctl",
  "tikv-jemalloc-sys",
  "tokio",
@@ -5106,7 +5107,7 @@ dependencies = [
 [[package]]
 name = "vlsync-slatedb"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf#34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf"
+source = "git+https://github.com/jazware/vlsync?rev=80a33fc1c2906240834d274c222622e979b1dc85#80a33fc1c2906240834d274c222622e979b1dc85"
 dependencies = [
  "slatedb",
  "slatedb-common",
@@ -5115,7 +5116,7 @@ dependencies = [
 [[package]]
 name = "vlsync-store"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf#34d18bfe5f426a8b8f5f8cf9a7ab7b3de5455fbf"
+source = "git+https://github.com/jazware/vlsync?rev=80a33fc1c2906240834d274c222622e979b1dc85#80a33fc1c2906240834d274c222622e979b1dc85"
 dependencies = [
  "anyhow",
  "async-trait",
