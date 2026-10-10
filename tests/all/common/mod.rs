@@ -167,9 +167,13 @@ impl TestServer {
             // Off by default, as in the reference's dev-env test network: the
             // suite drives thousands of writes from one IP and DID.
             rate_limits_enabled: false,
+            // A lone node joins with its second lease write, which would
+            // wait out the 1 s write gap after its first: every test's first
+            // request waited a second for it. Renewals keep their 2 s.
             cluster: peer.is_some().then(|| vlpds::cluster::ClusterConfig {
                 node_id: "single".into(),
                 addr: peer_url.clone(),
+                lease_key_gap: Some(Duration::ZERO),
                 ..Default::default()
             }),
             ..Default::default()

@@ -1,0 +1,17 @@
+# The suite's longest tests (15-90 s each, most of the rest take a second)
+# start first, so they run beside the short ones instead of after them: in
+# name order they started 50-65 s in and set the run's end.
+[[profile.default.overrides]]
+filter = """
+test(=spaces_side::applied_writes::no_write_is_applied_and_refused_through_restarts)
+| test(=reshard::repeated_splits_and_merges_under_write_load)
+| test(=spaces_side::cluster_reshard::split_and_merge_keep_every_space_row)
+| test(=fast_failover::same_id_restarts_race_the_refused_probe_takeover)
+| test(=ctl_shard_move::slow_shard_opens_under_authenticated_load)
+| test(=log_retention::cursors_inside_the_window_through_restarts_and_reshards)
+| test(=reshard::retired_state_gc_over_history)
+| test(=cluster::tests::crash_looping_restarts_keep_every_span)
+| test(=ctl_takeover::kill9_slow_reopen_under_authenticated_load)
+| test(/^spaces_side::cluster_takeover::three_node_takeover_mid_burst/)
+"""
+priority = 100

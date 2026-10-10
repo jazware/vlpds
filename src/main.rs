@@ -1617,6 +1617,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
             levels: vlsync_store::version::Window::BUILD,
             lease_plane: None,
             startup_deadline: vlpds::cluster::STARTUP_DEADLINE,
+            lease_key_gap: None,
         }),
         memory_store: None,
         metrics_listen: metrics_addr.clone(),

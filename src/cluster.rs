@@ -135,6 +135,10 @@ pub struct ClusterConfig {
     /// How long startup keeps retrying control-plane reads and its first
     /// step that fail or time out, before the node gives up.
     pub startup_deadline: Duration,
+    /// Tests only: the least time between our lease writes instead of
+    /// `LEASE_KEY_GAP`'s second (an in-memory store has no per-key write
+    /// rate).
+    pub lease_key_gap: Option<Duration>,
 }
 
 /// A runtime and an object-store client for lease renewal alone. A node
@@ -185,6 +189,7 @@ impl Default for ClusterConfig {
             levels: version::Window::BUILD,
             lease_plane: None,
             startup_deadline: STARTUP_DEADLINE,
+            lease_key_gap: None,
         }
     }
 }
@@ -1773,7 +1778,7 @@ impl Cluster {
         // Both only while the validity left covers the next tick with room
         // to spare: a slow write earns validity from its send, so one that
         // landed late (or failed late) is renewed at once, 429 or not.
-        let gap = lease_key_gap(self.cfg.renew_every);
+        let gap = self.cfg.lease_key_gap.map_or_else(|| lease_key_gap(self.cfg.renew_every), |g| g.min(self.cfg.renew_every));
         let last = *self.last_lease_write.lock();
         if let Some((at, landed, joined, draining)) = last {
             let since = at.elapsed();
@@ -3048,6 +3053,7 @@ mod tests {
             levels: version::Window::BUILD,
             lease_plane: None,
             startup_deadline: STARTUP_DEADLINE,
+            lease_key_gap: None,
         }
     }
 
