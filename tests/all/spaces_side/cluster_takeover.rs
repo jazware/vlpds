@@ -261,7 +261,19 @@ async fn takeover_sends_each_registration_one_catch_up_forward() {
         }
     }
     let newest = |repos: &[J]| repos.iter().map(|r| r["spaceRev"].as_str().unwrap().to_string()).max();
-    let before = list_repos(&auth, &local, &cred).await.unwrap();
+    // a member's write reaches the authority by its PDS's notify, after the
+    // write is acked: wait until every writer's last rev is sequenced
+    let mut heads = Vec::new();
+    for w in &writers {
+        heads.push((w.did.clone(), latest(w, &local, "a writer's head before the kill").await.rev));
+    }
+    let before = eventually(Duration::from_secs(20), || async {
+        let repos = list_repos(&auth, &local, &cred).await.ok()?;
+        let rows = by_did(&repos);
+        heads.iter().all(|(did, rev)| rows.get(did).is_some_and(|r| r["repoRev"] == json!(rev))).then_some(repos)
+    })
+    .await
+    .expect("the authority never sequenced every write before the kill");
     let head = newest(&before).expect("sequenced writes");
     eventually(Duration::from_secs(20), || async {
         syncers

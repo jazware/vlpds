@@ -1055,6 +1055,12 @@ async fn resolve_conflict(store: &Store, path: &Path, data: &Bytes) -> Conflict 
     }
 }
 
+/// Whether the runtime is shutting down: it cancels a task spawned then at
+/// once, before it drops the tasks it holds.
+async fn runtime_stopping() -> bool {
+    tokio::spawn(async {}).await.is_err_and(|e| e.is_cancelled())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_finalizer(
     log_id: Arc<str>,
@@ -1121,6 +1127,13 @@ async fn run_finalizer(
         });
         for (shard, r) in futures::future::join_all(writes).await {
             if let Err(e) = r {
+                // A runtime shutting down drops SlateDB's tasks while this
+                // one may still be mid-poll, and its write fails. Nothing
+                // here was acked: a fail-stop would only turn a clean exit
+                // into exit 4.
+                if runtime_stopping().await {
+                    return;
+                }
                 tracing::error!(shard = shard.0, "state apply failed: {e}; exiting");
                 vlsync_store::lifecycle::fail_stop(4, "state_apply");
             }

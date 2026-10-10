@@ -275,7 +275,10 @@ async fn imports_are_rate_limited_and_capped_per_account() {
     );
     assert!(a.is_err() && b.is_err(), "the held imports answered");
     refused_mentioning(&third, &["in progress"]);
-    // given back once they're gone
+    // given back once they're gone: the server drops a held import when it
+    // sees the client's connection close, a moment after the client gave up
+    let sp = s.app.spaces.as_ref().unwrap();
+    retry("the held imports' slots came back", || async { (sp.imports_running(&bob.did) == 0).then_some(()) }).await;
     import_repo(bob, space, &built.car()).await.ok();
 
     // 4 of 5 spent (two held, the refused one, the import)

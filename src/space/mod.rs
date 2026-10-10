@@ -210,6 +210,12 @@ impl Spaces {
         Ok(ImportSlot { sp: self, did: did.to_string() })
     }
 
+    /// Tests: the importRepo slots `did` holds now.
+    #[doc(hidden)]
+    pub fn imports_running(&self, did: &str) -> usize {
+        self.importing.lock().get(did).copied().unwrap_or(0)
+    }
+
     /// (live spaces per authority account, live notify registrations per
     /// authority account).
     pub fn account_caps(&self) -> (usize, usize) {
