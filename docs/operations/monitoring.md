@@ -317,7 +317,8 @@ edges:
 
 `vlpds_object_store_requests_total{op,component,client,result}` counts what an S3, GCS or R2 bill
 counts. `op` is the billable operation (`put`, `put_create`, `put_cas`, `get`, `get_range`, `head`,
-`list` per 1,000-key page, `delete`, `delete_batch`, `copy`, `mpu_*`). `component` is the prefix:
+`list` per 1,000-key page, `delete`, `copy`, `mpu_*`). Deletes go out as single DELETEs, which R2
+doesn't bill: a DeleteObjects POST is Class A, so the client never sends one. `component` is the prefix:
 
 | Component | Prefix |
 |---|---|
