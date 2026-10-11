@@ -367,12 +367,32 @@ fn owner(creds: &super::authn::Credentials) -> XResult<String> {
     super::server::full_access(creds)
 }
 
-/// The password again, for a change to how the account signs in. Charged to
-/// the account's sign-in bucket before Argon2, so a stolen session can't
-/// guess it any faster than a sign-in could.
-pub(super) async fn check_password(app: &App, did: &str, password: &str) -> XResult<Account> {
-    crate::ratelimit::check(&[&crate::ratelimit::SIGN_IN_ACCOUNT], did, 1)?;
+/// Confirming that it is the owner before a change to how the account signs
+/// in. An account with a local password proves it with that password, exactly
+/// as before (charged to the account's sign-in bucket before Argon2, so a
+/// stolen session can't guess any faster than a sign-in could). An account
+/// with no local password — a provider-backed one — proves it with a
+/// fresh-owner confirmation from a method it does have, which is the only way
+/// it could ever add a passkey or turn on an authenticator app.
+pub(super) async fn confirm_owner(
+    app: &App,
+    did: &str,
+    password: &str,
+    grant: Option<&str>,
+    action: &str,
+    target: Option<&str>,
+) -> XResult<Account> {
     let acct = app.account(did).await?;
+    if let Some(g) = grant {
+        crate::xrpc::owner_auth::flow::may(app, did, g, action, target).await?;
+        return Ok(acct);
+    }
+    crate::ratelimit::check(&[&crate::ratelimit::SIGN_IN_ACCOUNT], did, 1)?;
+    if acct.password_hash.is_empty() {
+        return Err(XrpcError::auth(
+            "This account signs in with one of its other methods. Confirm the change with that method.",
+        ));
+    }
     if password.is_empty() || !super::server::verify_password(&acct, password).await? {
         return Err(XrpcError::auth("Invalid password"));
     }
@@ -431,12 +451,16 @@ async fn list_passkeys(State(app): AppState, Auth(creds): Auth) -> XResult<Json<
 
 #[derive(Deserialize)]
 struct StartIn {
+    /// The account's local password, when it has one.
     #[serde(default)]
     password: String,
+    /// Or a fresh-owner confirmation, for an account without one.
+    #[serde(default)]
+    grant: Option<String>,
 }
 
-/// The password is checked here, so a stolen session token alone can't add
-/// a passkey. Returns `PublicKeyCredentialCreationOptions` as JSON.
+/// The owner is confirmed here, so a stolen session token alone can't add a
+/// passkey. Returns `PublicKeyCredentialCreationOptions` as JSON.
 async fn start_registration(
     State(app): AppState,
     Auth(creds): Auth,
@@ -444,7 +468,15 @@ async fn start_registration(
     Json(inp): Json<StartIn>,
 ) -> XResult<Json<J>> {
     let did = owner(&creds)?;
-    let acct = check_password(&app, &did, &inp.password).await?;
+    let acct = confirm_owner(
+        &app,
+        &did,
+        &inp.password,
+        inp.grant.as_deref(),
+        crate::xrpc::owner_auth::flow::ACTION_ADD_PASSKEY,
+        None,
+    )
+    .await?;
     // after the password, so a wrong one doesn't spend the day's additions
     crate::ratelimit::check(&[&crate::ratelimit::PASSKEY_REGISTER_ACCOUNT], &did, 1)?;
     let p = load(&app, &did).await?;
@@ -649,16 +681,27 @@ struct RemoveIn {
     id: String,
     #[serde(default)]
     password: String,
+    /// Or a fresh-owner confirmation, for an account without a password.
+    #[serde(default)]
+    grant: Option<String>,
     #[serde(default)]
     sign_out_everywhere: bool,
 }
 
-/// Needs the password. Ends what the passkey signed in (OAuth sessions and
+/// Confirmed by the owner. Ends what the passkey signed in (OAuth sessions and
 /// account-page sessions record it; device sign-ins and unexchanged codes
 /// are checked against the row when they're used), or everything.
 async fn remove_passkey(State(app): AppState, Auth(creds): Auth, Json(inp): Json<RemoveIn>) -> XResult<Json<J>> {
     let did = owner(&creds)?;
-    check_password(&app, &did, &inp.password).await?;
+    confirm_owner(
+        &app,
+        &did,
+        &inp.password,
+        inp.grant.as_deref(),
+        crate::xrpc::owner_auth::flow::ACTION_REMOVE_PASSKEY,
+        Some(&inp.id),
+    )
+    .await?;
     let gone = 'cas: {
         let _g = crate::totp::lock(&did).await;
         for _ in 0..CAS_ROUNDS {
@@ -890,10 +933,15 @@ async fn create_session_inner(
     Ok(r)
 }
 
-/// Whether the passkey a sign-in recorded is still on the account; true
-/// for sign-ins without one.
+/// Whether the credential a session or code was signed in with is still live.
+/// A passkey's reference is checked against the account's passkeys; an
+/// external credential's (`google:`/`apple:`/`siwe:`) against its credential
+/// row. None: a password or app-password sign-in, which has nothing to check.
 pub(super) async fn still_registered(app: &App, did: &str, auth_cred: Option<&str>) -> XResult<bool> {
     let Some(r) = auth_cred else { return Ok(true) };
+    if crate::xrpc::owner_auth::types::provider_of_ref(r).is_some() {
+        return crate::xrpc::owner_auth::store::ref_live(app, did, r).await;
+    }
     Ok(load(app, did).await?.creds.iter().any(|c| c.auth_ref() == r))
 }
 

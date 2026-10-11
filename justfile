@@ -110,6 +110,11 @@ migrate-spaces-e2e:
 passkeys-e2e:
     bench/passkeys/run.sh
 
+# The pluggable sign-in pages in headless Chromium (bench/auth-providers/README.md): an injected EIP-1193 wallet
+# that signs for real, the authorization page's provider button, the wallet page, consent, and the tokens.
+auth-providers-e2e:
+    bench/auth-providers/run.sh
+
 # The account page's Spaces tab in headless Chromium (bench/account-spaces/README.md): connect, the lists, the owner
 # grant, members, deleting a space and revocation on a local vlpds; screenshots in bench/account-spaces/out/shots
 account-spaces-e2e:

@@ -84,6 +84,7 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/oauth/authorize", get(authorize))
         .route("/oauth/authorize/sign-in", post(authorize_sign_in))
         .route("/oauth/authorize/sign-up", post(authorize_sign_up))
+        .route("/oauth/authorize/wallet", get(authorize_wallet))
         .route("/oauth/authorize/select", post(authorize_select))
         .route("/oauth/authorize/consent", post(authorize_consent))
         .route("/oauth/account", get(account_page))
@@ -668,6 +669,7 @@ pub(crate) async fn device_for(app: &App, headers: &HeaderMap) -> Result<(Device
         pending_2fa: None,
         pending_2fa_failures: 0,
         pending_2fa_epoch: String::new(),
+        pending_cred: None,
         trusted_until: 0,
     };
     store::put_device(app, &d).await?;
@@ -689,7 +691,7 @@ fn csrf_token(app: &App, device_id: &str, scope: &str) -> String {
 
 /// A token bound to the device cookie and the request, plus Fetch-Metadata
 /// and Origin checks when the browser sends them.
-fn check_csrf(app: &App, headers: &HeaderMap, device: &Device, scope: &str, token: Option<&String>) -> bool {
+pub(super) fn check_csrf(app: &App, headers: &HeaderMap, device: &Device, scope: &str, token: Option<&String>) -> bool {
     if let Some(site) = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
         if site != "same-origin" && site != "none" {
             return false;
@@ -939,6 +941,7 @@ fn login_page(app: &App, flow: &Flow, identifier: &str, error: Option<&str>, sta
     let csrf = flow.csrf(app);
     let name = server_name(app);
     let pk = passwordless_ui(app, &passkey_binding(&flow.device.id, &flow.id, None));
+    let providers = auth_providers(app);
     let body = ui::login(
         Some(&flow.ctx(&csrf, &name)),
         &ui::LoginForm {
@@ -947,6 +950,7 @@ fn login_page(app: &App, flow: &Flow, identifier: &str, error: Option<&str>, sta
             error,
             second: None,
             passkey: pk.as_ref().map(|(c, r)| ui::PasskeyUi { challenge: c, rp_id: r, allow: "[]" }),
+            providers: &providers,
         },
         "",
     );
@@ -1440,7 +1444,7 @@ async fn sign_in_inner(
     let has_passkeys = super::passkeys::has_any(app, &acct.did).await?;
     // a trusted browser skips every factor, whichever are set up
     let trusted = password_step && super::signin::trusted(app, &acct, &epoch, &device.id).await?;
-    let mut auth_cred = None;
+    let mut auth_cred = if password_step { None } else { device.pending_cred.clone() };
     let checked = match (trusted, posted_assertion(f).filter(|_| !password_step)) {
         (true, _) => Ok(()),
         (false, Some(a)) => {
@@ -1592,6 +1596,7 @@ async fn finish_device_sign_in(
     let now = now_secs();
     device.pending_2fa = None;
     device.pending_2fa_failures = 0;
+    device.pending_cred = None;
     device.accounts.retain(|a| a.did != did);
     device.accounts.push(DeviceAccount { did: did.clone(), authenticated_at: now, auth_epoch: epoch, auth_cred });
     device.last_seen_at = now;
@@ -1635,6 +1640,7 @@ fn code_page(app: &App, flow: &Flow, p: &Pending, error: Option<LoginError>) -> 
             error: msg,
             second: Some(second_factor_form(p, &pk, super::signin::trust_days(app))),
             passkey: None,
+            providers: &[],
         },
         "",
     );
@@ -1652,6 +1658,94 @@ fn set_passkey_csp(r: &mut Response, form_action: &[String]) {
         .insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_str(&ui::csp_passkey(form_action)).unwrap());
 }
 
+/// The configured owner-auth methods, as the server-rendered pages offer them.
+fn auth_providers(app: &App) -> Vec<ui::ProviderBtn<'static>> {
+    app.auth
+        .enabled()
+        .into_iter()
+        .map(|p| ui::ProviderBtn {
+            id: p.as_str(),
+            label: p.label(),
+            wallet: p == crate::xrpc::owner_auth::ProviderId::Siwe,
+        })
+        .collect()
+}
+
+/// Start an owner-auth login from the server-rendered page: hand the browser to
+/// the provider, or show the wallet page for a wallet.
+async fn provider_start(app: &App, flow: &Flow, provider: &str, intent: crate::xrpc::owner_auth::Intent) -> Response {
+    use crate::xrpc::owner_auth::{Challenge, Continuation, ProviderId};
+    let Some(pid) = ProviderId::parse(provider) else {
+        return login_page(app, flow, "", Some("That sign-in method is not available"), StatusCode::BAD_REQUEST);
+    };
+    let cont = Continuation::OAuth { request_uri: flow.uri.clone() };
+    match crate::xrpc::owner_auth::flow::start(app, pid, intent, cont, Some(flow.device.id.clone()), None).await {
+        Ok(s) => match s.challenge {
+            Challenge::Redirect { url } => {
+                let mut r = redirect_to(&url);
+                if flow.new_cookie {
+                    r.headers_mut().append(header::SET_COOKIE, device_cookie(app, &flow.device));
+                }
+                r
+            }
+            // A wallet signs in place: send it to the page that runs the
+            // ceremony for this request.
+            Challenge::Siwe { .. } => redirect_to(&format!(
+                "/oauth/authorize/wallet?client_id={}&request_uri={}",
+                crate::oauth::util::encode_uri_component(&flow.client.id),
+                crate::oauth::util::encode_uri_component(&flow.uri)
+            )),
+        },
+        Err(e) => login_page(app, flow, "", Some(e.message.as_str()), e.status),
+    }
+}
+
+/// The wallet page: a button that runs the Sign-In with Ethereum ceremony,
+/// loaded with the flow so its device cookie and CSRF are the sign-in page's.
+async fn authorize_wallet(
+    State(app): AppState,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    let flow = match load_flow(
+        &app,
+        &headers,
+        q.get("request_uri").map(String::as_str),
+        q.get("client_id").map(String::as_str),
+    )
+    .await
+    {
+        Ok(f) => f,
+        Err(e) => return e.into_response(&app),
+    };
+    let csrf = flow.csrf(&app);
+    let back = format!(
+        "/oauth/authorize?client_id={}&request_uri={}",
+        crate::oauth::util::encode_uri_component(&flow.client.id),
+        crate::oauth::util::encode_uri_component(&flow.uri)
+    );
+    let body = format!(
+        "<h1>Sign in with Ethereum</h1>\
+<p class=\"muted\">Your wallet will be asked for its account. You sign a message, not a transaction.</p>\
+<button type=\"button\" class=\"btn primary wide\" id=\"vlpds-wallet\" data-request-uri=\"{}\" data-csrf=\"{}\">Continue with Ethereum</button>\
+<noscript><p class=\"muted\">Turn on JavaScript to sign in with a wallet.</p></noscript>\
+<p class=\"alt\"><a href=\"{}\">Use another way to sign in</a></p>",
+        crate::oauth::util::html_escape(&flow.uri),
+        crate::oauth::util::html_escape(&csrf),
+        crate::oauth::util::html_escape(&back)
+    );
+    let mut r = html(
+        &app,
+        StatusCode::OK,
+        ui::wallet_page("Sign in with Ethereum", &body),
+        &flow.form_action(),
+        flow.new_cookie.then_some(&flow.device),
+    );
+    r.headers_mut()
+        .insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_str(&ui::csp_wallet(&flow.form_action())).unwrap());
+    r
+}
+
 async fn authorize_sign_in(
     State(app): AppState,
     super::moderation::ClientIp(ip): super::moderation::ClientIp,
@@ -1665,6 +1759,10 @@ async fn authorize_sign_in(
     if f.get("action").map(String::as_str) == Some("deny") {
         let _ = store::put_request(&app, &flow.id, None).await;
         return redirect_error(&app, &flow.req.params, "access_denied", "Access denied");
+    }
+    if let Some(provider) = f.get("provider") {
+        let provider = provider.clone();
+        return provider_start(&app, &flow, &provider, crate::xrpc::owner_auth::Intent::SignIn).await;
     }
     let client_id = flow.client.id.clone();
     let flow_key = flow.id.clone();
@@ -2322,6 +2420,163 @@ fn fmt_time(secs: i64) -> String {
     chrono::DateTime::from_timestamp(secs, 0).map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string()).unwrap_or_default()
 }
 
+// ------------------------------------------------------------------ owner auth
+//
+// The pluggable-provider side ends here: a verified external identity becomes
+// exactly what a password path produces — a `DeviceAccount` — and then flows
+// through the same second factors and the same consent step.
+
+/// Record an authenticated DID on the browser. The one place a provider login
+/// becomes "this browser is signed in".
+pub(super) async fn note_device_sign_in(
+    app: &App,
+    device: &mut Device,
+    did: String,
+    epoch: String,
+    auth_cred: Option<String>,
+) -> XResult<()> {
+    finish_device_sign_in(app, device, did, epoch, auth_cred).await.map(|_| ()).map_err(|e| XrpcError {
+        status: e.status,
+        error: e.error,
+        message: e.description,
+    })
+}
+
+/// What a provider login must do about the account's second factors.
+pub(super) enum ProviderFactor {
+    /// No factor for this browser: sign the DID in now.
+    NotNeeded { epoch: String },
+    /// A factor is required; show the factor page for `Needed`.
+    Needed(super::email2fa::Factor),
+}
+
+/// The single place a provider login meets the account's own second factors.
+/// A trusted browser skips them; otherwise the account's policy decides, and
+/// the factor is remembered on the browser so the completion keeps the
+/// provider credential as its provenance. Exactly the password path's rule.
+pub(super) async fn start_provider_factor(
+    app: &App,
+    device: &mut Device,
+    acct: &Account,
+    cred: Option<String>,
+) -> XResult<ProviderFactor> {
+    let epoch = crate::xrpc::auth_epoch(app, &acct.did).await.unwrap_or_default();
+    if super::signin::trusted(app, acct, &epoch, &device.id).await.unwrap_or(false) {
+        return Ok(ProviderFactor::NotNeeded { epoch });
+    }
+    let has_passkeys = super::passkeys::has_any(app, &acct.did).await.unwrap_or(false);
+    // Mails the email code when email is the factor, exactly as the password
+    // path does; a missing code answers AuthFactorTokenRequired.
+    let factor = match super::email2fa::check_second_factor(app, acct, None, false, has_passkeys).await {
+        Ok(()) => return Ok(ProviderFactor::NotNeeded { epoch }),
+        Err(super::email2fa::FactorErr { err, factor }) if err.error == "AuthFactorTokenRequired" => factor,
+        Err(fe) => return Err(fe.err),
+    };
+    device.pending_2fa = Some((acct.did.clone(), now_secs()));
+    device.pending_2fa_epoch = epoch;
+    device.pending_2fa_failures = 0;
+    device.pending_cred = cred;
+    store::put_device(app, device).await.map_err(|e| XrpcError {
+        status: e.status,
+        error: e.error,
+        message: e.description,
+    })?;
+    Ok(ProviderFactor::Needed(factor))
+}
+
+/// Finish a provider login on the OAuth authorization page: run the second
+/// factor if this browser needs one, else sign in and continue to consent.
+pub(super) async fn provider_finish_oauth(
+    app: &App,
+    headers: &HeaderMap,
+    request_uri: &str,
+    did: &str,
+    cred: Option<String>,
+) -> Response {
+    let flow = match load_flow(app, headers, Some(request_uri), None).await {
+        Ok(x) => x,
+        Err(e) => return e.into_response(app),
+    };
+    let acct = match account_any(app, did).await {
+        Ok(a) => a,
+        Err(e) => return server_error_page(app, "Sign-in failed", &e.message),
+    };
+    if acct.status.is_some() {
+        return login_page(
+            app,
+            &flow,
+            &acct.handle,
+            Some(LoginError::Inactive.message()),
+            LoginError::Inactive.status(),
+        );
+    }
+    let mut flow = flow;
+    let epoch = match start_provider_factor(app, &mut flow.device, &acct, cred.clone()).await {
+        Ok(ProviderFactor::NotNeeded { epoch }) => epoch,
+        Ok(ProviderFactor::Needed(f)) => {
+            let p = match Pending::of(app, &acct, &f).await {
+                Ok(p) => p,
+                Err(e) => return server_error_page(app, "Sign-in failed", &e.description),
+            };
+            return code_page(app, &flow, &p, None);
+        }
+        Err(e) if e.status == StatusCode::TOO_MANY_REQUESTS => {
+            return login_page(app, &flow, &acct.handle, Some(LoginError::RateLimited.message()), e.status)
+        }
+        Err(e) => return server_error_page(app, "Sign-in failed", &e.message),
+    };
+    if let Err(e) = note_device_sign_in(app, &mut flow.device, did.to_string(), epoch, cred).await {
+        return server_error_page(app, "Sign-in failed", &e.message);
+    }
+    consent_step(app, flow, did).await
+}
+
+/// Finish a provider login started from the account SPA: run the second
+/// factor if needed, else sign in on this browser. The caller redirects back
+/// to the account page, which redeems a session through `/auth/complete`.
+pub(super) async fn provider_finish_account(
+    app: &App,
+    headers: &HeaderMap,
+    did: &str,
+    cred: Option<String>,
+) -> Response {
+    let (mut device, new_cookie) = match device_for(app, headers).await {
+        Ok(x) => x,
+        Err(e) => return server_error_page(app, "Sign-in failed", &e.description),
+    };
+    let acct = match account_any(app, did).await {
+        Ok(a) => a,
+        Err(e) => return server_error_page(app, "Sign-in failed", &e.message),
+    };
+    if acct.status.is_some() {
+        return error_page(app, StatusCode::UNAUTHORIZED, "Sign-in failed", LoginError::Inactive.message());
+    }
+    let epoch = match start_provider_factor(app, &mut device, &acct, cred.clone()).await {
+        Ok(ProviderFactor::NotNeeded { epoch }) => epoch,
+        Ok(ProviderFactor::Needed(f)) => {
+            let email = matches!(f, super::email2fa::Factor::Email { .. });
+            let mut r =
+                redirect_to(&format!("/oauth/account?2fa=1{}", if email { "&email=1" } else { "" })).into_response();
+            if new_cookie {
+                r.headers_mut().append(header::SET_COOKIE, device_cookie(app, &device));
+            }
+            return r;
+        }
+        Err(e) if e.status == StatusCode::TOO_MANY_REQUESTS => {
+            return error_page(app, e.status, "Sign-in failed", LoginError::RateLimited.message())
+        }
+        Err(e) => return server_error_page(app, "Sign-in failed", &e.message),
+    };
+    if let Err(e) = note_device_sign_in(app, &mut device, did.to_string(), epoch, cred).await {
+        return server_error_page(app, "Sign-in failed", &e.message);
+    }
+    let mut r = redirect_to("/account?auth=complete").into_response();
+    if new_cookie {
+        r.headers_mut().append(header::SET_COOKIE, device_cookie(app, &device));
+    }
+    r
+}
+
 async fn account_page(State(app): AppState, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
     let (device, new_cookie) = match device_for(&app, &headers).await {
         Ok(d) => d,
@@ -2367,6 +2622,7 @@ async fn account_page(State(app): AppState, headers: HeaderMap, Query(q): Query<
                 error,
                 second: pending.as_ref().map(|p| second_factor_form(p, &pk, super::signin::trust_days(&app))),
                 passkey: pwless.as_ref().map(|(c, r)| ui::PasskeyUi { challenge: c, rp_id: r, allow: "[]" }),
+                providers: &auth_providers(&app),
             },
             &csrf,
         );

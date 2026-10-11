@@ -8,12 +8,14 @@ import { acall, call, setSession } from '../../lib/xrpc'
 import { RecoveryKeys } from './RecoveryKeys'
 import { SignInSecurity } from './SignIns'
 import { Passkeys, RecoveryCodes, SavedCodes } from './Passkeys'
+import { WaysToSignIn } from './Providers'
 
 export function Security() {
   const [ver, setVer] = useState(0)
   return (
     <>
       <PageHead title="Security" desc="Passkeys and two-factor sign-in, where you've signed in, your recovery key, passwords for apps, and the apps you've connected." />
+      <WaysToSignIn />
       <Passkeys onChange={() => setVer((v) => v + 1)} />
       <Totp onChange={() => setVer((v) => v + 1)} />
       <RecoveryCodes ver={ver} />

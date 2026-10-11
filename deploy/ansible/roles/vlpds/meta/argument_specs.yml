@@ -276,6 +276,33 @@ argument_specs:
       vlpds_appview_cdn_url_pattern:
         description: See defaults/main.yml (vlpds_appview_cdn_url_pattern).
         type: str
+      vlpds_auth_google_client_id:
+        description: Sign in with Google. Set with vlpds_auth_google_client_secret, or leave both empty; the callback URL is <vlpds_public_url>/auth/callback/google.
+        type: str
+      vlpds_auth_google_client_secret:
+        description: The Google OAuth client secret (a secret).
+        type: str
+      vlpds_auth_apple_client_id:
+        description: Sign in with Apple. The Services ID; the callback URL is <vlpds_public_url>/auth/callback/apple.
+        type: str
+      vlpds_auth_apple_team_id:
+        description: Apple's 10-character Team ID.
+        type: str
+      vlpds_auth_apple_key_id:
+        description: The Key ID of the ES256 signing key.
+        type: str
+      vlpds_auth_apple_private_key:
+        description: The ES256 signing key as PEM text (a secret).
+        type: str
+      vlpds_auth_siwe:
+        description: Sign in with Ethereum (needs no client credentials).
+        type: bool
+      vlpds_auth_siwe_chain_id:
+        description: The EIP-155 chain id signatures bind to (1 = mainnet).
+        type: int
+      vlpds_auth_siwe_domain:
+        description: The EIP-4361 domain field; empty = the public URL's host.
+        type: str
       vlpds_crawlers:
         description: Relays asked to crawl (requestCrawl at startup and after new activity, at most once per 20 min per relay, from one node). The console's Relays page stores a list in the bucket that overrides this one until reset; [] = none.
         type: list

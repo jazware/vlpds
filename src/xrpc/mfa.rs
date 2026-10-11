@@ -172,6 +172,9 @@ pub async fn remaining(app: &App, did: &str) -> XResult<usize> {
 struct RegenerateIn {
     #[serde(default)]
     password: String,
+    /// Or a fresh-owner confirmation, for an account without a password.
+    #[serde(default)]
+    grant: Option<String>,
 }
 
 pub fn routes() -> Router<Arc<App>> {
@@ -182,7 +185,15 @@ pub fn routes() -> Router<Arc<App>> {
 /// factor is on.
 async fn regenerate(State(app): AppState, Auth(creds): Auth, Json(inp): Json<RegenerateIn>) -> XResult<Json<J>> {
     let did = super::server::full_access(&creds)?;
-    let acct = super::passkeys::check_password(&app, &did, &inp.password).await?;
+    let acct = super::passkeys::confirm_owner(
+        &app,
+        &did,
+        &inp.password,
+        inp.grant.as_deref(),
+        crate::xrpc::owner_auth::flow::ACTION_RECOVERY_CODES,
+        None,
+    )
+    .await?;
     if !crate::totp::enabled_for(&app, &acct).await? && !super::passkeys::has_any(&app, &did).await? {
         return Err(XrpcError::bad("InvalidRequest", "Recovery codes come with an authenticator app or a passkey"));
     }

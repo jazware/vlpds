@@ -1,0 +1,10 @@
+{
+  "name": "vlpds-auth-providers-e2e",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "playwright": "1.63.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0"
+  }
+}

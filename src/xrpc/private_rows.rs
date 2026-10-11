@@ -83,6 +83,7 @@ pub fn passkey_row_fixtures(did: &str) -> Vec<PrivateRow> {
         pending_2fa: None,
         pending_2fa_failures: 0,
         pending_2fa_epoch: String::new(),
+        pending_cred: None,
         trusted_until: 0,
     };
     rows.push((did.into(), o::session_key("ses-passkey"), enc(&ses)));
@@ -222,6 +223,7 @@ fn shared_fixture_rows(did: &str) -> Vec<PrivateRow> {
         pending_2fa: Some((did.into(), 1_790_000_060)),
         pending_2fa_failures: 1,
         pending_2fa_epoch: String::new(),
+        pending_cred: None,
         trusted_until: 0,
     };
     let authz =

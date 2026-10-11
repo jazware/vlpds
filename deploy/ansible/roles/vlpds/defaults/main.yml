@@ -244,6 +244,27 @@ vlpds_workers: ""
 vlpds_appview: "https://api.bsky.app,did:web:api.bsky.app"
 vlpds_report_service: "https://mod.bsky.app,did:plc:ar7c4by46qjdydhdevvrndac"
 vlpds_appview_cdn_url_pattern: "https://cdn.bsky.app/img/%s/plain/%s/%s@jpeg"
+# Sign-in with an external identity provider. Each is off unless its whole
+# configuration is set (tasks/assert.yml refuses a half-configured one). The
+# callback URL to register with the provider is
+# <vlpds_public_url>/auth/callback/<google|apple>; a wallet needs none.
+vlpds_auth_google_client_id: ""
+# The OAuth client secret (a secret: written to the node's secrets directory
+# and passed as VLPDS_AUTH_GOOGLE_CLIENT_SECRET_FILE).
+vlpds_auth_google_client_secret: ""
+# Apple's Services ID.
+vlpds_auth_apple_client_id: ""
+# Apple's 10-character Team ID, and the Key ID of the ES256 signing key.
+vlpds_auth_apple_team_id: ""
+vlpds_auth_apple_key_id: ""
+# The ES256 signing key itself, as PEM text (a secret, like the client secret).
+vlpds_auth_apple_private_key: ""
+# Sign-In with Ethereum takes no client credentials: switch it on, and say
+# which EIP-155 chain signatures bind to (1 = mainnet).
+vlpds_auth_siwe: false
+vlpds_auth_siwe_chain_id: 1
+# The EIP-4361 domain; empty = the public URL's host.
+vlpds_auth_siwe_domain: ""
 # Relays asked to crawl (requestCrawl at startup and after new activity, at
 # most once per 20 min per relay, from one node). The console's Relays page
 # stores a list in the bucket that overrides this one until reset; [] = none.

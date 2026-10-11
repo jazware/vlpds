@@ -28,6 +28,7 @@ pub mod key_rotation;
 pub mod mfa;
 pub mod moderation;
 pub mod oauth;
+pub mod owner_auth;
 pub mod passkeys;
 #[doc(hidden)]
 pub mod private_rows;
@@ -113,6 +114,9 @@ pub struct App {
     pub public_url: String,
     /// `--handle-domain` and the domains added at runtime.
     pub handle_domains: Arc<crate::handle_domains::HandleDomains>,
+    /// The pluggable owner-auth providers this node runs (Google, Apple,
+    /// SIWE), fixed at startup.
+    pub auth: Arc<owner_auth::Runtime>,
     /// Writes beyond this many in flight get a fast 503. A write's permit
     /// travels with its queued message, so it is held until its worker takes
     /// it, even if the handler is gone.
@@ -307,6 +311,7 @@ pub fn router(app: Arc<App>) -> Router {
         ))
         .merge(proxy::routes())
         .merge(oauth::routes())
+        .merge(owner_auth::web::routes())
         .merge(internal::routes())
         .merge(space_ops::internal_routes())
         .merge(match app.config.spaces {
@@ -332,6 +337,7 @@ pub fn router(app: Arc<App>) -> Router {
     ratelimits::start(&app);
     crawlers::start(&app);
     handle_domains::start(&app);
+    owner_auth::gc::spawn(app.clone());
     let r = oauth::with_dpop_layer(r, &app);
     let r = if app.config.rate_limits_enabled {
         let limiter = app.ratelimit.clone();

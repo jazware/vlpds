@@ -66,7 +66,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # K-256 signing/verification: libsecp256k1 (vendored C via cc), ~1.7x
 # faster signing and ~2.7x faster verification than RustCrypto k256.
-secp256k1 = { version = "0.33", features = ["global-context"] }
+secp256k1 = { version = "0.33", features = ["global-context", "recovery"] }
+# Sign-In with Ethereum (src/xrpc/owner_auth/providers/siwe.rs): the EIP-191
+# personal_sign digest is Keccak-256 (Ethereum's original, not SHA3-256).
+tiny-keccak = { version = "2", features = ["keccak"] }
 sha2 = "0.11"
 rand = "0.8"
 # explicit-slur handle filter (src/handle_policy.rs; the reference's regexes)

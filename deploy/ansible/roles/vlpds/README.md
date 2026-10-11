@@ -193,6 +193,22 @@ Caddy the certificates:
   `bench/obs/grafana/dashboards/`).
 - **Logs**: JSON lines on stderr, read in Loki with `{container="vlpds"} | json`.
 
+### Sign-in providers
+
+The role can enable the pluggable sign-in methods (`vlpds_auth_*` in
+`defaults/main.yml`). Each is off unless its whole configuration is set, and
+`tasks/assert.yml` refuses a half-configured one:
+
+| Method | Variables | Provider-side setup |
+|---|---|---|
+| Google | `vlpds_auth_google_client_id`, `vlpds_auth_google_client_secret` (a secret) | register `<vlpds_public_url>/auth/callback/google` as a redirect URI |
+| Apple | `vlpds_auth_apple_client_id`, `vlpds_auth_apple_team_id`, `vlpds_auth_apple_key_id`, `vlpds_auth_apple_private_key` (ES256 PEM, a secret) | register `<vlpds_public_url>/auth/callback/apple` |
+| Ethereum | `vlpds_auth_siwe`, `vlpds_auth_siwe_chain_id`, `vlpds_auth_siwe_domain` | none (no client credentials) |
+
+The two secrets are written to the node's secrets directory and passed as
+`*_FILE`, like every other secret the role handles. Nothing else is needed:
+the public URL already serves the callback paths, and a wallet signs in place.
+
 ## Backups
 
 Not built (DESIGN.md "Backups and restore"). The bucket's durability is all

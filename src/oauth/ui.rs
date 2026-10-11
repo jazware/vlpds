@@ -139,6 +139,44 @@ pub fn csp_form_post(form_action: &[String]) -> String {
     format!("{}; script-src 'sha256-{}'", csp(form_action), *AUTO_SUBMIT_HASH)
 }
 
+/// The Sign-In with Ethereum ceremony on the server-rendered page. It asks the
+/// wallet for its account, takes a challenge from this server, signs it, and
+/// lets the server finish; both calls are same-origin, hence `connect-src`.
+pub const WALLET_JS: &str = "(function(){\
+var btn=document.getElementById('vlpds-wallet');\
+if(!btn){return}\
+var eth=window.ethereum;\
+if(!eth){btn.disabled=true;btn.textContent='No Ethereum wallet found in this browser';return}\
+btn.addEventListener('click',async function(ev){\
+ev.preventDefault();\
+try{\
+var accounts=await eth.request({method:'eth_requestAccounts'});\
+var address=accounts&&accounts[0];\
+if(!address){throw new Error('no account')}\
+var started=await fetch('/auth/start',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({provider:'siwe',intent:'sign_in',address:address,requestUri:btn.dataset.requestUri,csrf:btn.dataset.csrf})});\
+var s=await started.json();\
+if(!started.ok||!s.challenge||s.challenge.kind!=='siwe'){throw new Error('start')}\
+var signature=await eth.request({method:'personal_sign',params:[s.challenge.message,address]});\
+var out=await fetch('/auth/continue?form=1',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({txn:s.txnId,step:'siwe',message:s.challenge.message,signature:signature})});\
+window.location.href=(out.url&&out.url.indexOf('/auth/')>=0)?out.url:'/account?auth=unfinished';\
+}catch(e){\
+window.location.href='/account?auth=cancelled';\
+}\
+});\
+})();";
+
+static WALLET_JS_HASH: LazyLock<String> =
+    LazyLock::new(|| base64::engine::general_purpose::STANDARD.encode(sha256(WALLET_JS)));
+
+/// A page whose only script runs the wallet ceremony.
+pub fn csp_wallet(form_action: &[String]) -> String {
+    format!("{}; connect-src 'self'; script-src 'sha256-{}'", csp(form_action), *WALLET_JS_HASH)
+}
+
+pub fn wallet_page(title: &str, body: &str) -> String {
+    page_with_script(title, body, WALLET_JS)
+}
+
 /// `response_mode=form_post`. The button is the no-script fallback.
 pub fn form_post(redirect_uri: &str, params: &[(String, String)]) -> String {
     let mut fields = String::new();
@@ -210,6 +248,46 @@ pub struct LoginForm<'a> {
     pub second: Option<Second<'a>>,
     /// The password step: also offer a passkey instead of the password.
     pub passkey: Option<PasskeyUi<'a>>,
+    /// Configured owner-auth methods, offered beside the password form.
+    pub providers: &'a [ProviderBtn<'a>],
+}
+
+/// One configured owner-auth method on a server-rendered page. A wallet needs
+/// its own page (and its own script); the rest are plain form posts.
+pub struct ProviderBtn<'a> {
+    pub id: &'a str,
+    pub label: &'a str,
+    pub wallet: bool,
+}
+
+/// The provider block, appended after the password form so it can use its own
+/// `<form>` elements.
+fn provider_buttons(ctx: &Ctx, providers: &[ProviderBtn]) -> String {
+    if providers.is_empty() {
+        return String::new();
+    }
+    let mut b = String::from("<div class=\"sep\" aria-hidden=\"true\"></div><p class=\"muted\">Or continue with</p>");
+    for p in providers {
+        if p.wallet {
+            b.push_str(&format!(
+                "<a class=\"btn wide\" href=\"/oauth/authorize/wallet?client_id={}&request_uri={}&csrf={}\">Continue with {}</a>",
+                e(&crate::oauth::util::encode_uri_component(ctx.client_id)),
+                e(&crate::oauth::util::encode_uri_component(ctx.request_uri)),
+                e(ctx.csrf),
+                e(p.label)
+            ));
+        } else {
+            b.push_str(&format!(
+                "<form method=\"post\" action=\"/oauth/authorize/sign-in\">{}\
+<input type=\"hidden\" name=\"provider\" value=\"{}\">\
+<button type=\"submit\" class=\"btn wide\">Continue with {}</button></form>",
+                hidden(ctx),
+                e(p.id),
+                e(p.label)
+            ));
+        }
+    }
+    b
 }
 
 /// What the second-factor step offers.
@@ -402,6 +480,7 @@ pub fn login(ctx: Option<&Ctx>, f: &LoginForm, csrf_only: &str) -> String {
         b.push_str(&passkey_form(&hidden_fields, f.action, pk, false));
     }
     if let (Some(c), None) = (ctx, &f.second) {
+        b.push_str(&provider_buttons(c, f.providers));
         b.push_str(&format!(
             "<p class=\"alt\">New to {}? <a href=\"{}\">Create an account</a></p>",
             e(c.server_name),

@@ -13,6 +13,8 @@
 __pycache__/
 /bench/migrate/out/
 /bench/passkeys/out/
+/bench/auth-providers/out/
+/bench/auth-providers/node_modules/
 /bench/spaces/out/
 /bench/spaces/.scratch/
 /bench/spaces/node_modules/

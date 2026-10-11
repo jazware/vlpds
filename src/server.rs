@@ -135,6 +135,8 @@ pub struct Config {
     pub mail_daily_budget: u32,
     /// How long "trust this browser" skips the second factor; 0: not offered.
     pub trusted_device_days: u32,
+    /// Pluggable owner authentication (Google, Apple, SIWE).
+    pub owner_auth: crate::xrpc::owner_auth::Config,
     /// How long a write waits for a lexicon resolution. None: off.
     pub resolve_lexicons: Option<Duration>,
     /// AT Protocol Spaces (`--spaces`; src/space). Their NSIDs are never
@@ -262,6 +264,7 @@ impl Default for Config {
         Config {
             public_url: "http://localhost:2583".into(),
             handle_domain: "vlpds.test".into(),
+            owner_auth: Default::default(),
             service_did: "did:web:localhost".into(),
             jwt_secret: DEV_JWT_SECRET.into(),
             admin_token: DEV_ADMIN_TOKEN.into(),
@@ -599,6 +602,7 @@ pub async fn build(cfg: Config) -> anyhow::Result<Arc<xrpc::App>> {
         tids: vlatproto::tid::TidClock::new(),
         public_url: cfg.public_url.clone(),
         handle_domains: Arc::new(crate::handle_domains::HandleDomains::new(&cfg.handle_domain)),
+        auth: Arc::new(xrpc::owner_auth::Runtime::new(cfg.owner_auth.clone())),
         write_permits: Arc::new(tokio::sync::Semaphore::new(cfg.max_inflight_writes)),
         read_permits: Arc::new(tokio::sync::Semaphore::new(cfg.max_queued_reads.max(1))),
         exports: Arc::new(tokio::sync::Semaphore::new(cfg.max_exports.max(1))),

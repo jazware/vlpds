@@ -524,3 +524,45 @@ edges:
   their lifetime, devices unused for 7 d and not trusted), expired trusted browsers, and revocation rows once
   every token they cover has expired. Each
   delete only goes through if the row is unchanged.
+
+## Signing in with Google, Apple or Ethereum
+
+Owner authentication is pluggable: a password and a passkey are providers too, and an external identity is
+just another way to reach a DID. Configured methods appear on the sign-in and sign-up pages beside the
+password form, and each server offers only what it is configured for.
+
+| Method | What proves the identity | Configuration |
+|---|---|---|
+| Google | An ID token from Google's authorization-code flow, with PKCE and a server-issued nonce | `--auth-google-client-id` and `--auth-google-client-secret[-file]` |
+| Apple | An ID token from Apple's `form_post` authorization; the client secret is an ES256 assertion minted from the signing key | `--auth-apple-client-id`, `--auth-apple-team-id`, `--auth-apple-key-id`, `--auth-apple-private-key-file` |
+| Ethereum | An EIP-4361 (Sign-In with Ethereum) message signed with `personal_sign` | `--auth-siwe` (no client credentials) |
+
+Register `<public-url>/auth/callback/google` (and `.../apple`) with each provider as its redirect URI. Only
+Google and Apple redirect the browser; a wallet signs in place.
+
+- Identity. A Google or Apple subject is the provider's stable `sub`; an Ethereum identity is the recovered
+  address. Nothing is matched by email. A known identity signs in, and an identity already attached to another
+  account is refused, never merged. An identity with no account here is offered a sign-up: a wallet collects
+  the fields in place, and a provider that redirects comes back to the account page for them.
+- No invented password. A provider-backed sign-up creates an account with no local password, so the credential
+  that was proved is the only way in. A wallet collects the sign-up fields on its own page; a provider that
+  redirects returns to the account page to collect them. The account can then add a passkey, an authenticator
+  app or a password, confirmed the same way any other change is.
+- Second factors are the account's, not the provider's. A provider login runs the same policy as a password
+  login — a trusted browser skips the factor, otherwise TOTP, a passkey or an emailed code is required — and
+  the session records the credential that signed in, so removing that credential ends what it signed in.
+- Every change to how the account signs in needs a fresh proof: adding or removing a passkey, new recovery
+  codes, turning the authenticator app off, linking or unlinking an identity, and deleting the account. An
+  account with a local password proves it with that password (as before); an account without one proves it with
+  a fresh sign-in on a method it does have, which the server turns into a short-lived confirmation bound to
+  that one operation. Unlinking is refused when it would remove the account's last way in, and a provider-only
+  account can delete itself with the same mailed deletion code the reference requires.
+- Scope. Ethereum sign-in covers externally-owned accounts using `personal_sign`. Smart-contract wallets
+  (EIP-1271) and mobile wallet transports are not supported, and are refused rather than silently accepted.
+- Storage. An account's provider credentials live in its own private state (`p/{did}\0authcreds`). The
+  identity-to-account claim is a global object (`{prefix}/authsub/{provider}/{hash}`), released when the
+  account is deleted. Sign-ins in flight (`auth:{id}`) and fresh-owner confirmations (`auth:grant:{id}`) are
+  short-lived owner-routed rows with their own sweep.
+- Registration is a rolling deploy. Every node must run a build with these routes before a provider is
+  enabled: an older node would proxy `/auth/*` to the AppView. Providers are enabled by configuration, so
+  enable them after the last node is upgraded.

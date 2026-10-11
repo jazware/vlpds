@@ -818,7 +818,7 @@ pub fn set_stale_claim_grace(app: &App, grace: std::time::Duration) {
 }
 
 /// (holder, version, age)
-async fn read_claim(
+pub(super) async fn read_claim(
     app: &App,
     path: &object_store::path::Path,
 ) -> XResult<Option<(String, object_store::UpdateVersion, std::time::Duration)>> {
@@ -901,7 +901,7 @@ async fn try_release_email(app: &App, email: &str, did: &str) -> XResult<()> {
     Ok(())
 }
 
-async fn delete_claim(app: &App, path: &object_store::path::Path) -> XResult<()> {
+pub(super) async fn delete_claim(app: &App, path: &object_store::path::Path) -> XResult<()> {
     match app.store.raw.delete(path).await {
         Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
         Err(e) => Err(XrpcError::from_err(e)),
@@ -1430,13 +1430,40 @@ async fn account_did_doc(app: &App, a: &Account) -> Option<J> {
 ///   repo and no firehose events until activateAccount.
 /// - A given invite code is checked and recorded even if not required.
 pub(super) async fn create_account_inner(app: &App, inp: CreateAccountIn, requester: Option<&str>) -> XResult<Account> {
-    count_signup(create_account_checked(app, inp, requester, false).await)
+    count_signup(create_account_checked(app, inp, requester, false, true).await)
+}
+
+/// The password hash for a new account. A provider-backed signup has none at
+/// all, so an empty password can never be used to sign in.
+async fn hash_new_password(password: &Option<String>) -> Result<String, state::Argon2Busy> {
+    match password {
+        Some(p) => state::try_hash_password(p).await,
+        None => Ok(String::new()),
+    }
+}
+
+/// The stale-claim grace in force on this node (tests shorten it).
+pub(super) fn claim_grace(app: &App) -> std::time::Duration {
+    std::time::Duration::from_millis(ext(app).claim_grace_ms.load(Ordering::Relaxed))
+}
+
+/// Roll back an account whose external credential could not be attached.
+pub(super) async fn delete_account_for_failed_link(app: &App, did: &str) -> XResult<()> {
+    let from = delete_from(app, did).await?;
+    finish_delete(app, did, from, "auth_link_rollback", None).await
+}
+
+/// Create an account for a verified external identity: no local password, so
+/// the credential that was proved is the only way in. Only the owner-auth
+/// coordinator calls this, and only after a provider proof.
+pub(super) async fn create_account_external(app: &App, inp: CreateAccountIn) -> XResult<Account> {
+    count_signup(create_account_checked(app, inp, None, false, false).await)
 }
 
 /// The operator's createAccount (vlpds.admin.createAccount): as a sign-up,
 /// but no invite code is needed when the server requires one.
 pub(super) async fn create_account_by_operator(app: &App, inp: CreateAccountIn) -> XResult<Account> {
-    count_signup(create_account_checked(app, inp, None, true).await)
+    count_signup(create_account_checked(app, inp, None, true, true).await)
 }
 
 fn count_signup(r: XResult<Account>) -> XResult<Account> {
@@ -1471,15 +1498,24 @@ async fn create_account_checked(
     inp: CreateAccountIn,
     requester: Option<&str>,
     operator: bool,
+    password_required: bool,
 ) -> XResult<Account> {
     if inp.plc_op.is_some() {
         return Err(invalid_request("Unsupported input: \"plcOp\""));
     }
-    let password = inp.password.ok_or_else(|| invalid_request("Password is required"))?;
-    if password.len() > NEW_PASSWORD_MAX_LENGTH {
-        return Err(invalid_request(format!(
-            "Password too long. Maximum length is {NEW_PASSWORD_MAX_LENGTH} characters."
-        )));
+    // A provider-backed signup has no local password: the external identity
+    // is the way in. Every other path (the public createAccount, the admin
+    // CLI, the OAuth page) still requires one.
+    if password_required && inp.password.as_deref().is_none_or(str::is_empty) {
+        return Err(invalid_request("Password is required"));
+    }
+    let password = inp.password.filter(|p| !p.is_empty());
+    if let Some(p) = &password {
+        if p.len() > NEW_PASSWORD_MAX_LENGTH {
+            return Err(invalid_request(format!(
+                "Password too long. Maximum length is {NEW_PASSWORD_MAX_LENGTH} characters."
+            )));
+        }
     }
     let invite = inp.invite_code.as_deref().map(str::trim).filter(|c| !c.is_empty()).map(str::to_string);
     if app.config.invite_required && invite.is_none() && !operator {
@@ -1555,7 +1591,7 @@ async fn create_account_checked(
     let (h, e, password_hash, wrapped) = tokio::join!(
         claim_handle(app, &handle, &did),
         claim_email(app, &email, &did),
-        state::try_hash_password(&password),
+        hash_new_password(&password),
         app.secrets.wrap_signing_key(&did, &key)
     );
     let (h_ok, e_ok) = (matches!(h, Ok(true)), matches!(e, Ok(true)));
@@ -2576,6 +2612,13 @@ pub(super) async fn finish_delete(
             try_release_email(app, e, did).await?;
         }
     }
+    // The external identities this account held are released, so the same
+    // Google/Apple/wallet identity can be linked to another account later.
+    if let Ok((creds, _)) = super::owner_auth::store::load_creds(app, did).await {
+        for c in &creds.list {
+            super::owner_auth::store::release_subject(app, c.provider, &c.subject, did).await;
+        }
+    }
     // revocations stay (TTL'd), so a DID that comes back (migration) doesn't
     // revive access tokens issued before; so does the credential epoch
     // (device logins and codes from before must not match a fresh account)
@@ -3443,12 +3486,24 @@ async fn confirm_totp(State(app): AppState, Auth(creds): Auth, Json(inp): Json<C
 struct DisableTotpIn {
     code: Option<String>,
     recovery_code: Option<String>,
+    #[serde(default)]
     password: String,
+    /// Or a fresh-owner confirmation, for an account without a password.
+    #[serde(default)]
+    grant: Option<String>,
 }
 
 async fn disable_totp(State(app): AppState, Auth(creds): Auth, Json(inp): Json<DisableTotpIn>) -> XResult<StatusCode> {
     let did = full_access(&creds)?;
-    super::passkeys::check_password(&app, &did, &inp.password).await?;
+    super::passkeys::confirm_owner(
+        &app,
+        &did,
+        &inp.password,
+        inp.grant.as_deref(),
+        crate::xrpc::owner_auth::flow::ACTION_DISABLE_TOTP,
+        None,
+    )
+    .await?;
     'cas: {
         let _g = crate::totp::lock(&did).await;
         for _ in 0..crate::totp::CAS_ROUNDS {

@@ -5752,3 +5752,48 @@ notable ones:
   auth on uploadBlob".
 
 No known (non-deliberate) gaps are left in that file.
+
+## Owner authentication (providers)
+
+A password and a passkey are the account's own credentials; Google, Apple and
+Sign-In with Ethereum are attached to it the same way. The subsystem is
+`src/xrpc/owner_auth` — inside `xrpc` so it reuses the account, factor, claim
+and OAuth internals without widening their visibility.
+
+Rows, all written through `App::private_cas` (see "Auth state under
+concurrency") or the same conditional object claim handles and emails use:
+
+| Routing | Name | What |
+|---|---|---|
+| `auth:{txn}` | `auth/txn` | One login in flight: provider, intent, continuation, browser binding, provider state, staged identity. 15 min. |
+| `auth:grant:{id}` | `g` | One approved sensitive operation (action, target, expiry), consumed once. 5 min. |
+| `{did}` | `authcreds` | The account's external credentials (provider, subject, label). Goes with the account. |
+| `{prefix}/authsub/{provider}/{sha256(subject)}` | — | The global claim binding one provider identity to one DID. |
+
+Invariants:
+
+- A DID becomes signed in only through the same device row a password login
+  writes (`DeviceAccount{auth_epoch, auth_cred}`), so a provider login meets
+  exactly the same second-factor policy (`oauth::start_provider_factor`) and the
+  same epoch and credential-liveness checks at code exchange and refresh.
+- `auth_cred` is an opaque reference: `pk:{hash}` for a passkey,
+  `{provider}:{hash}` for an external credential. `passkeys::still_registered`
+  dispatches on the prefix, so removing an external credential ends exactly what
+  it signed in, as removing a passkey does.
+- Attaching is staged: reserve the subject (a conditional create, taken over
+  only past the stale-claim grace and only when the holder's credential row no
+  longer names it), then write the DID's credential row. A crash between leaves
+  a reservation with no credential, which never authenticates and which the same
+  DID re-claims on retry. Unlinking deletes the credential row first, then
+  releases the claim.
+- The identity index and the account row live under different routing keys, so
+  they cannot be one write; the staged order above is what keeps a half-done
+  attach from authenticating.
+- Account deletion releases the claims the account held (`finish_delete`), and a
+  per-node sweep (`owner_auth::gc`) removes expired transactions and grants.
+- A change to how the account signs in — a passkey, the recovery codes, the
+  authenticator app, a linked identity, the account itself — is confirmed by
+  the account's own password or, for an account that has none, by a
+  fresh-owner confirmation. One function (`passkeys::confirm_owner`) is that
+  gate, so no command can invent a third way, and a provider-backed account can
+  still add a strong factor or delete itself.

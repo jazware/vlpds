@@ -4,6 +4,7 @@ import { domainOf } from '../../lib/domains'
 import { useLoad } from '../../lib/hooks'
 import { Link, navigate, useSearch } from '../../lib/router'
 import { call, setSession } from '../../lib/xrpc'
+import { ProviderSignIn } from './Providers'
 
 type Describe = { availableUserDomains: string[]; inviteCodeRequired?: boolean }
 
@@ -113,6 +114,9 @@ export function SignUp() {
                 </button>
               </div>
             </form>
+            <div className="passkey-alt">
+              <ProviderSignIn intent="sign_up" />
+            </div>
           </div>
         </div>
       </main>

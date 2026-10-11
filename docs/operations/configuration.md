@@ -257,6 +257,7 @@ has the flags the sections above don't cover.
 | Group | Flags |
 |---|---|
 | Identity | `--public-url`, `--handle-domain`, `--service-did` (`did:web:<hostname>`), `--node-id` (default `single`, keep it stable across restarts) |
+| Owner sign-in | `--auth-google-client-id` + `--auth-google-client-secret[-file]`, `--auth-apple-client-id`, `--auth-apple-team-id`, `--auth-apple-key-id`, `--auth-apple-private-key-file`, `--auth-siwe`, `--auth-siwe-chain-id` (1), `--auth-siwe-domain`. A provider is off unless its configuration is complete; half-configured, the node refuses to start. See [OAuth and 2FA](../oauth-2fa.md#signing-in-with-google-apple-or-ethereum). |
 | Listeners | `--listen` (`0.0.0.0:2583`), `--metrics-listen` (`127.0.0.1:9583`, or `app` for the app port), `--listen-backlog`, `--admin-listen` (unset by default: a second listener for operators only, see below) |
 | Operator sign-in | `--admin-proxy-header`, `--admin-proxy-from`, `--admin-operators`: a proxy in front of `--admin-listen` names the operator, and the token form is skipped. All three or none. See [Sign-in through a proxy](admin-console.md#sign-in-through-a-proxy). |
 | Peers (clusters only) | `--peer-listen`, `--peer-tls-dir`, `--advertise-url` (all three or none, see [Scaling and clustering](scaling-and-clustering.md#peer-tls)), `--peer-connections` |

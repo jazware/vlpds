@@ -75,6 +75,15 @@ _vlpds_env_base:
   VLPDS_APPVIEW: "{{ vlpds_appview }}"
   VLPDS_REPORT_SERVICE: "{{ vlpds_report_service }}"
   VLPDS_BSKY_APP_VIEW_CDN_URL_PATTERN: "{{ vlpds_appview_cdn_url_pattern }}"
+  # Sign-in providers (each off unless its configuration is complete; the two
+  # secrets go through _vlpds_env_secrets, below).
+  VLPDS_AUTH_GOOGLE_CLIENT_ID: "{{ vlpds_auth_google_client_id }}"
+  VLPDS_AUTH_APPLE_CLIENT_ID: "{{ vlpds_auth_apple_client_id }}"
+  VLPDS_AUTH_APPLE_TEAM_ID: "{{ vlpds_auth_apple_team_id }}"
+  VLPDS_AUTH_APPLE_KEY_ID: "{{ vlpds_auth_apple_key_id }}"
+  VLPDS_AUTH_SIWE: "{{ 'true' if vlpds_auth_siwe | bool else '' }}"
+  VLPDS_AUTH_SIWE_CHAIN_ID: "{{ vlpds_auth_siwe_chain_id }}"
+  VLPDS_AUTH_SIWE_DOMAIN: "{{ vlpds_auth_siwe_domain }}"
   VLPDS_CRAWLERS: "{{ vlpds_crawlers | join(',') }}"
   VLPDS_MOD_SERVICE_DID: "{{ vlpds_mod_service_did }}"
   VLPDS_RESOLVE_LEXICONS: "{{ 'true' if vlpds_resolve_lexicons | bool else '' }}"
@@ -120,6 +129,9 @@ _vlpds_env_secrets:
   - { env: VLPDS_EMAIL_API_TOKEN, name: email-api-token, content: "{{ vlpds_email_api_token }}" }
   - { env: VLPDS_MODERATION_EMAIL_API_TOKEN, name: moderation-email-api-token, content: "{{ vlpds_moderation_email_api_token }}" }
   - { env: VLPDS_RATE_LIMIT_BYPASS_KEY, name: rate-limit-bypass-key, content: "{{ vlpds_rate_limit_bypass_key }}" }
+  - { env: VLPDS_AUTH_GOOGLE_CLIENT_SECRET, name: auth-google-client-secret, content: "{{ vlpds_auth_google_client_secret }}" }
+  # The file-flag form: env + _FILE gives VLPDS_AUTH_APPLE_PRIVATE_KEY_FILE.
+  - { env: VLPDS_AUTH_APPLE_PRIVATE_KEY, name: auth-apple-private-key.p8, content: "{{ vlpds_auth_apple_private_key }}" }
 _vlpds_env_secrets_set: "{{ _vlpds_env_secrets | rejectattr('content', 'equalto', '') | list }}"
 _vlpds_env_secret_files: "{{ _vlpds_env_secrets_set | map(attribute='name') | list }}"
 _vlpds_env_secret_file_env: >-

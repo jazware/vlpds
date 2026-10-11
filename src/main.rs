@@ -87,6 +87,38 @@ struct Args {
     handle_domain: String,
     #[arg(long, env = "VLPDS_SERVICE_DID", default_value = "did:web:localhost")]
     service_did: String,
+    /// Sign in with Google: the OAuth client ID (set with the secret to
+    /// enable the provider).
+    #[arg(long, env = "VLPDS_AUTH_GOOGLE_CLIENT_ID")]
+    auth_google_client_id: Option<String>,
+    /// Sign in with Google: the OAuth client secret.
+    #[arg(long, env = "VLPDS_AUTH_GOOGLE_CLIENT_SECRET", hide_env_values = true)]
+    auth_google_client_secret: Option<String>,
+    /// File holding --auth-google-client-secret.
+    #[arg(long, env = "VLPDS_AUTH_GOOGLE_CLIENT_SECRET_FILE")]
+    auth_google_client_secret_file: Option<std::path::PathBuf>,
+    /// Sign in with Apple: the Services ID.
+    #[arg(long, env = "VLPDS_AUTH_APPLE_CLIENT_ID")]
+    auth_apple_client_id: Option<String>,
+    /// Sign in with Apple: the 10-character Team ID.
+    #[arg(long, env = "VLPDS_AUTH_APPLE_TEAM_ID")]
+    auth_apple_team_id: Option<String>,
+    /// Sign in with Apple: the Key ID of the signing key.
+    #[arg(long, env = "VLPDS_AUTH_APPLE_KEY_ID")]
+    auth_apple_key_id: Option<String>,
+    /// Sign in with Apple: file holding the ES256 `.p8` signing key (PEM).
+    #[arg(long, env = "VLPDS_AUTH_APPLE_PRIVATE_KEY_FILE")]
+    auth_apple_private_key_file: Option<std::path::PathBuf>,
+    /// Sign in with Ethereum: enable it (it needs no client credentials).
+    #[arg(long, env = "VLPDS_AUTH_SIWE")]
+    auth_siwe: bool,
+    /// Sign in with Ethereum: the EIP-155 chain id signatures bind to.
+    #[arg(long, env = "VLPDS_AUTH_SIWE_CHAIN_ID", default_value_t = 1)]
+    auth_siwe_chain_id: u64,
+    /// Sign in with Ethereum: the EIP-4361 `domain` (default: the public
+    /// URL's host).
+    #[arg(long, env = "VLPDS_AUTH_SIWE_DOMAIN")]
+    auth_siwe_domain: Option<String>,
     /// Session JWT / OAuth key-derivation secret (>= 32 bytes; dev default
     /// only with --dev-mode).
     #[arg(long, env = "VLPDS_JWT_SECRET", hide_env_values = true)]
@@ -1245,6 +1277,55 @@ fn metrics_listen(args: &Args) -> Option<String> {
     }
 }
 
+/// The pluggable owner-auth providers the flags enable. Each is off unless
+/// its configuration is complete; a half-configured provider is a startup
+/// error rather than a surprise at the first login.
+fn owner_auth_config(args: &Args) -> anyhow::Result<vlpds::xrpc::owner_auth::Config> {
+    let google_secret = match (&args.auth_google_client_secret, &args.auth_google_client_secret_file) {
+        (Some(s), _) if !s.trim().is_empty() => Some(s.trim().to_string()),
+        (_, Some(p)) => Some(
+            std::fs::read_to_string(p)
+                .map_err(|e| anyhow::anyhow!("--auth-google-client-secret-file: {e}"))?
+                .trim()
+                .to_string(),
+        ),
+        _ => None,
+    };
+    let google = match (&args.auth_google_client_id, google_secret) {
+        (None, None) => None,
+        (Some(id), Some(secret)) if !id.trim().is_empty() && !secret.is_empty() => {
+            Some(vlpds::xrpc::owner_auth::GoogleConfig::with_defaults(id.trim().to_string(), secret))
+        }
+        _ => anyhow::bail!("Sign in with Google needs both --auth-google-client-id and --auth-google-client-secret"),
+    };
+    let apple_key = match &args.auth_apple_private_key_file {
+        Some(p) => Some(std::fs::read_to_string(p).map_err(|e| anyhow::anyhow!("--auth-apple-private-key-file: {e}"))?),
+        None => None,
+    };
+    let apple = match (&args.auth_apple_client_id, &args.auth_apple_team_id, &args.auth_apple_key_id, apple_key) {
+        (None, None, None, None) => None,
+        (Some(cid), Some(team), Some(kid), Some(key)) => {
+            Some(vlpds::xrpc::owner_auth::AppleConfig::with_defaults(
+                cid.trim().to_string(),
+                team.trim().to_string(),
+                kid.trim().to_string(),
+                key,
+            ))
+        }
+        _ => anyhow::bail!(
+            "Sign in with Apple needs --auth-apple-client-id, --auth-apple-team-id, --auth-apple-key-id and --auth-apple-private-key-file"
+        ),
+    };
+    let siwe = args.auth_siwe.then(|| vlpds::xrpc::owner_auth::SiweConfig {
+        chain_id: args.auth_siwe_chain_id,
+        domain: args.auth_siwe_domain.clone().filter(|d| !d.trim().is_empty()),
+        uri: None,
+    });
+    let cfg = vlpds::xrpc::owner_auth::Config { google, apple, siwe, fetch: None, dev_mode: args.dev_mode };
+    cfg.validate(&args.public_url)?;
+    Ok(cfg)
+}
+
 /// An unset secret outside dev mode is refused by `Config::check_secrets`.
 fn secret(v: &Option<String>, dev_mode: bool, dev_default: &str) -> String {
     match v {
@@ -1473,6 +1554,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
     let cfg = Config {
         public_url: args.public_url.clone(),
         handle_domain: args.handle_domain.clone(),
+        owner_auth: owner_auth_config(&args)?,
         service_did: args.service_did.clone(),
         jwt_secret: secret(&args.jwt_secret, args.dev_mode, server::DEV_JWT_SECRET),
         admin_token: secret(&args.admin_token, args.dev_mode, server::DEV_ADMIN_TOKEN),

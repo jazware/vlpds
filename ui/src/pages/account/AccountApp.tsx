@@ -16,6 +16,9 @@ import { Blobs } from './Blobs'
 import { Export, Preferences } from './Data'
 import { Danger } from './Danger'
 import { SignUp } from './SignUp'
+import { ProviderSignIn, ProviderSignup } from './Providers'
+import { finishPendingReturn } from './Providers'
+import { redeem } from '../../lib/auth'
 
 const NAV = [
   { to: '/account', label: 'Overview' },
@@ -39,6 +42,40 @@ function SpacesCallback() {
 export function AccountApp({ path }: { path: string }) {
   const s = useSession()
   const p = path.replace(/\/+$/, '') || '/account'
+  // A provider that redirects leaves a proved identity for the sign-up page.
+  const params = new URLSearchParams(location.search)
+  const signupTxn = params.get('auth') === 'signup' ? params.get('t') : null
+  // A provider round trip can return here: redeem a finished sign-in, or
+  // finish the link or confirmation the browser left for.
+  useEffect(() => {
+    const q = new URLSearchParams(location.search)
+    const auth = q.get('auth')
+    if (!auth) return
+    const clean = () => history.replaceState(null, '', location.pathname)
+    if (auth === 'complete') {
+      void redeem()
+        .then((session) => {
+          if (session) setSession(session)
+          clean()
+        })
+        .catch(clean)
+      return
+    }
+    // The sign-up page needs its transaction id, so leave the URL alone for it.
+    if (auth === 'signup') return
+    if (auth === 'pending') {
+      const t = q.get('t')
+      const step = q.get('step')
+      if (t && (step === 'link' || step === 'reauth')) {
+        void finishPendingReturn(t, step, s?.accessJwt ?? '').catch(() => {})
+      }
+      clean()
+      navigate('/account/security', { replace: true })
+      return
+    }
+    clean()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   // the Spaces section's OAuth session lives only while the section is open
   useEffect(() => {
     if (p !== ACCOUNT_CALLBACK_PATH && !p.startsWith('/account/spaces') && holdsSession()) void disconnect()
@@ -46,6 +83,7 @@ export function AccountApp({ path }: { path: string }) {
   if (p === ACCOUNT_CALLBACK_PATH) return <SpacesCallback />
   if (p === '/account/reset') return <PasswordReset />
   if (p === '/account/signup' && !s) return <SignUp />
+  if (signupTxn && !s) return <ProviderSignup txn={signupTxn} />
   if (!s) return <SignIn />
   return <SignedIn p={p} />
 }
@@ -317,6 +355,11 @@ function SignIn() {
               <p className="small muted passkey-alt">
                 Passkeys are off on {location.hostname}: {otherRp ? `they belong to ${otherRp}, the public URL's host.` : 'an IP address can’t hold them. Use a hostname such as localhost.'}
               </p>
+            )}
+            {step === 'password' && (
+              <div className="passkey-alt">
+                <ProviderSignIn />
+              </div>
             )}
             {step === 'password' && (
               <p className="alt">

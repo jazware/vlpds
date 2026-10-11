@@ -188,6 +188,21 @@
       on the handle domain's zone (a secret: the inventory's sops file)
     quiet: true
 
+- name: The sign-in providers have what they need
+  ansible.builtin.assert:
+    that:
+      - (vlpds_auth_google_client_id | length > 0) == (vlpds_auth_google_client_secret | length > 0)
+      - (vlpds_auth_apple_client_id | length == 0) or
+        (vlpds_auth_apple_team_id | length > 0 and vlpds_auth_apple_key_id | length > 0 and vlpds_auth_apple_private_key | length > 0)
+      - (not (vlpds_auth_siwe | bool)) or (vlpds_auth_siwe_chain_id | int > 0)
+    fail_msg: >-
+      A sign-in provider is configured as a whole: vlpds_auth_google_client_id with
+      vlpds_auth_google_client_secret; vlpds_auth_apple_client_id with
+      vlpds_auth_apple_team_id, vlpds_auth_apple_key_id and vlpds_auth_apple_private_key;
+      and a positive vlpds_auth_siwe_chain_id when vlpds_auth_siwe is on. A
+      half-configured provider makes vlpds refuse to start.
+    quiet: true
+
 - name: Clustering has what it needs
   ansible.builtin.assert:
     that:
