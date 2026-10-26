@@ -49,6 +49,7 @@ pub mod server;
 pub mod space;
 pub mod state;
 pub mod stats;
+pub mod theme;
 pub mod totals;
 pub mod totp;
 pub mod webauthn;

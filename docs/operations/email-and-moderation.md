@@ -70,6 +70,9 @@ edges:
 | `--email-disable-confirmation-link` | `PDS_EMAIL_DISABLE_CONFIRMATION_LINK` | drops the bsky.app "click here" link |
 | `--mail-daily-budget` | | account mails per UTC day for the whole cluster (default 900). Keep it under the provider's daily quota ([Mail budgets](#mail-budgets)) |
 
+A [theme](theming.md) set at runtime takes over the branding flags field by field: its name, logo,
+light primary color and home link win where it sets them, and the flags apply where it doesn't.
+
 - A URL without its address, or the reverse, fails startup, and so do both URLs for one mailer.
   With neither, mail is logged (recipient, subject, purpose) and not sent. Sign-up still works, but
   nobody receives codes. In `--dev-mode` every mail is also kept in the node's dev mailbox, which

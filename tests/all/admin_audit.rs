@@ -392,6 +392,14 @@ async fn every_audited_admin_write_names_its_operator() {
                 assert_eq!(e[0]["reason"], "methods first, accounts later");
                 assert_eq!(e[0]["detail"], json!({"version": r["version"], "changes": 1}));
             }
+            "vlpds.admin.putTheme" => {
+                let v = s.xrpc.get("vlpds.admin.getTheme", &[], &Auth::Admin).await.ok()["version"].clone();
+                let body = json!({"theme": {"name": "Audited"}, "ifVersion": v, "note": "rebrand"});
+                let (r, e) = audited(&s, "theme.put", 1, "admin", post(&s, nsid, body)).await;
+                assert_eq!(e[0]["subject"], other("config", "theme"));
+                assert_eq!(e[0]["reason"], "rebrand");
+                assert_eq!(e[0]["detail"], json!({"version": r["version"], "changes": ["name"]}));
+            }
             other => panic!("{other} is in AUDITED with no case here: add one"),
         }
     }
