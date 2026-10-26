@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { DomainAffix, ErrorNotice, Field, Notice, Spinner, Topbar } from '../../components/ui'
+import { BrandFooter, DomainAffix, ErrorNotice, Field, Notice, Spinner, Topbar } from '../../components/ui'
 import { domainOf } from '../../lib/domains'
 import { useLoad } from '../../lib/hooks'
 import { Link, navigate, useSearch } from '../../lib/router'
@@ -115,6 +115,7 @@ export function SignUp() {
             </form>
           </div>
         </div>
+        <BrandFooter />
       </main>
     </>
   )

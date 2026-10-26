@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 // The console's information architecture: one entry per sidebar item, in order. `key` is the
 // letter after `g`; `aliases` are older paths that still land in the section.
 
-export type SectionId = 'overview' | 'nodes' | 'storage' | 'firehose' | 'accounts' | 'moderation' | 'limits' | 'domains' | 'spaces' | 'mail' | 'signin' | 'appview' | 'config'
+export type SectionId = 'overview' | 'nodes' | 'storage' | 'firehose' | 'accounts' | 'moderation' | 'limits' | 'domains' | 'spaces' | 'mail' | 'signin' | 'theme' | 'appview' | 'config'
 
 export type Section = { id: SectionId; label: string; short?: string; key: string; group: '' | 'Cluster' | 'People' | 'System'; path: string; aliases?: string[]; icon: ReactNode; alpha?: boolean }
 
@@ -152,6 +152,22 @@ export const SECTIONS: Section[] = [
       <>
         <rect x="1.5" y="1.5" width="8" height="13" rx="1.5" {...s} />
         <path d="M6 8h8M11.5 5.5 14 8l-2.5 2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      </>,
+    ),
+  },
+  {
+    id: 'theme',
+    label: 'Theme',
+    key: 't',
+    group: 'System',
+    path: '/admin/theme',
+    aliases: ['/admin/branding'],
+    icon: svg(
+      <>
+        <path d="M8 1.5a6.5 6.5 0 1 0 0 13c1 0 1.5-.6 1.5-1.4 0-1.1-1-1.4-1-2.3 0-.8.7-1.3 1.6-1.3h1.6c1.6 0 2.8-1.2 2.8-2.9C14.5 3.9 11.6 1.5 8 1.5Z" {...s} />
+        <circle cx="5" cy="6" r="1" fill="currentColor" />
+        <circle cx="8" cy="4.3" r="1" fill="currentColor" />
+        <circle cx="11" cy="6" r="1" fill="currentColor" />
       </>,
     ),
   },

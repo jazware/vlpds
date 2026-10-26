@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type JSX } from 'react'
-import { ErrorNotice, Field, Loading, Notice, Spinner, Topbar } from '../../components/ui'
+import { BrandFooter, ErrorNotice, Field, Loading, Notice, Spinner, Topbar } from '../../components/ui'
 import { useLoad, useSession } from '../../lib/hooks'
 import { Link, match, navigate, syncRoute, useSearch } from '../../lib/router'
 import { acall, call, setSession, signOut, XrpcError, errText } from '../../lib/xrpc'
@@ -98,6 +98,7 @@ function SignedIn({ p }: { p: string }) {
         </aside>
         <main className="content" id="main">
           {page}
+          <BrandFooter />
         </main>
       </div>
     </>
@@ -361,6 +362,7 @@ function SignIn() {
             )}
           </div>
         </div>
+        <BrandFooter />
       </main>
     </>
   )
@@ -464,6 +466,7 @@ export function PasswordReset() {
             )}
           </div>
         </div>
+        <BrandFooter />
       </main>
     </>
   )
