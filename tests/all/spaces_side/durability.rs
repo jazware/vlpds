@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use vlpds::space::commit::{self, SignedCommit};
+use vlpds::space::commit::{self, Commit};
 use vlpds::space::lthash::LtHash;
 
 const SHARDS: u32 = 4;
@@ -101,7 +101,7 @@ pub(super) async fn records(sc: &SpaceClient, space: &str, ctx: &str) -> Records
     }
 }
 
-pub(super) async fn latest(sc: &SpaceClient, space: &str, ctx: &str) -> SignedCommit {
+pub(super) async fn latest(sc: &SpaceClient, space: &str, ctx: &str) -> Commit {
     let r = sc.get("com.atproto.space.getLatestCommit", &[("space", space), ("repo", sc.did.as_str())]).await;
     assert_eq!(r.status, 200, "{ctx}: getLatestCommit: {}", r.text());
     signed_commit(&r.json["commit"])
@@ -109,7 +109,7 @@ pub(super) async fn latest(sc: &SpaceClient, space: &str, ctx: &str) -> SignedCo
 
 /// listRepoOps from empty to the head with `credential`: every op and the
 /// commit of the last page.
-pub(super) async fn replay(sc: &SpaceClient, space: &str, credential: &str, ctx: &str) -> (Vec<J>, SignedCommit) {
+pub(super) async fn replay(sc: &SpaceClient, space: &str, credential: &str, ctx: &str) -> (Vec<J>, Commit) {
     let (mut ops, mut cursor) = (Vec::new(), None::<String>);
     let base = sc.srv.base.clone();
     for _ in 0..10_000 {
@@ -139,7 +139,7 @@ pub(super) async fn consistent(
     space: &str,
     replay_too: bool,
     ctx: &str,
-) -> (Records, SignedCommit) {
+) -> (Records, Commit) {
     let recs = records(sc, space, ctx).await;
     let c = latest(sc, space, ctx).await;
     let mut set = LtHash::default();
@@ -157,7 +157,7 @@ pub(super) async fn consistent(
             fold(&mut set, op);
         }
         assert!(commit::matches(&set, &rc), "{ctx}: {} op(s) replay to another hash than the commit's", ops.len());
-        assert_eq!(rc.hash, c.hash, "{ctx}: listRepoOps and getLatestCommit disagree");
+        assert_eq!(rc.data, c.data, "{ctx}: listRepoOps and getLatestCommit disagree");
     }
     let q = [("did", sc.did.as_str()), ("space", space)];
     let chk = s.xrpc.get("vlpds.admin.checkSpace", &q, &Auth::Admin).await;
@@ -170,7 +170,7 @@ pub(super) async fn consistent(
 /// A space read/host call with `credential`, signed for `audience`.
 pub(super) async fn signed_post(sc: &SpaceClient, nsid: &str, body: J, credential: &str, audience: &str) -> Resp {
     let mut rb = sc.srv.http.post(format!("{}/xrpc/{nsid}", sc.srv.base));
-    for (k, v) in sc.holder.headers(&format!("Atproto-Space {credential}"), Some(audience)) {
+    for (k, v) in sc.holder.headers(credential, audience) {
         rb = rb.header(k, v);
     }
     crate::common::spaces::resp(rb.json(&body).send().await.unwrap()).await
@@ -311,7 +311,7 @@ async fn kill_around_segment_put(stage: Stage, act: Act) -> (Option<u16>, bool) 
     assert_eq!(after.len(), before.len() + if whole { 2 } else { 0 }, "{ctx}: records");
     match whole {
         true => assert!(c.rev > head.rev, "{ctx}: the batch landed but the head is still {}", head.rev),
-        false => assert_eq!((c.rev.as_str(), &c.hash), (head.rev.as_str(), &head.hash), "{ctx}: the head moved"),
+        false => assert_eq!((c.rev.as_str(), &c.data), (head.rev.as_str(), &head.data), "{ctx}: the head moved"),
     }
 
     // the restarted head takes writes on from where it is
@@ -414,9 +414,9 @@ async fn outbox_survives_a_kill(resume: Resume) {
     assert_eq!(n.body["space"], json!(space));
     assert_eq!(n.body["repo"], json!(sc.did));
     assert_eq!(n.body["repoRev"], json!(head.rev), "{resume:?}: not the newest rev");
-    assert_eq!(bytes_field(&n.body["hash"]), head.hash, "{resume:?}: not the newest hash");
+    assert_eq!(bytes_field(&n.body["data"]), head.data, "{resume:?}: not the newest hash");
     assert_eq!(n.claims["iss"], json!(sc.did));
-    assert_eq!(n.claims["aud"], json!(format!("{}#atproto_space_host", authority.did)));
+    assert_eq!(n.claims["aud"], json!(format!("{}#atproto_pds", authority.did)));
     assert_eq!(n.claims["lxm"], json!(NOTIFY));
 
     // the new incarnation's outbox carries on, and the old row stays delivered
@@ -561,7 +561,7 @@ async fn takeover_mid_burst(authority_on_victim: bool) {
         let repos = list_repos(&auth, &space, &cred).await.unwrap_or_default();
         let rows = by_did(&repos);
         let caught_up = heads.iter().all(|(did, c)| {
-            rows.get(did).is_some_and(|r| r["repoRev"] == json!(c.rev) && bytes_field(&r["hash"]) == c.hash)
+            rows.get(did).is_some_and(|r| r["repoRev"] == json!(c.rev) && bytes_field(&r["data"]) == c.data)
         });
         if caught_up {
             break;
@@ -636,8 +636,8 @@ async fn takeover_mid_burst_with_the_authority_on_the_victim() {
 
 /// A remote writer's notifyWrite to a vlpds authority, as its PDS sends it.
 async fn notify(n: &OneNode, writer: &StubDid, rev: &str, hash: &[u8]) -> Resp {
-    let jwt = writer.service_jwt(&format!("{}#atproto_space_host", n.sc.did), NOTIFY);
-    let body = json!({"space": n.space, "repo": writer.did, "repoRev": rev, "hash": b64(hash)});
+    let jwt = writer.service_jwt(&format!("{}#atproto_pds", n.sc.did), NOTIFY);
+    let body = json!({"space": n.space, "repo": writer.did, "repoRev": rev, "data": b64(hash)});
     let r = n.sc.srv.http.post(format!("{}/xrpc/{NOTIFY}", n.front.url)).bearer_auth(jwt).json(&body).send().await;
     crate::common::spaces::resp(r.unwrap()).await
 }
@@ -673,7 +673,7 @@ async fn inbound_notifies_survive_a_kill_after_their_200() {
     assert_eq!(after.len(), rows.len(), "listRepos repeats a repo: {rows:?}");
     let w = &after[&writer.did];
     assert_eq!(w["repoRev"], json!(revs[2]), "the acked notify is gone: {w}");
-    assert_eq!(bytes_field(&w["hash"]), hashes[2]);
+    assert_eq!(bytes_field(&w["data"]), hashes[2]);
     let s2 = w["spaceRev"].as_str().unwrap().to_string();
     assert!(s2 > s1 && s2 > own, "spaceRev {s2} after {s1} and {own}");
     assert_eq!(after[&n.sc.did]["spaceRev"], json!(own), "the authority's own row moved");

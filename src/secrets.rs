@@ -94,6 +94,8 @@ pub enum Purpose {
     PlcRotationKey,
     /// A sign-in provider's client secret or key. Subject: the provider id.
     SignInProviderSecret,
+    /// An account's `#atproto_kem` key (Spaces). Subject: the DID.
+    KemKey,
 }
 
 impl Purpose {
@@ -104,6 +106,7 @@ impl Purpose {
             Purpose::Totp => "totp-secret",
             Purpose::PlcRotationKey => "plc-rotation-key",
             Purpose::SignInProviderSecret => "sign-in-provider-secret",
+            Purpose::KemKey => "space-kem-key",
         }
     }
 }

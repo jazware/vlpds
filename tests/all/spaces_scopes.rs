@@ -670,7 +670,7 @@ async fn space_rate_buckets_trip() {
     signed_read(&s, &a, &space, &a.did, &c2).await.ok();
 
     // space-notify-in: per writer (b's notifyWrite reaching its authority)
-    let notify = json!({"space": space, "repo": b.did, "repoRev": "3l2cqzy5yf22a", "hash": {"$bytes": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}});
+    let notify = json!({"space": space, "repo": b.did, "repoRev": "3l2cqzy5yf22a", "data": {"$bytes": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}});
     let jwt = service_jwt(&s, &b.did, &a.did, "com.atproto.space.notifyWrite").await;
     let first = bearer_post(&s, "com.atproto.space.notifyWrite", &jwt, notify.clone()).await;
     assert_ne!(first.status, 429, "{first:?}");

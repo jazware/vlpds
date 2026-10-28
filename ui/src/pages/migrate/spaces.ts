@@ -108,9 +108,10 @@ export async function copySpace(
   onBlob: (done: number) => void,
 ): Promise<SpaceMove> {
   if (p.empty) return { uri: p.uri, state: 'empty' }
-  let car: Blob
+  // a STAR archive (the October 22 alpha), passed on as is
+  let archive: Blob
   try {
-    car = await retry(
+    archive = await retry(
       () => old.call<Response>('com.atproto.space.getRepo', { params: { space: p.uri, repo: old.did }, raw: true }).then((r) => r.blob()),
       onPause,
     )
@@ -118,7 +119,7 @@ export async function copySpace(
     if (notFound(e)) return { uri: p.uri, state: 'empty' }
     throw e
   }
-  const out = await retry(() => here.call('vlpds.space.importRepo', { params: { space: p.uri }, body: car, type: 'application/vnd.ipld.car' }), onPause)
+  const out = await retry(() => here.call('vlpds.space.importRepo', { params: { space: p.uri }, body: archive, type: 'application/octet-stream' }), onPause)
   let n = 0
   for (const cid of p.blobs) {
     await retry(async () => {

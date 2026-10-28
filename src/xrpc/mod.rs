@@ -376,7 +376,8 @@ impl tower_http::compression::predicate::Predicate for JsonOrCar {
     }
 }
 
-const CORS_EXPOSE: &str = "DPoP-Nonce, WWW-Authenticate, atproto-repo-rev, atproto-content-labelers, \
+const CORS_EXPOSE: &str =
+    "DPoP-Nonce, WWW-Authenticate, atproto-repo-rev, atproto-content-labelers, Atproto-Space-Mac, \
 RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset, RateLimit-Policy, Retry-After";
 /// When a preflight doesn't name any.
 const CORS_ALLOW_HEADERS: &str = "Authorization, Content-Type, DPoP, atproto-proxy, \
@@ -548,15 +549,17 @@ impl App {
 
     /// (did, genesis op), re-signed until the DID lands in a partition this
     /// node owns (the hedged signature makes every attempt a new DID).
+    /// `kem_did_key`: the account's `#atproto_kem` key, published with it.
     pub fn mint_plc_did(
         &self,
         plc: &crate::plc::Plc,
         signing_did_key: &str,
         handle: &str,
         recovery_key: Option<&str>,
+        kem_did_key: Option<&str>,
     ) -> Result<(String, serde_json::Value), XrpcError> {
         for _ in 0..10_000 {
-            let (did, op) = plc.genesis(signing_did_key, handle, &self.public_url, recovery_key)?;
+            let (did, op) = plc.genesis(signing_did_key, handle, &self.public_url, recovery_key, kem_did_key)?;
             if self.cluster.is_none() || self.partitions.for_key(&did).is_some() {
                 return Ok((did, op));
             }

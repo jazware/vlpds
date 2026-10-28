@@ -22,7 +22,7 @@ use crate::common::*;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
-use vlpds::space::commit::{self, CommitCtx, SignedCommit};
+use vlpds::space::commit::{self, Commit};
 use vlpds::space::lthash::LtHash;
 use vlpds::space::token::space_host_aud;
 
@@ -231,61 +231,29 @@ async fn recovers_full_state_via_list_records() {
 // getRepo
 // ---------------------------------------------------------------------------
 
-fn cbor_bytes(v: &Value, k: &str) -> Vec<u8> {
-    match v.get(k) {
-        Some(Value::Bytes(b)) => b.clone(),
-        other => panic!("commit {k}: {other:?}"),
-    }
-}
-
-/// `verifyRepoCarFull`: the commit verifies under the author's key, the
-/// index folds to its hash; the record blocks (none with excludeValues)
-/// follow in index order. Returns (commit, index paths, record blocks).
-fn verify_repo_car(car: &[u8], space: &str, author: &str, did_key: &str) -> (SignedCommit, Vec<String>, Vec<Value>) {
-    let (roots, blocks) = vlatproto::car::read_car(car).expect("a CAR");
-    assert_eq!(roots.len(), 2, "roots: the signed commit and the index");
-    assert!(blocks.len() >= 2 && blocks[0].0 == roots[0] && blocks[1].0 == roots[1]);
-    for (c, b) in &blocks {
-        assert!(vlatproto::car::block_matches(c, b), "block {c} doesn't hash");
-    }
-    let c = Value::decode(blocks[0].1).expect("commit block");
-    let rev = match c.get("rev") {
-        Some(Value::Text(r)) => r.clone(),
-        other => panic!("commit rev: {other:?}"),
-    };
-    let sc = SignedCommit {
-        ver: match c.get("ver") {
-            Some(Value::Int(v)) => *v,
-            other => panic!("commit ver: {other:?}"),
-        },
-        hash: cbor_bytes(&c, "hash"),
-        ikm: cbor_bytes(&c, "ikm"),
-        sig: cbor_bytes(&c, "sig"),
-        mac: cbor_bytes(&c, "mac"),
-        rev,
-    };
-    assert!(commit::verify(&sc, &CommitCtx { space, author, rev: &sc.rev }, did_key), "commit signature");
-    let Ok(Value::Map(index)) = Value::decode(blocks[1].1) else { panic!("index isn't a map") };
+/// `verifyRepoStarFull` past the MAC (which `Cred` checks): the commit
+/// names the repo and space, the records come in bytewise path order and
+/// fold to its data. Returns (commit, paths, records).
+fn verify_repo_star(star: &[u8], space: &str, repo: &str) -> (Commit, Vec<String>, Vec<Value>) {
+    let p = vlpds::space::star::parse(star).expect("a STAR archive");
+    assert_eq!((p.commit.space.as_str(), p.commit.repo.as_str()), (space, repo), "the archive's commit");
     let mut set = LtHash::default();
-    let mut order = Vec::new();
-    for (path, link) in &index {
-        let Value::Link(cid) = link else { panic!("index {path} isn't a link") };
+    for (path, b) in &p.records {
         let (coll, rkey) = path.split_once('/').unwrap();
-        set.add(&commit::element(coll, rkey, &cid.to_string()));
-        order.push(cid.to_string());
+        set.add(&commit::element(coll, rkey, &vlatproto::cid::Cid::dag_cbor(b).to_string()));
     }
-    assert!(commit::matches(&set, &sc), "the index doesn't fold to the commit");
-    let records: Vec<Value> = blocks[2..].iter().map(|(_, b)| Value::decode(b).unwrap()).collect();
-    if !records.is_empty() {
-        let got: Vec<String> = blocks[2..].iter().map(|(c, _)| c.to_string()).collect();
-        assert_eq!(got, order, "record blocks in index order");
-    }
-    (sc, index.iter().map(|(p, _)| p.clone()).collect(), records)
+    assert!(commit::matches(&set, &p.commit), "the records don't fold to the commit");
+    let paths: Vec<String> = p.records.iter().map(|(k, _)| k.clone()).collect();
+    let mut sorted = paths.clone();
+    sorted.sort();
+    assert_eq!(paths, sorted, "records in bytewise path order");
+    let records = p.records.iter().map(|(_, b)| Value::decode(b).unwrap()).collect();
+    (p.commit, paths, records)
 }
 
-/// getRepo: "serves a verifiable CAR for full-state recovery"
+/// getRepo: "serves a verifiable STAR archive for full-state recovery"
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn get_repo_serves_a_verifiable_car() {
+async fn get_repo_serves_a_verifiable_archive() {
     let net = Net::new(2).await;
     let (alice, bob, carol) = (net.actor("alice", 0).await, net.actor("bob", 1).await, net.actor("carol", 2).await);
     let space = net.create_space(&alice, SpaceOpts { members: &[&bob, &carol], ..Default::default() }).await;
@@ -299,12 +267,11 @@ async fn get_repo_serves_a_verifiable_car() {
     let cred = net.credential_for(&carol, &space).await;
     let r = cred.get(&net.pds[1].url, "com.atproto.space.getRepo", &[("space", &space), ("repo", &bob.did)]).await;
     assert_eq!(r.status, 200, "{}", r.text());
-    assert!(r.header("content-type").unwrap_or_default().contains("application/vnd.ipld.car"));
-    let key = did_key(&net.pds[1], &bob.did).await;
-    let (sc, paths, records) = verify_repo_car(&r.body, &space, &bob.did, &key);
+    assert!(r.header("content-type").unwrap_or_default().contains("application/octet-stream"));
+    let (sc, paths, records) = verify_repo_star(&r.body, &space, &bob.did);
     assert_eq!((paths.len(), records.len()), (4, 4));
     let (rev, hash) = repo_state(&bob, &space).await.unwrap();
-    assert_eq!((sc.rev, sc.hash), (rev, hash));
+    assert_eq!((sc.rev, sc.data), (rev, hash));
     let mut texts: Vec<String> = paths
         .iter()
         .zip(&records)
@@ -318,22 +285,32 @@ async fn get_repo_serves_a_verifiable_car() {
     assert_eq!(texts, ["car 0", "car 1"]);
 }
 
-/// getRepo: "serves an index-only CAR with excludeValues"
+/// getRepo: "requires a MAC request with a space credential": without
+/// `Atproto-Space-Want-Mac`, or with another type's, BadSpaceMac.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn get_repo_serves_an_index_only_car_with_exclude_values() {
+async fn get_repo_requires_a_mac_request_with_a_credential() {
     let net = Net::new(2).await;
     let (alice, bob, carol) = (net.actor("alice", 0).await, net.actor("bob", 1).await, net.actor("carol", 2).await);
     let space = net.create_space(&alice, SpaceOpts { members: &[&bob, &carol], ..Default::default() }).await;
-    for i in 0..2 {
-        write(&bob, &space, W::new().rkey(&format!("idx-{i}")).text(&format!("idx {i}"))).await.ok();
-    }
+    write(&bob, &space, W::new()).await.ok();
     let cred = net.credential_for(&carol, &space).await;
-    let q = [("space", space.as_str()), ("repo", bob.did.as_str()), ("excludeValues", "true")];
-    let r = cred.get(&net.pds[1].url, "com.atproto.space.getRepo", &q).await;
-    assert_eq!(r.status, 200, "{}", r.text());
-    let key = did_key(&net.pds[1], &bob.did).await;
-    let (_, paths, records) = verify_repo_car(&r.body, &space, &bob.did, &key);
-    assert_eq!((paths.len(), records.len()), (2, 0));
+    let q = [("space", space.as_str()), ("repo", bob.did.as_str())];
+    let base = &net.pds[1].url;
+    let mut h = cred.headers(&bob.did);
+    h.push((vlpds::space::mac::WANT_MAC_HEADER.into(), "type=\"atproto-space-repo\", ver=1".into()));
+    raw_get(base, "com.atproto.space.getRepo", &q, &h).await.err(400, "BadSpaceMac");
+    let (other_type, _) =
+        crate::common::spaces::want_mac(&reqwest::Client::new(), base, &bob.did, vlpds::space::mac::RECORD_MAC_TYPE)
+            .await;
+    let mut h = cred.headers(&bob.did);
+    h.push((vlpds::space::mac::WANT_MAC_HEADER.into(), other_type));
+    raw_get(base, "com.atproto.space.getRepo", &q, &h).await.err(400, "BadSpaceMac");
+    // signed but asking for none
+    let mut rb = reqwest::Client::new().get(crate::common::spaces::xrpc_url(base, "com.atproto.space.getRepo", &q));
+    for (k, v) in cred.headers(&bob.did) {
+        rb = rb.header(k, v);
+    }
+    crate::common::spaces::resp(rb.send().await.unwrap()).await.err(400, "BadSpaceMac");
 }
 
 /// getRepo: "refuses a CAR without a credential for that space"
@@ -397,7 +374,7 @@ async fn records_a_writer_from_notify_write() {
     let entry = repos["repos"].as_array().unwrap().iter().find(|r| r["did"] == json!(bob.did)).unwrap().clone();
     let (rev, hash) = repo_state(&bob, &space).await.unwrap();
     assert_eq!(entry["repoRev"], json!(rev));
-    assert_eq!(bytes_field(&entry["hash"]), hash);
+    assert_eq!(bytes_field(&entry["data"]), hash);
 }
 
 /// writer set: "records a writer admitted by public write policy, who was
@@ -577,25 +554,28 @@ async fn chains_forwarded_notifications() {
     assert_eq!(repos.iter().map(|r| r["spaceRev"].as_str().unwrap()).collect::<BTreeSet<_>>().len(), 3);
 }
 
-/// space catch-up: "resolves a dedicated space host and falls back only when
-/// it is absent". Observed at the hosts: a notify goes to
-/// `#atproto_space_host` when the authority names one, to `#atproto_pds`
-/// when it doesn't, and nowhere when the space host entry is unusable.
+/// space authority resolution: "resolves the space host as the authority's
+/// PDS". Observed at the hosts: a notify goes to `#atproto_pds`, addressed
+/// to `{authority}#atproto_pds`; a `#atproto_space_host` entry is ignored.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn notify_resolves_the_space_host_and_falls_back_to_the_pds() {
+async fn notify_resolves_the_space_host_as_the_pds() {
     let net = Net::new(0).await;
     let writer = net.actor("writer", 0).await;
-    let dedicated = MockService::spawn(&[("atproto_space_host", "AtprotoSpaceHost")]).await;
     let pds_only = MockService::spawn(&[("atproto_pds", "AtprotoPersonalDataServer")]).await;
-    for host in [&dedicated, &pds_only] {
-        let space = format!("at://{}/space/{TEST_SPACE_TYPE}/resolve", host.did);
-        write(&writer, &space, W::new()).await.ok();
-        let (rev, _) = repo_state(&writer, &space).await.unwrap();
-        let got = host.await_calls(NOTIFY_WRITE, 1, Duration::from_secs(10)).await.expect("notified");
-        assert_eq!(got[0].body["repoRev"], json!(rev));
-        let claims = jwt_claims(got[0].auth.as_deref().unwrap().trim_start_matches("Bearer "));
-        assert_eq!(claims["aud"], json!(space_host_aud(&host.did)));
-    }
+    let space = format!("at://{}/space/{TEST_SPACE_TYPE}/resolve", pds_only.did);
+    write(&writer, &space, W::new()).await.ok();
+    let (rev, _) = repo_state(&writer, &space).await.unwrap();
+    let got = pds_only.await_calls(NOTIFY_WRITE, 1, Duration::from_secs(10)).await.expect("notified");
+    assert_eq!(got[0].body["repoRev"], json!(rev));
+    let claims = jwt_claims(got[0].auth.as_deref().unwrap().trim_start_matches("Bearer "));
+    assert_eq!(claims["aud"], json!(format!("{}#atproto_pds", pds_only.did)));
+    assert_eq!(space_host_aud(&pds_only.did), format!("{}#atproto_pds", pds_only.did));
+    // an authority naming only a dedicated space host has no space host
+    let dedicated = MockService::spawn(&[("atproto_space_host", "AtprotoSpaceHost")]).await;
+    let space = format!("at://{}/space/{TEST_SPACE_TYPE}/resolve", dedicated.did);
+    write(&writer, &space, W::new()).await.ok();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(dedicated.calls_to(NOTIFY_WRITE).is_empty(), "a notify went to #atproto_space_host");
 }
 
 /// space catch-up: "retries the latest state after delivery failure and
@@ -624,7 +604,7 @@ async fn retries_the_latest_state_after_failure_and_restart() {
         host.await_calls(NOTIFY_WRITE, refused + 1, Duration::from_secs(15)).await.expect("resent after restart");
     let last = calls.last().unwrap();
     assert_eq!(last.body["repoRev"], json!(rev));
-    assert_eq!(bytes_field(&last.body["hash"]), hash);
+    assert_eq!(bytes_field(&last.body["data"]), hash);
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(host.calls_to(NOTIFY_WRITE).len(), refused + 1, "delivered once");
 }
@@ -641,7 +621,7 @@ async fn notify(net: &Net, signer: &SpaceClient, aud: Option<&str>, body: J) -> 
 }
 
 fn notify_body(space: &str, repo: &str, rev: &str, hash: &[u8]) -> J {
-    json!({"space": space, "repo": repo, "repoRev": rev, "hash": json_bytes(hash)})
+    json!({"space": space, "repo": repo, "repoRev": rev, "data": json_bytes(hash)})
 }
 
 /// notifyWrite: "ignores duplicate and older revisions without forwarding
@@ -674,7 +654,7 @@ async fn notify_write_ignores_duplicate_and_older_revisions() {
     // a duplicate is the newest rev with the hash the authority holds: an
     // equal rev with another hash is a takedown's adjusted view, which vlpds
     // sequences again (a divergence, tests/REFERENCE_COVERAGE.md)
-    let held = super::fuzz::bytes_field(&before["repos"][0]["hash"]);
+    let held = super::fuzz::bytes_field(&before["repos"][0]["data"]);
     notify(&net, &bob, None, notify_body(&space, &bob.did, &older, &[0; 32])).await.ok();
     notify(&net, &bob, None, notify_body(&space, &bob.did, &newest, &held)).await.ok();
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -702,7 +682,7 @@ async fn notify_write_keeps_the_newest_revision_when_racing() {
     let repos = listed["repos"].as_array().unwrap();
     assert_eq!(repos.len(), 1);
     assert_eq!(repos[0]["repoRev"], json!(newer));
-    assert_eq!(bytes_field(&repos[0]["hash"]), empty.to_vec());
+    assert_eq!(bytes_field(&repos[0]["data"]), empty.to_vec());
 }
 
 /// notifyWrite: "rejects future revisions while allowing a small clock skew"

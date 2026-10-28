@@ -96,41 +96,37 @@ it, and isn't built.
 
 ## Moving a repo in
 
-`vlpds.space.importRepo` takes the 2-root CAR that `space.getRepo` serves on the old host. It's an
-OAuth call like any space write, so an account moving in imports once it's active here (OAuth
-signs no deactivated account in). By then the DID points here and its `#atproto` key is this
-host's, while the CAR was signed on the old host. So before anything is written, the commit's
-signature and MAC must verify against the DID's current key or the key its PLC history says it held
-at the commit's rev (a did:plc's audit log, 5 min of slack either side). A key the DID never had is
-refused (`InvalidCommit`). The set hash recomputed from the index must be the commit's. The CAR must be laid out as the reference's `verifyRepoCarFull` reads it:
-the commit, the index, then one block per index entry in the index's order, and nothing else. The
-records then stream in, each block checked against its CID, in frameless entries of at most 1,000
-rows or 4 MiB. One last entry on the repo's worker puts the head
-in at the CAR's rev with an empty oplog, and the authority is owed a notify like after any write.
-The account's writes to that space are refused while it imports.
+`vlpds.space.importRepo` takes the STAR archive that `space.getRepo` serves on the old host
+(`application/octet-stream`). It takes a `space:` grant like any space write (an OAuth session's,
+or a scoped app password's), so an account moving in imports once it's active here (`/migrate`
+signs in with OAuth, which signs no deactivated account in). A commit carries no
+signature, so what's checked is that the archive is the account's own repo in that space and that
+its records are the repo its commit describes: the metadata must name the importing account and
+the space, the records come in strict path order (as the reference's `verifyRepoStarFull` reads
+them), each a DRISL map of at most 1 MiB whose CID is computed from its bytes, and at the end they
+must fold to the commit's `data` (`DigestMismatch` otherwise). They're staged as they stream in, in
+frameless entries of at most 1,000 rows or 4 MiB, under no head. One last entry on the repo's worker
+puts the head in at the commit's rev with an empty oplog, and the authority is owed a notify like
+after any write. The account's writes to that space are refused while it imports.
 
-Nothing of the body is read until the import is let in, so a stranger's CAR can't cost the node
+Nothing of the body is read until the import is let in, so a stranger's archive can't cost the node
 memory first:
 
 - The grant must allow `create` in the space for some collection (a `space:` scope). Which
-  collections the records are in is checked once the index is in.
+  collections the records are in is checked as they come.
 - An account gets 100 imports an hour (`space-import`), and runs 2 at once. A node runs 8, or as
   many as its import budget holds at their largest if that's fewer (one on the smallest budget,
   192 MiB, and two on a 7 GB VPS). Past that they get 503 `Overloaded` at once.
 - The import reserves what it can hold from the import budget, as `com.atproto.repo.importRepo`
-  does, and waits up to 30 s for room (then 503 `Overloaded`). That's ~75 MB at the default record
-  limit for a chunked body. A body that declares its length reserves less.
+  does, and waits up to 30 s for room (then 503 `Overloaded`). That's ~11 MB for a chunked body
+  (a record twice and two staged batches). A body that declares its length reserves less.
 - A body that sends nothing for 30 s, or takes over an hour, fails and gives its slot and room
   back (as `com.atproto.repo.importRepo`'s does).
-- Every block is refused from its length, before it's read. The commit gets 1 KiB (a real one is
-  ~200 bytes), the index `--space-repo-max-records` × 128 bytes (12.8 MB at the default, and never
-  less than 1 MiB), and each record 1 MB, as a space write does. The index's entry count is checked
-  from its head too, and it's read in place. A repo near the record limit whose paths average over
-  ~85 bytes won't fit.
+- Every frame is refused from its length, before it's read. The metadata gets 4 KiB (a real one
+  is ~200 bytes), a record path 1 KiB, and a record 1 MiB, the archive profile's limit. The record
+  count is held to `--space-repo-max-records` as the records come.
 
 - A rev more than 5 min in the future gets `FutureRev`.
-- A key the DID has rotated away from verifies only a commit whose rev is from before the rotation
-  (5 min of slack), so a former host can't keep signing importable commits for the account.
 - When the space's authority is hosted here (on any node of the cluster), the rev can't be from
   before the space was created (2 min of slack for clocks). A space deleted and made again is a new space, and a repo from the
   old one doesn't come back into it.
@@ -141,7 +137,7 @@ memory first:
   head over them, so nothing serves them. The next import or the repo's first write clears them
   before it lands.
 - An import over a repo that's already here replaces it with the snapshot, as
-  `com.atproto.repo.importRepo` does for a public repo. The CAR's rev must be newer than the repo's.
+  `com.atproto.repo.importRepo` does for a public repo. The commit's rev must be newer than the repo's.
   The first entry takes the old head away, the old rows go in bounded batches, the new ones are
   staged, and the last entry puts the new head in. Reads see no repo in the space between the first
   and last entries, so a syncer polling then gets `RepoNotFound` and falls back to `getRepo` after.
@@ -151,7 +147,7 @@ memory first:
   makes. The same rev with other records is refused.
 - A second import of the same space repo while one is running is refused, and so are the account's
   writes there.
-- The blobs the imported records name don't come with the CAR. `repo.listMissingBlobs` lists them
+- The blobs the imported records name don't come with the archive. `repo.listMissingBlobs` lists them
   next to the public repo's, with a space record URI for each, so the blob step of a move copies
   them the same way.
 
@@ -208,6 +204,6 @@ shard it no longer owns.
 - The oplog keeps 7 days (`--space-oplog-retention`, `off` keeps everything). Each node sweeps the
   shards it owns about every 6 h, one range scan per space repo, and deletes old ops in frameless
   entries of a bounded size. It never prunes on a write.
-- A space repo holds at most 100k records (`--space-repo-max-records`). The 2-root CAR that
-  `getRepo` sends has one index block, about 6 MB at 100k records.
+- A space repo holds at most 100k records (`--space-repo-max-records`). `getRepo` streams it as a
+  STAR archive, one chunk at a time, in the order the store keeps the records.
 - `deleteAccount` sweeps every `s*` family for the DID, in frameless entries.

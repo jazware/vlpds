@@ -1439,7 +1439,8 @@ let madeKey: { did: string; privateHex: string; didKey: string } | undefined
 
 type Recommended = {
   alsoKnownAs: string[]
-  verificationMethods: { atproto: string }
+  /** atproto_kem: the new host's Spaces key, carried into the PLC op with the rest */
+  verificationMethods: { atproto: string; atproto_kem?: string }
   rotationKeys: string[]
   services: { atproto_pds: { type: string; endpoint: string } }
 }

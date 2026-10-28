@@ -178,7 +178,7 @@ marks:
 ```
 
 The adjusted view is cheap because a repo's taken-down set is tiny. The set hash is the LtHash state
-minus the taken-down records' elements, and the commit is signed at serve time like every other one.
+minus the taken-down records' elements, and the commit is built (and MAC'd) at serve time like every other one.
 `listRepoOps` leaves the record's ops out while the takedown lasts, so the incremental and the full
 views agree.
 

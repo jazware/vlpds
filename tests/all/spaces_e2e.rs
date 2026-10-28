@@ -6,7 +6,7 @@
 //! and a write into a space governed elsewhere reaches its authority
 //! through the durable outbox, across a restart.
 
-use crate::common::spaces::{resp, signed_get_as, xrpc_url, Holder, SpaceClient};
+use crate::common::spaces::{commit_of, get_space_credential, resp, signed_get_as, xrpc_url, Holder, SpaceClient};
 use crate::common::*;
 use axum::body::Body;
 use axum::extract::Request;
@@ -29,30 +29,6 @@ fn bytes(v: &J) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD_NO_PAD.decode(s.trim_end_matches('=')).unwrap()
 }
 
-fn signed_commit(c: &J) -> commit::SignedCommit {
-    commit::SignedCommit {
-        ver: c["ver"].as_i64().unwrap(),
-        hash: bytes(&c["hash"]),
-        ikm: bytes(&c["ikm"]),
-        sig: bytes(&c["sig"]),
-        mac: bytes(&c["mac"]),
-        rev: c["rev"].as_str().unwrap().to_string(),
-    }
-}
-
-/// The account's `#atproto` key as a did:key.
-async fn did_key(s: &TestServer, did: &str) -> String {
-    let j = s.xrpc.get("com.atproto.repo.describeRepo", &[("repo", did)], &Auth::None).await.ok();
-    let vm = j["didDoc"]["verificationMethod"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|v| v["id"].as_str().is_some_and(|i| i.ends_with("#atproto")))
-        .unwrap()
-        .clone();
-    format!("did:key:{}", vm["publicKeyMultibase"].as_str().unwrap())
-}
-
 /// Applies listRepoOps ops to a running set hash, as a syncer does.
 fn apply_ops(set: &mut LtHash, ops: &J) {
     for op in ops.as_array().unwrap() {
@@ -66,12 +42,12 @@ fn apply_ops(set: &mut LtHash, ops: &J) {
     }
 }
 
-/// The commit verifies against the author's key and describes `set`.
-fn check_commit(c: &J, space: &str, author: &str, key: &str, set: &LtHash) {
-    let sc = signed_commit(c);
-    let ctx = commit::CommitCtx { space, author, rev: &sc.rev };
-    assert!(commit::verify(&sc, &ctx, key), "commit signature: {c}");
-    assert!(commit::matches(set, &sc), "LtHash of the ops != commit.hash");
+/// The commit names the repo and space, and describes `set` (its MAC is
+/// checked by `signed_get`).
+fn check_commit(c: &J, space: &str, repo: &str, set: &LtHash) {
+    let sc = commit_of(c);
+    assert_eq!((sc.space.as_str(), sc.repo.as_str(), sc.ver), (space, repo, 1), "{c}");
+    assert!(commit::matches(set, &sc), "LtHash of the ops != commit.data");
 }
 
 fn scraped(text: &str, series: &str) -> f64 {
@@ -99,9 +75,10 @@ async fn describe_server_says_whether_spaces_run() {
     let on = spawn().await;
     let j = on.xrpc.get("com.atproto.server.describeServer", &[], &Auth::None).await.ok();
     assert_eq!(j["vlpds"], json!({"spaces": true}), "{j}");
+    assert_eq!(j["spacesAlpha"], json!(true), "{j}");
     let off = TestServer::spawn().await;
     let j = off.xrpc.get("com.atproto.server.describeServer", &[], &Auth::None).await.ok();
-    assert!(j.get("vlpds").is_none(), "{j}");
+    assert!(j.get("vlpds").is_none() && j.get("spacesAlpha").is_none(), "{j}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -110,7 +87,6 @@ async fn spaces_e2e_single_node() {
     let a = SpaceClient::new(&s, "spe", SCOPE).await;
     let space = a.create_space(TYPE, "main").await;
     assert_eq!(space, format!("at://{}/space/{TYPE}/main", a.did));
-    let key = did_key(&s, &a.did).await;
     let mut sub = s.subscribe_from_now().await;
     let (pub_cid, pub_rev) = s.latest_commit(&a.did).await;
 
@@ -144,7 +120,7 @@ async fn spaces_e2e_single_node() {
     assert!(r.get("cursor").is_none());
     let mut set = LtHash::default();
     apply_ops(&mut set, &r["ops"]);
-    check_commit(&r["commit"], &space, &a.did, &key, &set);
+    check_commit(&r["commit"], &space, &a.did, &set);
     let head = r["commit"]["rev"].as_str().unwrap().to_string();
 
     // at the head: no ops, a fresh commit, and no state read
@@ -153,12 +129,12 @@ async fn spaces_e2e_single_node() {
     let since = [("space", space.as_str()), ("repo", a.did.as_str()), ("since", head.as_str())];
     let r = a.signed_get(&s.url, "com.atproto.space.listRepoOps", &since, &cred, &a.did).await.ok();
     assert_eq!(r["ops"], json!([]));
-    check_commit(&r["commit"], &space, &a.did, &key, &set);
+    check_commit(&r["commit"], &space, &a.did, &set);
     assert_eq!(metric(&s, noop).await, before + 1.0);
     assert_eq!(loads(&s), loaded, "a poll at the head read the space head from the store");
     let r2 = a.signed_get(&s.url, "com.atproto.space.getLatestCommit", &rq, &cred, &a.did).await.ok();
-    assert_ne!(r2["commit"]["ikm"], r["commit"]["ikm"], "a fresh ikm per response");
-    check_commit(&r2["commit"], &space, &a.did, &key, &set);
+    assert_eq!(r2["commit"], r["commit"], "the same commit, MAC'd per response");
+    check_commit(&r2["commit"], &space, &a.did, &set);
 
     // a delta: the second write only, up to the new head
     a.create_record(&space, COLL, Some("two"), rec("again")).await.ok();
@@ -166,7 +142,7 @@ async fn spaces_e2e_single_node() {
     assert_eq!(r["ops"].as_array().unwrap().len(), 1);
     assert_eq!(r["ops"][0]["rkey"], json!("two"));
     apply_ops(&mut set, &r["ops"]);
-    check_commit(&r["commit"], &space, &a.did, &key, &set);
+    check_commit(&r["commit"], &space, &a.did, &set);
     assert!(r["commit"]["rev"].as_str().unwrap() > head.as_str());
 
     // a page short of the head carries a cursor, not the commit
@@ -216,7 +192,7 @@ async fn credential_refusals() {
         a.srv
             .http
             .get(&url)
-            .header("authorization", format!("Atproto-Space {cred}"))
+            .header("authorization", format!("Atproto-Space-Credential {cred}"))
             .header("atproto-space-audience", &a.did)
             .send()
             .await
@@ -225,22 +201,36 @@ async fn credential_refusals() {
     .await;
     r.err(401, "BadSpaceSignature");
     assert!(r.json["message"].as_str().unwrap().contains("signature"), "{r:?}");
+    // the October 1 scheme: an unsupported type, not a signature error
+    let r =
+        resp(a.srv.http.get(&url).header("authorization", format!("Atproto-Space {cred}")).send().await.unwrap()).await;
+    r.err(400, "InvalidToken");
+    // and on the space host's methods
+    let lr = xrpc_url(&s.url, "com.atproto.space.listRepos", &[("space", space.as_str())]);
+    let r =
+        resp(a.srv.http.get(&lr).header("authorization", format!("Atproto-Space {cred}")).send().await.unwrap()).await;
+    r.err(400, "InvalidToken");
     // presented as a bearer token: not an access token
     let r = resp(a.srv.http.get(&url).header("authorization", format!("Bearer {cred}")).send().await.unwrap()).await;
     assert!(matches!(r.status, 400 | 401), "{r:?}");
     // a delegation token is good for one exchange
     let tok = a.delegation_token(&space).await.ok()["token"].as_str().unwrap().to_string();
     a.exchange(&s.url, &space, &tok).await.ok();
-    a.exchange(&s.url, &space, &tok).await.err(401, "JwtReplayed");
+    a.exchange(&s.url, &space, &tok).await.err(400, "InvalidDelegationToken");
     // one for another space than the request names
     let tok = a.delegation_token(&other).await.ok()["token"].as_str().unwrap().to_string();
     a.exchange(&s.url, &space, &tok).await.err(400, "InvalidDelegationToken");
     // a credential isn't a delegation token
-    let mut rb = a.srv.http.post(format!("{}/xrpc/com.atproto.space.getSpaceCredential", s.url));
-    for (k, v) in a.holder.headers(&format!("Bearer {cred}"), None) {
-        rb = rb.header(k, v);
-    }
-    resp(rb.json(&json!({"space": space})).send().await.unwrap()).await.err(401, "BadJwtType");
+    let body = json!({"space": space, "credentialKid": a.holder.did, "delegationToken": cred});
+    get_space_credential(&a.srv.http, &s.url, body).await.err(400, "InvalidDelegationToken");
+    // nor a credential key anything but a P-256 did:key
+    let tok = a.delegation_token(&space).await.ok()["token"].as_str().unwrap().to_string();
+    let k256 = vlatproto::crypto::Keypair::generate().did_key();
+    let body = json!({"space": space, "credentialKid": k256, "delegationToken": tok});
+    get_space_credential(&a.srv.http, &s.url, body).await.err(400, "InvalidRequest");
+    // without a token, a members-only space isn't there
+    let body = json!({"space": space, "credentialKid": a.holder.did});
+    get_space_credential(&a.srv.http, &s.url, body).await.err(400, "SpaceNotFound");
 }
 
 /// Space data is OAuth-only: a password session or an app password reads
@@ -379,7 +369,7 @@ async fn authority(mode: Mode) -> Authority {
             if req.uri().path() == "/.well-known/did.json" {
                 return json(
                     200,
-                    json!({"id": d, "service": [{"id": "#atproto_space_host", "type": "AtprotoSpaceHost", "serviceEndpoint": b}]}),
+                    json!({"id": d, "service": [{"id": "#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": b}]}),
                 );
             }
             if req.uri().path() != "/xrpc/com.atproto.space.notifyWrite" {
@@ -416,7 +406,7 @@ fn check_service_jwt(auth: &str, writer: &str, aud: &str, key: &k256::ecdsa::Ver
     let dec = |s: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s).unwrap();
     let payload: J = serde_json::from_slice(&dec(parts[1])).unwrap();
     assert_eq!(payload["iss"], json!(writer));
-    assert_eq!(payload["aud"], json!(format!("{aud}#atproto_space_host")));
+    assert_eq!(payload["aud"], json!(format!("{aud}#atproto_pds")));
     assert_eq!(payload["lxm"], json!("com.atproto.space.notifyWrite"));
     let sig = k256::ecdsa::Signature::from_slice(&dec(parts[2])).unwrap();
     key.verify(format!("{}.{}", parts[0], parts[1]).as_bytes(), &sig).expect("signed by the writer");
@@ -438,7 +428,7 @@ async fn eventually<T>(within: Duration, mut f: impl FnMut() -> Option<T>) -> Op
 /// The newest rev and hash of `a`'s repo in `space`, as its owner reads them.
 async fn head(a: &SpaceClient, space: &str) -> (String, Vec<u8>) {
     let r = a.get("com.atproto.space.getLatestCommit", &[("space", space), ("repo", &a.did)]).await.ok();
-    (r["commit"]["rev"].as_str().unwrap().to_string(), bytes(&r["commit"]["hash"]))
+    (r["commit"]["rev"].as_str().unwrap().to_string(), bytes(&r["commit"]["data"]))
 }
 
 const ANY_SCOPE: &str = "space:com.example.group?authority=*&collection=com.example.post&action=read&action=create";
@@ -467,7 +457,7 @@ async fn outbound_notify_through_durable_outbox() {
     assert!(sends.len() <= 2, "{} sends: {:?}", sends.len(), sends.iter().map(|s| &s.0).collect::<Vec<_>>());
     assert_eq!(last.0["space"], json!(space));
     assert_eq!(last.0["repo"], json!(a.did));
-    assert_eq!(bytes(&last.0["hash"]), hash);
+    assert_eq!(bytes(&last.0["data"]), hash);
     let key = s.signing_key(&a.did).await;
     for (_, jwt) in &sends {
         check_service_jwt(jwt, &a.did, &auth.did, &key);

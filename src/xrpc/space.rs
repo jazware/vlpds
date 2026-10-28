@@ -10,8 +10,11 @@ use super::repo::{
 };
 use super::*;
 use crate::oauth::scopes::{SpaceAccess, SpaceTarget};
+use crate::space::commit::Commit;
 use crate::space::heads::DurableSpaceHead;
+use crate::space::kem::MacError;
 use crate::space::lthash::LtHash;
+use crate::space::mac::{self, COMMIT_MAC_TYPE, RECORD_MAC_TYPE};
 use crate::space::outbox::{Outcome, Pending};
 use crate::space::repo::{
     PutScopes, SameRev, SpaceAck, SpaceError, SpaceOp, SpaceOutcome, SpaceReq, SpaceWrite, MAX_WRITES,
@@ -690,26 +693,58 @@ fn b64(b: &[u8]) -> J {
     json!({"$bytes": base64::engine::general_purpose::STANDARD_NO_PAD.encode(b)})
 }
 
-/// `buildSignedCommit`: a fresh ikm per response, signed by the author,
-/// over `set` (the head's unless records are hidden).
-fn signed_commit(
-    key: &Keypair,
-    space: &Space,
-    author: &str,
-    head: &DurableSpaceHead,
-    set: Option<&LtHash>,
-) -> XResult<J> {
-    let rev = head.rev.to_string();
-    let ctx = crate::space::commit::CommitCtx { space: &space.uri, author, rev: &rev };
-    let t = Instant::now();
-    let c = crate::space::commit::sign(set.unwrap_or(&head.hash), &ctx, rand::random(), |b| {
-        Ok::<_, std::convert::Infallible>(key.sign(b))
-    })
-    .map_err(|_| XrpcError::internal("space commit context too long"))?;
-    metrics::space_sign(t.elapsed());
-    Ok(
-        json!({"ver": c.ver, "hash": b64(&c.hash), "ikm": b64(&c.ikm), "sig": b64(&c.sig), "mac": b64(&c.mac), "rev": c.rev}),
-    )
+/// `buildCommit`: the commit over `set` (the head's unless records are
+/// hidden).
+fn commit_of(space: &Space, repo: &str, head: &DurableSpaceHead, set: Option<&LtHash>) -> Commit {
+    Commit::of(set.unwrap_or(&head.hash), &space.uri, repo, &head.rev.to_string())
+}
+
+/// Reference `getSpaceMacSecret`: a space credential's read of a commit or
+/// record must ask for a MAC (`Atproto-Space-Want-Mac`); an account's own
+/// read may. The secret its key share and the repo's `#atproto_kem` key
+/// derive, None when an own read didn't ask.
+async fn mac_secret(
+    app: &Arc<App>,
+    creds: &Credentials,
+    headers: &HeaderMap,
+    repo: &str,
+    ty: &'static str,
+) -> XResult<Option<[u8; 32]>> {
+    let want = mac::header_value(headers, mac::WANT_MAC_HEADER);
+    if want.is_none() && !matches!(creds, Credentials::SpaceCredential { .. }) {
+        return Ok(None);
+    }
+    let bad = |e: MacError| XrpcError::bad(MacError::CODE, e.0);
+    let share = mac::parse_want_mac(want.as_deref(), ty).map_err(bad)?;
+    let acct = app.account(repo).await?;
+    let Some(kem) = crate::space::kem_keys::keypair(app, &acct).await? else {
+        crate::space::kem_keys::spawn_ensure(app, repo);
+        return Err(XrpcError::unavailable("Unavailable", "the account has no #atproto_kem key yet; retry later"));
+    };
+    crate::space::kem::decapsulate(&kem, &share).map(Some).map_err(bad)
+}
+
+/// `Atproto-Space-Mac` for a response, when a MAC was asked for.
+fn mac_header(
+    secret: Option<[u8; 32]>,
+    ty: &str,
+    f: impl FnOnce(&[u8]) -> Result<[u8; 32], MacError>,
+) -> XResult<Option<String>> {
+    let Some(secret) = secret else { return Ok(None) };
+    let m = f(&secret).map_err(|e| XrpcError::internal(format!("space MAC: {e}")))?;
+    Ok(Some(mac::format_mac(ty, &m)))
+}
+
+/// Every response of a MAC-bearing method varies with the request's
+/// `Atproto-Space-Want-Mac`; one with a MAC carries it.
+fn with_mac(mut resp: Response, mac: Option<String>) -> Response {
+    use axum::http::HeaderValue;
+    let h = resp.headers_mut();
+    h.append(header::VARY, HeaderValue::from_static("Atproto-Space-Want-Mac"));
+    if let Some(v) = mac.and_then(|m| HeaderValue::from_str(&m).ok()) {
+        h.insert(mac::MAC_HEADER, v);
+    }
+    resp
 }
 
 #[derive(Deserialize)]
@@ -720,13 +755,19 @@ struct RecordQ {
     rkey: String,
 }
 
-async fn get_record(State(app): AppState, SpaceAuth(creds): SpaceAuth, Query(q): Query<RecordQ>) -> XResult<Response> {
+async fn get_record(
+    State(app): AppState,
+    SpaceAuth(creds): SpaceAuth,
+    headers: HeaderMap,
+    Query(q): Query<RecordQ>,
+) -> XResult<Response> {
     let sp = spaces(&app)?;
     let space = Space::parse(&q.space)?;
     let self_read = assert_space_read(&creds, &space, &q.repo)?;
     assert_space_open(&app, &space, self_read).await?;
     check_path(&q.collection, Some(&q.rkey))?;
     available(&app, &q.repo, self_read).await?;
+    let secret = mac_secret(&app, &creds, &headers, &q.repo, RECORD_MAC_TYPE).await?;
     metrics::space_read("getRecord", auth_label(&creds));
     let p = app.partition(&q.repo)?;
     let path = format!("{}/{}", q.collection, q.rkey);
@@ -750,7 +791,8 @@ async fn get_record(State(app): AppState, SpaceAuth(creds): SpaceAuth, Query(q):
     out.extend_from_slice(b"\",\"value\":");
     vlatproto::cbor::write_json(bytes, &mut out).map_err(XrpcError::from_err)?;
     out.push(b'}');
-    Ok(json_bytes(out))
+    let mac = mac_header(secret, RECORD_MAC_TYPE, |s| mac::record_mac(s, &uri, &cid.to_bytes()))?;
+    Ok(with_mac(json_bytes(out), mac))
 }
 
 #[derive(Deserialize)]
@@ -997,19 +1039,23 @@ struct RepoQ {
 async fn get_latest_commit(
     State(app): AppState,
     SpaceAuth(creds): SpaceAuth,
+    headers: HeaderMap,
     Query(q): Query<RepoQ>,
-) -> XResult<Json<J>> {
+) -> XResult<Response> {
     let sp = spaces(&app)?;
     let space = Space::parse(&q.space)?;
     let self_read = assert_space_read(&creds, &space, &q.repo)?;
     assert_space_open(&app, &space, self_read).await?;
-    let key = available(&app, &q.repo, self_read).await?;
+    available(&app, &q.repo, self_read).await?;
+    let secret = mac_secret(&app, &creds, &headers, &q.repo, COMMIT_MAC_TYPE).await?;
     metrics::space_read("getLatestCommit", auth_label(&creds));
     let p = app.partition(&q.repo)?;
     let (head, set) = served_head(&app, sp, &p, &q.repo, &space)
         .await?
         .ok_or_else(|| XrpcError::bad("RepoNotFound", format!("Could not find repo for space: {}", space.uri)))?;
-    Ok(Json(json!({"commit": signed_commit(&key, &space, &q.repo, &head, set.as_ref())?})))
+    let commit = commit_of(&space, &q.repo, &head, set.as_ref());
+    let mac = mac_header(secret, COMMIT_MAC_TYPE, |s| mac::commit_mac(s, &commit))?;
+    Ok(with_mac(Json(json!({"commit": commit.to_json()})).into_response(), mac))
 }
 
 #[derive(Deserialize)]
@@ -1038,6 +1084,7 @@ fn parse_cursor(c: &str) -> XResult<(Tid, u16)> {
 async fn list_repo_ops(
     State(app): AppState,
     SpaceAuth(creds): SpaceAuth,
+    headers: HeaderMap,
     Query(q): Query<ListRepoOpsQ>,
 ) -> XResult<Response> {
     let sp = spaces(&app)?;
@@ -1050,7 +1097,9 @@ async fn list_repo_ops(
     };
     let limit = super::extract::limit_param(q.limit, 100, 1, 1000)?;
     let cursor = q.cursor.as_deref().map(parse_cursor).transpose()?;
-    let key = available(&app, &q.repo, self_read).await?;
+    available(&app, &q.repo, self_read).await?;
+    // every page asks, those that turn out to have no commit too
+    let secret = mac_secret(&app, &creds, &headers, &q.repo, COMMIT_MAC_TYPE).await?;
     metrics::space_read("listRepoOps", auth_label(&creds));
     let start = Instant::now();
     let p = app.partition(&q.repo)?;
@@ -1064,18 +1113,21 @@ async fn list_repo_ops(
         };
         if caught_up {
             let mut out = json!({"ops": []});
+            let mut mac = None;
             if let Some(h) = &head {
-                out["commit"] = signed_commit(&key, &space, &q.repo, h, None)?;
+                let commit = commit_of(&space, &q.repo, h, None);
+                mac = mac_header(secret, COMMIT_MAC_TYPE, |s| mac::commit_mac(s, &commit))?;
+                out["commit"] = commit.to_json();
             }
             metrics::space_list_repo_ops("noop", start.elapsed());
-            return Ok(Json(out).into_response());
+            return Ok(with_mac(Json(out).into_response(), mac));
         }
     }
     // one snapshot: the commit describes exactly the ops' end state
     let snap = p.db.snapshot().map_err(XrpcError::from_err)?;
     let head = match snap.get(state::space_head_key(&q.repo, &space.sid)).await.map_err(XrpcError::from_err)? {
         Some(v) => head_of(HeadRow::decode(&v).map_err(XrpcError::from_err)?, &space, &p)?,
-        None => return Ok(Json(json!({"ops": []})).into_response()),
+        None => return Ok(with_mac(Json(json!({"ops": []})).into_response(), None)),
     };
     let prefix = state::space_prefix(state::SPACE_OPLOG_FAMILY, &q.repo, &space.sid);
     let after = |rev: u64, idx: u32| -> Vec<u8> {
@@ -1154,14 +1206,16 @@ async fn list_repo_ops(
     ops.push(b']');
     let mut out = Vec::with_capacity(ops.len() + 512);
     out.push(b'{');
+    let mut mac = None;
     if rows_seen < limit && !full {
         let set = match hidden.is_empty() {
             true => None,
             false => Some(served_set(&snap, &q.repo, &space.sid, &head.hash, &hidden).await?),
         };
         out.extend_from_slice(b"\"commit\":");
-        let commit = signed_commit(&key, &space, &q.repo, &head, set.as_ref())?;
-        serde_json::to_writer(&mut out, &commit).map_err(XrpcError::from_err)?;
+        let commit = commit_of(&space, &q.repo, &head, set.as_ref());
+        mac = mac_header(secret, COMMIT_MAC_TYPE, |s| mac::commit_mac(s, &commit))?;
+        serde_json::to_writer(&mut out, &commit.to_json()).map_err(XrpcError::from_err)?;
         out.push(b',');
     } else if let Some((rev, idx)) = last {
         out.extend_from_slice(b"\"cursor\":");
@@ -1172,7 +1226,7 @@ async fn list_repo_ops(
     out.extend_from_slice(&ops);
     out.push(b'}');
     metrics::space_list_repo_ops("scan", start.elapsed());
-    Ok(json_bytes(out))
+    Ok(with_mac(json_bytes(out), mac))
 }
 
 #[derive(Deserialize)]
@@ -1206,36 +1260,49 @@ async fn get_delegation_token(State(app): AppState, Auth(creds): Auth, Query(q):
 #[serde(rename_all = "camelCase")]
 struct CredentialIn {
     space: String,
+    credential_kid: String,
+    delegation_token: Option<String>,
     client_attestation: Option<String>,
 }
 
-/// At the space's authority (forwarded there by `space`): the delegation
-/// token checked and claimed, then the simplespace policy. The credential
-/// is bound to the key that signed this request.
-async fn get_space_credential(
-    State(app): AppState,
-    headers: HeaderMap,
-    Json(inp): Json<CredentialIn>,
-) -> XResult<Json<J>> {
+/// At the space's authority (forwarded there by `space`): the request's
+/// assertions checked (a delegation token, a client attestation, each when
+/// given), then the simplespace policy. The credential is bound to
+/// `credentialKid`.
+async fn get_space_credential(State(app): AppState, Json(inp): Json<CredentialIn>) -> XResult<Json<J>> {
     spaces(&app)?;
-    let r = issue_credential(&app, &headers, inp).await;
+    let r = issue_credential(&app, inp).await;
     metrics::space_credential_issued(match &r {
         Ok(_) => "ok",
         Err(e) if e.status.is_server_error() => "error",
-        Err(e) if e.status == StatusCode::UNAUTHORIZED => "bad_token",
+        Err(e) if e.status == StatusCode::UNAUTHORIZED || e.error == "InvalidDelegationToken" => "bad_token",
         Err(_) => "refused",
     });
     r
 }
 
-async fn issue_credential(app: &App, headers: &HeaderMap, inp: CredentialIn) -> XResult<Json<J>> {
-    let d = verify_delegation(app, headers).await?;
-    if d.space != inp.space {
-        return Err(XrpcError::bad(
-            "InvalidDelegationToken",
-            "Delegation token subject does not match requested space",
-        ));
+/// Reference getSpaceCredential. Without a delegation token, only a space
+/// whose read policy is public issues one (any other answers SpaceNotFound,
+/// so a request without one can't learn the space exists); an app
+/// allow-list holds either way. A deleted space answers SpaceDeleted with
+/// or without a token.
+async fn issue_credential(app: &App, inp: CredentialIn) -> XResult<Json<J>> {
+    if crate::space::did_key_alg(&inp.credential_kid) != Some("ES256") {
+        return Err(XrpcError::bad("InvalidRequest", "credentialKid must be a P-256 did:key"));
     }
+    let user = match &inp.delegation_token {
+        Some(t) => {
+            let d = verify_delegation(app, t).await?;
+            if d.space != inp.space {
+                return Err(XrpcError::bad(
+                    "InvalidDelegationToken",
+                    "Delegation token subject does not match requested space",
+                ));
+            }
+            Some(d.user)
+        }
+        None => None,
+    };
     let space = Space::parse(&inp.space)?;
     super::simplespace::assert_space_host(app, &space).await?;
     let client_id = match &inp.client_attestation {
@@ -1248,8 +1315,11 @@ async fn issue_credential(app: &App, headers: &HeaderMap, inp: CredentialIn) -> 
     let row = super::simplespace::space_row(app, &space).await?;
     if !row.live() {
         // the durable signal that a space is gone, for a syncer that missed
-        // notifySpaceDeleted
+        // notifySpaceDeleted (a public space's may hold no token)
         return Err(XrpcError::bad("SpaceDeleted", "Space has been deleted"));
+    }
+    if user.is_none() && row.read_policy != crate::space::rows::Policy::Public {
+        return Err(super::simplespace::space_not_found());
     }
     // told only to those it would otherwise admit: a non-member learns
     // nothing about the space from it
@@ -1260,8 +1330,8 @@ async fn issue_credential(app: &App, headers: &HeaderMap, inp: CredentialIn) -> 
     if matches!(status.as_deref(), Some("takendown" | "suspended")) {
         return Err(XrpcError::bad("RepoTakendown", "Space authority has been taken down"));
     }
-    if d.user != space.authority {
-        match super::internal::account_anywhere(app, &d.user).await {
+    if let Some(user) = user.as_deref().filter(|u| *u != space.authority) {
+        match super::internal::account_anywhere(app, user).await {
             Ok(a) if matches!(a.status.as_deref(), Some("takendown" | "suspended")) => {
                 return Err(XrpcError::bad("AccountTakedown", "User account has been taken down"));
             }
@@ -1278,13 +1348,16 @@ async fn issue_credential(app: &App, headers: &HeaderMap, inp: CredentialIn) -> 
             return Err(XrpcError::bad("AppNotAuthorized", "Application not authorized for this space"));
         }
     }
-    if !super::simplespace::authorize_user(app, &space, &row, &d.user, "read", client_id.as_deref()).await? {
-        return Err(XrpcError::bad("UserNotAuthorized", "User not authorized for this space"));
+    if let Some(user) = &user {
+        if !super::simplespace::authorize_user(app, &space, &row, user, "read", client_id.as_deref()).await? {
+            return Err(XrpcError::bad("UserNotAuthorized", "User not authorized for this space"));
+        }
     }
     if taken_down {
         return Err(XrpcError::bad("NotAuthorized", "Space has been taken down"));
     }
-    let mint = token::Mint { iss: &space.authority, sub: &space.uri, key_id: Some(&d.key_id), ..Default::default() };
+    let mint =
+        token::Mint { iss: &space.authority, sub: &space.uri, key_id: Some(&inp.credential_kid), ..Default::default() };
     let now = vlatproto::tid::now_micros() as i64 / 1_000_000;
     let cred = token::encode(TokenType::Credential, &mint, "ES256K", now, &token::new_jti(), |b| {
         Ok::<_, std::convert::Infallible>(key.sign(b))
@@ -1713,12 +1786,12 @@ pub async fn deliver(app: &App, p: &Pending) -> Outcome {
         metrics::space_notify("in", notify_in_result(&r));
         return outcome(r.map(|_| ()));
     }
+    // the authority's PDS is its space host
     let endpoint = match app.did_resolver.resolve(&space.authority).await {
-        Ok(doc) => vlatproto::did_resolver::service_endpoint(&doc, "atproto_space_host")
-            .or_else(|| vlatproto::did_resolver::service_endpoint(&doc, "atproto_pds")),
+        Ok(doc) => vlatproto::did_resolver::service_endpoint(&doc, "atproto_pds"),
         Err(e) => return Outcome::Retry(format!("could not resolve {}: {e:?}", space.authority)),
     };
-    let Some(endpoint) = endpoint else { return Outcome::Retry(format!("{} names no space host", space.authority)) };
+    let Some(endpoint) = endpoint else { return Outcome::Retry(format!("{} names no PDS", space.authority)) };
     let aud = token::space_host_aud(&space.authority);
     let lxm = "com.atproto.space.notifyWrite";
     let jwt = match crate::auth::service_auth_jwt(&key, &p.did, &aud, Some(lxm), 60) {
@@ -1729,7 +1802,7 @@ pub async fn deliver(app: &App, p: &Pending) -> Outcome {
         "space": space.uri,
         "repo": &*p.did,
         "repoRev": p.repo_rev.to_string(),
-        "hash": b64(&hash),
+        "data": b64(&hash),
     });
     let url = format!("{}/xrpc/{lxm}", endpoint.trim_end_matches('/'));
     let req = match vlatproto::http::guarded(app.config.dev_mode).request(reqwest::Method::POST, &url) {
@@ -1867,48 +1940,30 @@ pub async fn set_registration_expiry(app: &App, uri: &str, service: &str, expire
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct GetRepoQ {
     space: String,
     repo: String,
-    exclude_values: Option<bool>,
 }
 
-/// A signed commit as a CAR block (dag-cbor; the reference's `SignedCommit`
-/// with byte fields as bytes).
-fn commit_block(c: &crate::space::commit::SignedCommit) -> Vec<u8> {
-    let mut b = Vec::with_capacity(256);
-    vlatproto::cbor::write_map_head(&mut b, 6);
-    // canonical key order: by length, then bytes
-    for (k, v) in [("ikm", &c.ikm), ("mac", &c.mac)] {
-        vlatproto::cbor::write_text(&mut b, k);
-        vlatproto::cbor::write_bytes(&mut b, v);
-    }
-    vlatproto::cbor::write_text(&mut b, "rev");
-    vlatproto::cbor::write_text(&mut b, &c.rev);
-    vlatproto::cbor::write_text(&mut b, "sig");
-    vlatproto::cbor::write_bytes(&mut b, &c.sig);
-    vlatproto::cbor::write_text(&mut b, "ver");
-    vlatproto::cbor::write_int(&mut b, c.ver);
-    vlatproto::cbor::write_text(&mut b, "hash");
-    vlatproto::cbor::write_bytes(&mut b, &c.hash);
-    b
-}
-
-/// Reference getRepo (`serializeRepo`), streamed in two passes over one
-/// snapshot (src/space/car.rs) under an export slot (`--max-exports`), and
-/// ended for a client that reads nothing for `--export-stall-secs`. Pass 1
-/// holds the paths and CIDs only: at most `--space-repo-max-records` of
-/// them. A record taken down is left out of the index and the blocks, and
-/// the commit is signed over the set without it ([`hidden_paths`]); with
-/// `excludeValues` only the roots go.
-async fn get_repo(State(app): AppState, SpaceAuth(creds): SpaceAuth, Query(q): Query<GetRepoQ>) -> XResult<Response> {
-    use crate::space::car::{Car, Entries, RepoEncoder};
+/// Reference getRepo (`serializeRepo`): a STAR archive, streamed from one
+/// snapshot under an export slot (`--max-exports`), and ended for a client
+/// that reads nothing for `--export-stall-secs`. The records come in the
+/// order the store keeps them, which is the archive's (bytewise by path).
+/// A record taken down is left out, and the commit is over the set without
+/// it ([`hidden_paths`]).
+async fn get_repo(
+    State(app): AppState,
+    SpaceAuth(creds): SpaceAuth,
+    headers: HeaderMap,
+    Query(q): Query<GetRepoQ>,
+) -> XResult<Response> {
+    use crate::space::star;
     spaces(&app)?;
     let space = Space::parse(&q.space)?;
     let self_read = assert_space_read(&creds, &space, &q.repo)?;
     assert_space_open(&app, &space, self_read).await?;
-    let key = available(&app, &q.repo, self_read).await?;
+    available(&app, &q.repo, self_read).await?;
+    let secret = mac_secret(&app, &creds, &headers, &q.repo, COMMIT_MAC_TYPE).await?;
     metrics::space_read("getRepo", auth_label(&creds));
     let slot = super::sync::export_slot(&app).await?;
     let p = app.partition(&q.repo)?;
@@ -1916,108 +1971,65 @@ async fn get_repo(State(app): AppState, SpaceAuth(creds): SpaceAuth, Query(q): Q
     let not_found = || XrpcError::bad("RepoNotFound", format!("Could not find repo for space: {}", space.uri));
     let v = snap.get(state::space_head_key(&q.repo, &space.sid)).await.map_err(XrpcError::from_err)?;
     let head = head_of(HeadRow::decode(&v.ok_or_else(not_found)?).map_err(XrpcError::from_err)?, &space, &p)?;
-    let values = !q.exclude_values.unwrap_or(false);
     let hidden = hidden_paths(&app, &q.repo, &space.sid).await?;
+    let set = match hidden.is_empty() {
+        true => None,
+        false => Some(served_set(&snap, &q.repo, &space.sid, &head.hash, &hidden).await?),
+    };
+    let commit = commit_of(&space, &q.repo, &head, set.as_ref());
+    let mac = mac_header(secret, COMMIT_MAC_TYPE, |s| mac::commit_mac(s, &commit))?;
     let overloaded = || XrpcError {
         status: StatusCode::SERVICE_UNAVAILABLE,
         error: "Overloaded".into(),
         message: "too many space repo exports in progress; retry shortly".into(),
     };
-    let sp = spaces(&app)?;
-    let planned = crate::space::export_bytes(head.records);
-    let mut room = sp.reserve_export(planned).await.ok_or_else(overloaded)?;
-    let mut set = head.hash.clone();
+    // one chunk at a time: nothing of the repo is held
+    let room = spaces(&app)?.reserve_export(crate::space::export_bytes(0)).await.ok_or_else(overloaded)?;
     let prefix = state::space_prefix(state::SPACE_RECORD_FAMILY, &q.repo, &space.sid);
-    let opts = slatedb::config::ScanOptions { read_ahead_bytes: 4 << 20, cache_blocks: true, ..Default::default() };
-    let mut iter = vlsync_store::keys::BatchedScan::new(
-        snap.scan_with_options(prefix.clone()..vlsync_store::keys::prefix_end(&prefix), &opts)
-            .await
-            .map_err(XrpcError::from_err)?,
-    );
-    let mut entries = Entries::default();
-    while let Some(kv) = iter.next().await.map_err(XrpcError::from_err)? {
-        let path = std::str::from_utf8(&kv.key[prefix.len()..]).map_err(XrpcError::from_err)?;
-        let (cid, _) = state::record_value_parts(&kv.value).map_err(XrpcError::from_err)?;
-        if !hidden.is_empty() && hidden.iter().any(|h| h == path) {
-            let (collection, rkey) = path.split_once('/').ok_or_else(|| XrpcError::internal("malformed space path"))?;
-            set.remove(&crate::space::commit::element(collection, rkey, &cid.to_string()));
-            continue;
-        }
-        entries.push(path, cid);
-    }
-    drop(iter);
-    // long paths: what pass 1 holds past its estimate is reserved too
-    let held = entries.heap_bytes() as u64 + super::sync::EXPORT_CHUNK as u64;
-    if held > planned {
-        room.merge(sp.reserve_export(held - planned).await.ok_or_else(overloaded)?);
-    }
-    let rev = head.rev.to_string();
-    let ctx = crate::space::commit::CommitCtx { space: &space.uri, author: &q.repo, rev: &rev };
-    let t = Instant::now();
-    let commit =
-        crate::space::commit::sign(&set, &ctx, rand::random(), |b| Ok::<_, std::convert::Infallible>(key.sign(b)))
-            .map_err(|_| XrpcError::internal("space commit context too long"))?;
-    metrics::space_sign(t.elapsed());
     let stall = app.config.export_stall;
-    Ok(super::sync::export_body(slot, "application/vnd.ipld.car", move |tx| async move {
+    let body = super::sync::export_body(slot, "application/octet-stream", move |tx| async move {
         let _room = room;
         const CHUNK: usize = super::sync::EXPORT_CHUNK;
-        let mut car = Car::new(commit_block(&commit));
-        let order = car.order(&entries);
-        car.begin(&entries, &order);
-        let held = entries.heap_bytes() + order.capacity() * std::mem::size_of::<std::ops::Range<usize>>();
-        // what an export holds: pass 1's paths and CIDs and the chunk being
-        // filled (the body queue is the sync exports' budget)
-        metrics::space_export_bytes(held + CHUNK);
+        metrics::space_export_bytes(CHUNK);
         let mut buf = Vec::with_capacity(CHUNK + 4096);
-        while car.prelude(&mut buf, CHUNK) {
-            flush_chunk(&tx, &mut buf, stall).await?;
-        }
-        if values {
-            for run in &order {
-                let (first, last) = (entries.path(run.start), entries.path(run.end - 1));
-                let lo = [&prefix[..], first.as_bytes()].concat();
-                let hi = [&prefix[..], last.as_bytes(), &[0]].concat();
-                let mut it = match snap.scan_with_options(lo..hi, &opts).await {
-                    Ok(it) => vlsync_store::keys::BatchedScan::new(it),
-                    Err(e) => {
-                        tracing::warn!("space getRepo: record scan failed: {e}");
-                        return Err("error");
-                    }
-                };
-                for i in run.clone() {
-                    // a run's range also spans the hidden records among its paths
-                    let kv = loop {
-                        match it.next().await {
-                            Ok(Some(kv)) if hidden.iter().any(|h| h.as_bytes() == &kv.key[prefix.len()..]) => {}
-                            Ok(Some(kv)) => break kv,
-                            Ok(None) => return Err("error"),
-                            Err(e) => {
-                                tracing::warn!("space getRepo: record scan failed: {e}");
-                                return Err("error");
-                            }
-                        }
-                    };
-                    let path = entries.path(i);
-                    let (cid, bytes) = match state::record_value_parts(&kv.value) {
-                        Ok(v) if &kv.key[prefix.len()..] == path.as_bytes() && v.0 == *entries.cid(i) => v,
-                        _ => {
-                            tracing::warn!("space getRepo: the snapshot changed between passes");
-                            return Err("error");
-                        }
-                    };
-                    car.record(&cid, bytes, &mut buf);
-                    if buf.len() >= CHUNK {
-                        flush_chunk(&tx, &mut buf, stall).await?;
-                    }
+        star::write_header(&mut buf, &commit);
+        let opts = slatedb::config::ScanOptions { read_ahead_bytes: 4 << 20, cache_blocks: true, ..Default::default() };
+        let mut it = match snap.scan_with_options(prefix.clone()..vlsync_store::keys::prefix_end(&prefix), &opts).await
+        {
+            Ok(it) => vlsync_store::keys::BatchedScan::new(it),
+            Err(e) => {
+                tracing::warn!("space getRepo: record scan failed: {e}");
+                return Err("error");
+            }
+        };
+        loop {
+            let kv = match it.next().await {
+                Ok(Some(kv)) => kv,
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::warn!("space getRepo: record scan failed: {e}");
+                    return Err("error");
                 }
+            };
+            let path = &kv.key[prefix.len()..];
+            if hidden.iter().any(|h| h.as_bytes() == path) {
+                continue;
+            }
+            let Ok((_, bytes)) = state::record_value_parts(&kv.value) else {
+                tracing::warn!("space getRepo: an undecodable record row");
+                return Err("error");
+            };
+            star::write_pair(&mut buf, path, bytes);
+            if buf.len() >= CHUNK {
+                flush_chunk(&tx, &mut buf, stall).await?;
             }
         }
         if !buf.is_empty() {
             flush_chunk(&tx, &mut buf, stall).await?;
         }
         Ok(())
-    }))
+    });
+    Ok(with_mac(body, mac))
 }
 
 async fn flush_chunk(
@@ -2122,8 +2134,9 @@ fn bytes_field<const N: usize>(v: &J) -> Option<[u8; N]> {
 
 /// Reference notifyWrite at a space host: the writer's repo host, by
 /// service auth from the writer (`iss` is the claimed `repo`, so no host
-/// notifies for another's account) addressed to the space's authority. The
-/// repoRev is checked before auth, as the reference's input validation is.
+/// notifies for another's account) addressed to the space's authority
+/// (`{authority}#atproto_pds`, or the bare DID). The repoRev is checked
+/// before auth, as the reference's input validation is.
 async fn notify_write(State(app): AppState, headers: HeaderMap, Json(inp): Json<J>) -> XResult<StatusCode> {
     spaces(&app)?;
     let r = notify_write_inner(&app, &headers, &inp).await;
@@ -2141,9 +2154,9 @@ async fn notify_write_inner(app: &App, headers: &HeaderMap, inp: &J) -> XResult<
         .filter(|d| vlatproto::syntax::valid_did(d))
         .ok_or_else(|| XrpcError::bad("InvalidRequest", "Input/repo must be a valid did"))?;
     let hash = inp
-        .get("hash")
+        .get("data")
         .and_then(bytes_field::<32>)
-        .ok_or_else(|| XrpcError::bad("InvalidRequest", "Input/hash must be 32 bytes"))?;
+        .ok_or_else(|| XrpcError::bad("InvalidRequest", "Input/data must be 32 bytes"))?;
     let auth = super::authn::verify_space_service_jwt(app, headers, "com.atproto.space.notifyWrite").await?;
     if auth.iss != repo {
         return Err(forbidden("notifyWrite iss does not match claimed writer"));
@@ -2251,7 +2264,7 @@ async fn list_repos(State(app): AppState, headers: HeaderMap, Query(q): Query<Li
             repos.push(json!({
                 "did": writer,
                 "repoRev": w.repo_rev.to_string(),
-                "hash": b64(&w.hash),
+                "data": b64(&w.hash),
                 "spaceRev": space_rev.to_string(),
             }));
             last = Some(space_rev);
@@ -2365,21 +2378,5 @@ mod tests {
         // past every TID
         assert_eq!(space_rev_after("c"), None);
         assert_eq!(space_rev_after("zzz"), None);
-    }
-
-    #[test]
-    fn commit_blocks_are_canonical() {
-        let c = crate::space::commit::SignedCommit {
-            ver: 1,
-            hash: vec![1; 32],
-            ikm: vec![2; 32],
-            sig: vec![3; 64],
-            mac: vec![4; 32],
-            rev: "3jzfcijpj2z2a".into(),
-        };
-        let b = commit_block(&c);
-        let v = vlatproto::cbor::Value::decode(&b).unwrap();
-        assert_eq!(v.to_cbor(), b, "decodes and re-encodes to the same bytes");
-        assert_eq!(v.get("rev").and_then(|r| r.as_str()), Some("3jzfcijpj2z2a"));
     }
 }

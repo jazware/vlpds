@@ -1,22 +1,21 @@
-// Generates export.car and export.json: a space repo as the reference PDS's
+// Generates export.star and export.json: a space repo as the reference PDS's
 // com.atproto.space.getRepo serves it (packages/pds/src/api/com/atproto/space/
-// getRepo.ts: buildSignedCommit = RepoCommit.fromState(..).sign, then
+// getRepo.ts: buildCommit = RepoCommit.fromState(..).toCommit, then
 // serializeRepo), for vlpds's importRepo tests (tests/all/spaces_side/import_repo.rs).
-// Run from packages/space of a built bluesky-social/atproto checkout at the
-// commit in SOURCE: cp gen-export.mjs <atproto>/packages/space/ && cd there &&
+// Run in a directory with the release in SOURCE installed (see gen-vectors.mjs):
 // node gen-export.mjs <out dir>
-// The key is fixed; the commit's ikm is random, so a re-run changes the commit
-// block (and only it). The CAR is checked with verifyRepoCarFull before it is
-// written.
+// The output is deterministic. The archive is checked with verifyRepoStarFull
+// (under a MAC computed for the purpose) before it is written.
 import { writeFileSync } from 'node:fs'
 import { Secp256k1Keypair, sha256 } from '@atproto/crypto'
 import { cidForRawBytes } from '@atproto/lex-data'
 import {
   RepoCommit,
+  computeCommitMac,
   serializeRecord,
   serializeRepo,
-  verifyRepoCarFull,
-} from './dist/index.js'
+  verifyRepoStarFull,
+} from '@atproto/space'
 
 const out = process.argv[2] ?? '.'
 const hex = (b) => Buffer.from(b).toString('hex')
@@ -52,32 +51,36 @@ const recs = [
   [C1, 'a', { $type: C1, text: 'short rkey', n: 1 }],
   [C1, 'self', { $type: C1, text: 'with a blob', image: { $type: 'blob', ref: blobCid, mimeType: 'image/png', size: blobBytes.length } }],
   [C2, '3lzzzzzzzzz23', { $type: C2, text: 'a note', tags: ['x', 'y'], nested: { deep: true } }],
-  [C2, 'longer-record-key-than-the-others', { $type: C2, text: 'canonical order is length first' }],
+  [C2, 'longer-record-key-than-the-others', { $type: C2, text: 'the archive is in bytewise path order' }],
 ]
 const serialized = []
 for (const [c, r, v] of recs) serialized.push(await serializeRecord(c, r, v))
+// the archive's order: bytewise by path
+serialized.sort((x, y) => Buffer.compare(Buffer.from(`${x.collection}/${x.rkey}`), Buffer.from(`${y.collection}/${y.rkey}`)))
 const repo = RepoCommit.fromRecords(serialized)
-const commit = await repo.sign({ space, author: did, rev }, author)
+const commit = repo.toCommit({ space, repo: did, rev })
 
 const chunks = []
 for await (const c of serializeRepo(commit, serialized)) chunks.push(c)
-const car = Buffer.concat(chunks)
+const star = Buffer.concat(chunks)
 
-const verified = await verifyRepoCarFull([car], { space, author: did, didKey: author.did() })
-if (verified.records.length !== recs.length) throw new Error('verifyRepoCarFull: record count')
+const sharedSecret = await seed('vlpds spaces export mac')
+const mac = computeCommitMac(sharedSecret, commit)
+const verified = await verifyRepoStarFull([star], { space, repo: did, sharedSecret, mac })
+if (verified.records.length !== recs.length) throw new Error('verifyRepoStarFull: record count')
 
-writeFileSync(`${out}/export.car`, car)
+writeFileSync(`${out}/export.star`, star)
 writeFileSync(
   `${out}/export.json`,
   `${JSON.stringify(
     {
-      generatedBy: 'gen-export.mjs: @atproto/space serializeRepo + RepoCommit.sign at the commit in SOURCE',
+      generatedBy: 'gen-export.mjs: @atproto/space serializeRepo + RepoCommit.toCommit at the release in SOURCE',
       did,
       space,
       rev,
       didKey: author.did(),
       privateKeyHex: hex(await author.export()),
-      hash: hex(commit.hash),
+      data: hex(commit.data),
       blob: { cid: blobCid.toString(), bytesHex: hex(blobBytes), mimeType: 'image/png' },
       records: serialized.map((s) => ({ collection: s.collection, rkey: s.rkey, cid: s.cid.toString() })),
     },
