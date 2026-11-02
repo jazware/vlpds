@@ -25,8 +25,12 @@ export type Quota = {
   uploadsToday: number
   limitBytes: number
   limitUploadsPerDay: number
-  override: { bytes?: number; uploadsPerDay?: number }
-  defaults: { bytes: number; uploadsPerDay: number }
+  /** Absent from an owner node whose build has no largest-blob override. */
+  limitMaxBlobBytes?: number
+  override: { bytes?: number; uploadsPerDay?: number; maxBlobBytes?: number }
+  defaults: { bytes: number; uploadsPerDay: number; maxBlobBytes?: number }
+  /** The most a maxBlobBytes override can be (--max-blob-override-mb). */
+  maxBlobCeiling?: number
   over: boolean
 }
 export type SubjectDetail = {
@@ -239,7 +243,19 @@ export function moderate(s: SubjectRef, restore: boolean, reason: string, caseId
   })
 }
 
-export function setBlobQuota(did: string, v: { bytes?: number; uploadsPerDay?: number; reason?: string }) {
+export const MiB = 1 << 20
+
+export type QuotaOverride = { bytes?: number; uploadsPerDay?: number; maxBlobBytes?: number }
+
+export const UNSUPPORTED_MAX_BLOB = "not in this node's build"
+
+/** The account's largest blob, or why it can't be shown. */
+export const fmtMaxBlob = (q: Quota, fmt: (n: number) => string) => (q.limitMaxBlobBytes === undefined ? UNSUPPORTED_MAX_BLOB : fmt(q.limitMaxBlobBytes))
+
+/** An override set on any of the account's limits. */
+export const customQuota = (q: Quota) => Object.keys(q.override).length > 0
+
+export function setBlobQuota(did: string, v: QuotaOverride & { reason?: string }) {
   return mutate({
     run: () => admin('vlpds.admin.setBlobQuota', { body: { did, ...v } }),
     changes: [{ kind: 'account', id: did }],

@@ -95,6 +95,7 @@ _vlpds_env_base:
   VLPDS_INVITE_INTERVAL_MS: "{{ vlpds_invite_interval_ms }}"
   VLPDS_INVITE_EPOCH_MS: "{{ vlpds_invite_epoch_ms }}"
   VLPDS_MAX_BLOB_MB: "{{ vlpds_max_blob_mb }}"
+  VLPDS_MAX_BLOB_OVERRIDE_MB: "{{ vlpds_max_blob_override_mb }}"
   VLPDS_MAX_IMPORT_MB: "{{ vlpds_max_import_mb }}"
   VLPDS_SPACES: "{{ 'true' if vlpds_spaces | bool else '' }}"
   VLPDS_SPACE_REPO_MAX_RECORDS: "{{ vlpds_space_repo_max_records }}"

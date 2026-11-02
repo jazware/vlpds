@@ -1,6 +1,6 @@
-//! Per-account blob quotas: stored bytes (`--blob-quota-gb`) and uploads
-//! per UTC day (`--blob-uploads-per-day`), overridable per DID from the
-//! console.
+//! Per-account blob quotas: stored bytes (`--blob-quota-gb`), uploads per
+//! UTC day (`--blob-uploads-per-day`) and the largest blob (`--max-blob-mb`),
+//! overridable per DID from the console.
 //!
 //!   p/{did}\0bq/use     [`Usage`]: running byte total of the account's
 //!                       stored blobs (`blobs::STORED` rows) + today's uploads
@@ -45,6 +45,15 @@ pub struct Limits {
     pub bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uploads_per_day: Option<u32>,
+    /// Largest uploadBlob, 1..=`--max-blob-override-mb` (no unlimited).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_blob_bytes: Option<u64>,
+}
+
+/// The largest blob the account may upload. An override set before the
+/// operator lowered `--max-blob-override-mb` is held to the new cap.
+pub(super) fn max_blob(app: &App, l: &Limits) -> u64 {
+    l.max_blob_bytes.map_or(app.config.max_blob_size, |n| n.min(app.config.max_blob_override))
 }
 
 /// What a blob upload is let off.
@@ -139,19 +148,24 @@ fn daily_exceeded(limit: u32) -> XrpcError {
 
 /// Cheap early refusal before the body is read (no lock, no writes):
 /// today's upload count, and `declared` bytes against the byte quota.
-pub(super) async fn precheck(app: &App, did: &str, declared: Option<u64>, moving_in: bool) -> XResult<()> {
+pub(super) async fn precheck(app: &App, did: &str, l: &Limits, declared: Option<u64>, moving_in: bool) -> XResult<()> {
     if moving_in {
         // checked once the CID shows whether the imported repo references it
         return Ok(());
     }
-    let (u, l) = tokio::try_join!(usage(app, did), limits(app, did))?;
-    let (max_bytes, per_day) = effective(app, &l);
+    let u = usage(app, did).await?;
+    let (max_bytes, per_day) = effective(app, l);
     if per_day > 0 && u.uploads >= per_day {
         return Err(daily_exceeded(per_day));
     }
-    // only a full quota: the body may be a blob the account already stores,
-    // which adds nothing ([`commit`] decides exactly)
-    if max_bytes > 0 && u.bytes >= max_bytes {
+    // A declared size past what's left is refused before the body is read,
+    // though it might be a blob the account already stores (which adds
+    // nothing): otherwise any account can make the node take a body as big
+    // as its largest blob that the quota then refuses. Without a
+    // Content-Length only a full quota is refused here; [`commit`] decides
+    // exactly.
+    let over = u.bytes >= max_bytes || declared.is_some_and(|n| u.bytes.saturating_add(n) > max_bytes);
+    if max_bytes > 0 && over {
         return Err(bytes_exceeded(u.bytes, declared.unwrap_or(0), max_bytes));
     }
     Ok(())
@@ -246,13 +260,19 @@ pub(super) async fn view(app: &App, did: &str) -> XResult<J> {
         "uploadsToday": u.uploads,
         "limitBytes": max_bytes,
         "limitUploadsPerDay": per_day,
+        "limitMaxBlobBytes": max_blob(app, &l),
         "override": l,
-        "defaults": {"bytes": app.config.blob_quota_bytes, "uploadsPerDay": app.config.blob_uploads_per_day},
+        "defaults": {
+            "bytes": app.config.blob_quota_bytes,
+            "uploadsPerDay": app.config.blob_uploads_per_day,
+            "maxBlobBytes": app.config.max_blob_size,
+        },
+        "maxBlobCeiling": app.config.max_blob_override,
         "over": max_bytes > 0 && u.bytes > max_bytes,
     }))
 }
 
-/// Writes the override (both None: back to the defaults) and re-evaluates
+/// Writes the override (all None: back to the defaults) and re-evaluates
 /// the over-quota flag.
 pub(super) async fn set_limits(app: &App, did: &str, l: Limits) -> XResult<()> {
     let _g = lock(did).await;
@@ -291,11 +311,19 @@ pub(super) async fn over_quota(app: &App) -> XResult<Vec<J>> {
 
 pub(super) fn fixture_rows(did: &str) -> Vec<super::private_rows::PrivateRow> {
     let u = Usage { bytes: 1_234_567, day: 20_729, uploads: 3, over: false };
-    let l = Limits { bytes: Some(50_000_000_000), uploads_per_day: Some(1000) };
+    let l = Limits { bytes: Some(50_000_000_000), uploads_per_day: Some(1000), max_blob_bytes: None };
     vec![
         (did.into(), USAGE.into(), super::private_rows::enc(&u)),
         (did.into(), LIMITS.into(), super::private_rows::enc(&l)),
     ]
+}
+
+/// An override with `maxBlobBytes`, added after level 2 was released. Nodes
+/// of that level read it as the same row without the field (serde ignores
+/// it), and never write `bq/limit` themselves, so it needs no new level.
+pub(super) fn max_blob_fixture_rows(did: &str) -> Vec<super::private_rows::PrivateRow> {
+    let l = Limits { bytes: None, uploads_per_day: None, max_blob_bytes: Some(2_000_000_000) };
+    vec![(did.into(), LIMITS.into(), super::private_rows::enc(&l))]
 }
 
 pub(super) fn check_row(_routing: &str, name: &str, val: &[u8]) -> Option<anyhow::Result<&'static str>> {

@@ -622,9 +622,13 @@ struct Args {
     /// or --moderation-email-api-url.
     #[arg(long, env = "VLPDS_MODERATION_EMAIL_ADDRESS")]
     moderation_email_address: Option<String>,
-    /// Max uploadBlob size (MB).
+    /// Max uploadBlob size (MiB). At most 4768 (5 GB).
     #[arg(long, env = "VLPDS_MAX_BLOB_MB", default_value_t = 100)]
     max_blob_mb: u64,
+    /// The most the console may raise one account's largest blob to (MiB;
+    /// default --max-blob-mb, so raising one is opt-in). At most 4768 (5 GB).
+    #[arg(long, env = "VLPDS_MAX_BLOB_OVERRIDE_MB")]
+    max_blob_override_mb: Option<u64>,
     /// describeServer links.privacyPolicy (falls back to PDS_PRIVACY_POLICY_URL).
     #[arg(long, env = "VLPDS_PRIVACY_POLICY_URL")]
     privacy_policy_url: Option<String>,
@@ -1509,6 +1513,8 @@ async fn run(args: Args) -> anyhow::Result<()> {
         full_every: opt_duration(&args.full_compaction_every)?,
         ..Default::default()
     });
+    let (max_blob_size, max_blob_override) =
+        vlpds::xrpc::blobs::size_flags(args.max_blob_mb, args.max_blob_override_mb)?;
     let cfg = Config {
         public_url: args.public_url.clone(),
         handle_domain: args.handle_domain.clone(),
@@ -1595,7 +1601,8 @@ async fn run(args: Args) -> anyhow::Result<()> {
             args.email_primary_color.clone(),
             args.email_disable_confirmation_link,
         ),
-        max_blob_size: args.max_blob_mb << 20,
+        max_blob_size,
+        max_blob_override,
         privacy_policy_url: flag_or_env(&args.privacy_policy_url, "PDS_PRIVACY_POLICY_URL"),
         terms_of_service_url: flag_or_env(&args.terms_of_service_url, "PDS_TERMS_OF_SERVICE_URL"),
         contact_email_address: flag_or_env(&args.contact_email_address, "PDS_CONTACT_EMAIL_ADDRESS"),

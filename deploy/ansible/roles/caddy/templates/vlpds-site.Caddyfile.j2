@@ -7,13 +7,20 @@
 	@vlpds_blocked path {{ vlpds_caddy_blocked_paths | join(' ') }}
 	respond @vlpds_blocked 404
 
-	# Body caps in binary units (MB/GB are decimal in Caddy): blobs
-	# (--max-blob-mb MiB + slack); importRepo above vlpds' own 1 GiB cap.
+	# Body caps in binary units (MB/GB are decimal in Caddy): uploadBlob at
+	# --max-blob-override-mb + slack, since vlpds picks each upload's limit for
+	# its account (setBlobQuota maxBlobBytes) after auth and before reading
+	# the body; anything else --max-blob-mb MiB + slack; importRepo above
+	# vlpds' own 1 GiB cap.
+	@vlpds_upload path /xrpc/com.atproto.repo.uploadBlob
+	request_body @vlpds_upload {
+		max_size {{ vlpds_caddy_upload_max_body_mb }}MiB
+	}
 	@vlpds_import path /xrpc/com.atproto.repo.importRepo
 	request_body @vlpds_import {
 		max_size {{ vlpds_caddy_import_max_body }}
 	}
-	@vlpds_not_import not path /xrpc/com.atproto.repo.importRepo
+	@vlpds_not_import not path /xrpc/com.atproto.repo.importRepo /xrpc/com.atproto.repo.uploadBlob
 	request_body @vlpds_not_import {
 		max_size {{ vlpds_caddy_max_body_mb }}MiB
 	}

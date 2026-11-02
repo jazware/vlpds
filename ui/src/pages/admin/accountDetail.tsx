@@ -12,7 +12,7 @@ import { useClusterView } from '../../lib/console/cluster'
 import { ago, authName, dur, factorName, fmtBytes, fmtNum, plural, shortDid } from '../../lib/console/fmt'
 import { K } from '../../lib/console/keys'
 import { isUnsupported } from '../../lib/console/live'
-import { useAudit, useCases, useSubject } from '../../lib/console/moderation'
+import { customQuota, fmtMaxBlob, useAudit, useCases, useSubject } from '../../lib/console/moderation'
 import { useAdminQuery, type Load } from '../../lib/console/query'
 import { heldSignInKeys, rateLimitsQ, shortName, type HeldKey } from '../../lib/console/ratelimits'
 import { Link } from '../../lib/router'
@@ -641,10 +641,11 @@ function Blobs({ a, row, mode }: { a: Who; row?: AccountRow | null; mode: Detail
                 { chip: q.limitBytes > 0 ? q.over ? <Chip k="err">over</Chip> : <span className="mono sm t2">{pct!.toFixed(0)}%</span> : undefined },
               ],
               ['Uploads today', `${fmtNum(q.uploadsToday)}${q.limitUploadsPerDay ? ` of ${fmtNum(q.limitUploadsPerDay)}` : ''}`],
+              ['Largest blob', fmtMaxBlob(q, fmtBytes), { chip: q.override.maxBlobBytes !== undefined ? <Chip k="info">custom</Chip> : undefined }],
               [
                 'Limits',
-                q.override.bytes !== undefined || q.override.uploadsPerDay !== undefined ? 'set for this account' : 'server defaults',
-                { chip: q.override.bytes !== undefined || q.override.uploadsPerDay !== undefined ? <Chip k="info">custom</Chip> : undefined, act: btn('Change quota…', () => act.setQuota(a, q)) },
+                customQuota(q) ? 'set for this account' : 'server defaults',
+                { chip: customQuota(q) ? <Chip k="info">custom</Chip> : undefined, act: btn('Change quota…', () => act.setQuota(a, q)) },
               ],
             ]}
           />

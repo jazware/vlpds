@@ -610,6 +610,10 @@ fn written() -> Vec<(&'static str, Vec<u8>)> {
         ("stream/watermark.bin", vlpds::remote::encode_watermark(1003 << 8).to_vec()),
         ("private/rows.json", private_rows()),
         ("private/blob_quota.json", blob_quota_rows()),
+        (
+            "private/blob_quota_max_blob.json",
+            rows_json(vlpds::xrpc::private_rows::blob_quota_max_blob_row_fixtures(DID)),
+        ),
         ("private/app_password_scopes.json", app_password_scope_rows()),
         ("private/sign_in.json", rows_json(vlpds::xrpc::private_rows::sign_in_row_fixtures(DID))),
         ("private/sign_in_failures.json", rows_json(vlpds::xrpc::private_rows::sign_in_failure_row_fixtures(DID))),
@@ -1171,6 +1175,7 @@ async fn check(level: u32, name: &str, b: &[u8]) {
             assert!(kinds.len() >= 20, "L{level}/{name}: only {} row kinds: {kinds:?}", kinds.len());
         }
         "private/blob_quota.json"
+        | "private/blob_quota_max_blob.json"
         | "private/app_password_scopes.json"
         | "private/sign_in.json"
         | "private/sign_in_failures.json"

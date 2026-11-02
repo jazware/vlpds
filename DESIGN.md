@@ -1186,7 +1186,8 @@ RESULTS follow-up for measured numbers. Metric:
 ### Forwarding deadlines and not-applied writes (`src/forward.rs`)
 
 A forward fails at a time-to-first-byte deadline (3 s for quick calls, 30 s
-for exports, uploads and proxying): an owner that doesn't answer is
+for exports, uploads and proxying, plus 1 s per 25 MB of request body, so a
+multi-GB blob's multipart completion and copy fit): an owner that doesn't answer is
 presumed frozen, the client gets 503 `PartitionUnavailable` + Retry-After,
 and the owner's lease moves the shard. That answer is ambiguous (the write
 may still be applied), so it is never resent. But after a restart,

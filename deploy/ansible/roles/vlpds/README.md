@@ -126,6 +126,12 @@ first. The knobs only matter with it on, and empty keeps vlpds' default:
 Turning it on or off is a graceful restart. With it off again, space-only
 blobs stay private and the space data stays in the bucket.
 
+Blob sizes: `vlpds_max_blob_mb` (`--max-blob-mb`, default 100) is the largest
+uploadBlob. The console can lower it per account, and raise it only up to
+`vlpds_max_blob_override_mb` (`--max-blob-override-mb`, empty = the same, at
+most 4768). Caddy's uploadBlob body cap is the override cap + 5 MiB, so
+multi-GB uploads are something you turn on here.
+
 The role never runs a node in dev mode. `assert.yml` refuses
 `VLPDS_DEV_MODE` / `--dev-mode` and `VLPDS_LEXICON_AUTHORITY_OVERRIDE` /
 `--lexicon-authority-override` in the extras, and the compose file drops

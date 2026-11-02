@@ -1323,6 +1323,8 @@ struct SetQuotaIn {
     /// null: the default; 0: unlimited.
     bytes: Option<u64>,
     uploads_per_day: Option<u32>,
+    /// null: `--max-blob-mb`.
+    max_blob_bytes: Option<u64>,
     reason: Option<String>,
     actor: Option<String>,
 }
@@ -1343,7 +1345,18 @@ async fn set_blob_quota(
         }
     })?;
     let reason = inp.reason.as_deref().map(|r| bounded_text("reason", r, MAX_REASON)).transpose()?;
-    let l = super::blob_quota::Limits { bytes: inp.bytes, uploads_per_day: inp.uploads_per_day };
+    let cap = app.config.max_blob_override;
+    if inp.max_blob_bytes.is_some_and(|n| n == 0 || n > cap) {
+        return Err(XrpcError::bad(
+            "InvalidRequest",
+            format!("maxBlobBytes must be between 1 and {cap} (the server's --max-blob-override-mb)"),
+        ));
+    }
+    let l = super::blob_quota::Limits {
+        bytes: inp.bytes,
+        uploads_per_day: inp.uploads_per_day,
+        max_blob_bytes: inp.max_blob_bytes,
+    };
     super::blob_quota::set_limits(&app, &inp.did, l.clone()).await?;
     let who = Who::of(&creds, inp.actor.as_deref(), ip);
     audit(

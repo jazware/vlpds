@@ -47,6 +47,11 @@ pub const TTFB_FAST: Duration = Duration::from_millis(3000);
 pub const TTFB_SLOW: Duration = Duration::from_secs(30);
 /// An upload whose body the owner stops reading for this long fails too.
 const BODY_STALL: Duration = Duration::from_secs(10);
+/// One more second of TTFB deadline per this many body bytes: once a
+/// big blob is in, its owner still completes the multipart upload and copies
+/// it to its final key, both in proportion to its size (a per-account
+/// `maxBlobBytes` goes up to 5 GB).
+const BODY_FINISH_RATE: u64 = 25_000_000;
 /// Overrides the peer client's short default; response streaming included.
 const FORWARD_MAX: Duration = Duration::from_secs(3600);
 /// Well under TTFB_FAST, so a loading repo is never mistaken for a frozen
@@ -785,27 +790,46 @@ fn ttfb_for(req: &Request) -> Duration {
     }
 }
 
-/// The TTFB deadline counts from the end of the request body.
+/// The TTFB deadline counts from the end of the request body. Tokio's clock,
+/// so a paused test clock drives the stall check too.
 struct Progress {
-    start: Instant,
+    start: tokio::time::Instant,
     last_ms: AtomicU64,
+    sent: AtomicU64,
     done: AtomicBool,
     done_notify: tokio::sync::Notify,
 }
 
 impl Progress {
+    fn new() -> Self {
+        Progress {
+            start: tokio::time::Instant::now(),
+            last_ms: AtomicU64::new(0),
+            sent: AtomicU64::new(0),
+            done: AtomicBool::new(false),
+            done_notify: tokio::sync::Notify::new(),
+        }
+    }
+
+    /// What the owner gets once the body is sent: `ttfb`, plus time for a
+    /// big body's finishing work ([`BODY_FINISH_RATE`]).
+    fn answer_within(&self, ttfb: Duration) -> Duration {
+        ttfb + Duration::from_secs(self.sent.load(Ordering::Relaxed) / BODY_FINISH_RATE)
+    }
+
     fn finish(&self) {
         if !self.done.swap(true, Ordering::AcqRel) {
             self.done_notify.notify_one();
         }
     }
 
-    /// Resolves when the owner is late: `ttfb` after the body was fully
-    /// sent, or once the owner stopped reading it for [`BODY_STALL`].
+    /// Resolves when the owner is late: [`Self::answer_within`] after the
+    /// body was fully sent, or once the owner stopped reading it for
+    /// [`BODY_STALL`].
     async fn deadline(&self, ttfb: Duration) {
         loop {
             if self.done.load(Ordering::Acquire) {
-                tokio::time::sleep(ttfb).await;
+                tokio::time::sleep(self.answer_within(ttfb)).await;
                 return;
             }
             tokio::select! {
@@ -828,6 +852,9 @@ fn tracked_body(body: Body, p: Arc<Progress>) -> reqwest::Body {
         .into_data_stream()
         .map(move |chunk| {
             p.last_ms.store(p.start.elapsed().as_millis() as u64, Ordering::Relaxed);
+            if let Ok(b) = &chunk {
+                p.sent.fetch_add(b.len() as u64, Ordering::Relaxed);
+            }
             chunk
         })
         .chain(futures::stream::poll_fn(move |_| {
@@ -907,12 +934,7 @@ async fn forward(
     if let Some(login) = parts.extensions.get::<crate::admin_proxy::ProxyIdentity>().and_then(|p| p.operator()) {
         rb = rb.header(crate::admin_proxy::OPERATOR_HEADER, login);
     }
-    let progress = Arc::new(Progress {
-        start: Instant::now(),
-        last_ms: AtomicU64::new(0),
-        done: AtomicBool::new(false),
-        done_notify: tokio::sync::Notify::new(),
-    });
+    let progress = Arc::new(Progress::new());
     if axum::body::HttpBody::size_hint(&body).exact() == Some(0) {
         progress.finish();
     } else {
@@ -933,7 +955,12 @@ async fn forward(
         },
         _ = progress.deadline(ttfb) => {
             tracing::warn!(owner, path = parts.uri.path(), "forward: owner did not answer in time");
-            return unavailable(format!("owner did not answer within {} ms", ttfb.as_millis()));
+            let message = if progress.done.load(Ordering::Acquire) {
+                format!("owner did not answer within {} ms of the request body", progress.answer_within(ttfb).as_millis())
+            } else {
+                format!("owner stopped reading the request body for {} s", BODY_STALL.as_secs())
+            };
+            return unavailable(message);
         }
     };
     let mut out = Response::builder().status(resp.status().as_u16());
@@ -950,6 +977,32 @@ async fn forward(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn deadline_after(p: &Progress, ttfb: Duration) -> Duration {
+        let t = tokio::time::Instant::now();
+        p.deadline(ttfb).await;
+        t.elapsed()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn deadline_grows_with_the_body_sent() {
+        let p = Progress::new();
+        p.finish();
+        assert_eq!(deadline_after(&p, TTFB_SLOW).await, TTFB_SLOW);
+
+        let p = Progress::new();
+        p.sent.store(5_000_000_000, Ordering::Relaxed);
+        p.finish();
+        assert_eq!(p.answer_within(TTFB_SLOW), TTFB_SLOW + Duration::from_secs(200));
+        assert_eq!(deadline_after(&p, TTFB_SLOW).await, TTFB_SLOW + Duration::from_secs(200));
+
+        // a body the owner stops reading fails at BODY_STALL, however much
+        // was sent before; the check runs once a second
+        let p = Progress::new();
+        p.sent.store(5_000_000_000, Ordering::Relaxed);
+        let waited = deadline_after(&p, TTFB_SLOW).await;
+        assert!(waited > BODY_STALL && waited <= BODY_STALL + Duration::from_secs(1), "{waited:?}");
+    }
 
     #[test]
     fn only_queries_are_resent_as_reads() {

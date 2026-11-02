@@ -20,6 +20,8 @@ import { admin } from '../../lib/xrpc'
 
 export type Who = { did: string; handle: string; node?: string }
 
+const MiB = 1 << 20
+
 type SubjectStatus = { takedown?: { applied: boolean; ref?: string }; deactivated?: { applied: boolean } }
 
 /** Runs an action on one account: `row` patches its row wherever it's cached, `then` writes more of the answer. */
@@ -332,8 +334,12 @@ export type Quota = {
   uploadsToday: number
   limitBytes: number
   limitUploadsPerDay: number
-  override: { bytes?: number; uploadsPerDay?: number }
-  defaults: { bytes: number; uploadsPerDay: number }
+  /** Absent from an owner node whose build has no largest-blob override. */
+  limitMaxBlobBytes?: number
+  override: { bytes?: number; uploadsPerDay?: number; maxBlobBytes?: number }
+  defaults: { bytes: number; uploadsPerDay: number; maxBlobBytes?: number }
+  /** The most a maxBlobBytes override can be (--max-blob-override-mb). */
+  maxBlobCeiling?: number
   over: boolean
 }
 
@@ -341,10 +347,17 @@ export const setQuota = (a: Who, q: Quota) =>
   confirmAction({
     tone: 'warn',
     title: `Change the blob quota of @${a.handle}?`,
-    items: [`Defaults: ${(q.defaults.bytes / 1e9).toFixed(1)} GB and ${fmtNum(q.defaults.uploadsPerDay)} uploads a day. Leave both empty to go back to them.`],
+    items: [
+      q.defaults.maxBlobBytes === undefined || q.maxBlobCeiling === undefined
+        ? `Defaults: ${(q.defaults.bytes / 1e9).toFixed(1)} GB and ${fmtNum(q.defaults.uploadsPerDay)} uploads a day. Leave both empty to go back to them. The owner node's build has no largest-blob override.`
+        : `Defaults: ${(q.defaults.bytes / 1e9).toFixed(1)} GB, ${fmtNum(q.defaults.uploadsPerDay)} uploads a day and ${fmtNum(q.defaults.maxBlobBytes / MiB)} MiB per blob. Leave all three empty to go back to them.`,
+    ],
     fields: [
       { id: 'gb', label: 'Bytes (GB)', type: 'number', initial: q.override.bytes !== undefined ? String(q.override.bytes / 1e9) : '' },
       { id: 'perDay', label: 'Uploads per day', type: 'number', initial: q.override.uploadsPerDay !== undefined ? String(q.override.uploadsPerDay) : '' },
+      ...(q.maxBlobCeiling === undefined
+        ? []
+        : [{ id: 'maxBlob', label: `Largest blob (MiB, up to ${fmtNum(Math.floor(q.maxBlobCeiling / MiB))})`, type: 'number' as const, initial: q.override.maxBlobBytes !== undefined ? String(q.override.maxBlobBytes / MiB) : '' }]),
       { id: 'reason', label: 'Reason (audited)' },
     ],
     action: 'Save quota',
@@ -354,6 +367,7 @@ export const setQuota = (a: Who, q: Quota) =>
       const body: Record<string, unknown> = { did: a.did, reason: text(v.reason) || undefined }
       if (text(v.gb)) body.bytes = Math.round(Number(text(v.gb)) * 1e9)
       if (text(v.perDay)) body.uploadsPerDay = Math.round(Number(text(v.perDay)))
+      if (text(v.maxBlob)) body.maxBlobBytes = Math.round(Number(text(v.maxBlob)) * MiB)
       return onAccount(a, () => admin('vlpds.admin.setBlobQuota', { body }))
     },
     done: 'Quota saved',

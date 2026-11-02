@@ -11,7 +11,10 @@ import {
   CASE_STATUSES,
   CASE_TONE,
   createCase,
+  customQuota,
+  fmtMaxBlob,
   fmtGB,
+  MiB,
   moderate,
   resolveSubject,
   SEMANTICS,
@@ -30,6 +33,7 @@ import {
   type Case,
   type Kind,
   type Quota,
+  type QuotaOverride,
   type SubjectDetail,
   type SubjectRef,
 } from '../../lib/console/moderation'
@@ -189,13 +193,15 @@ function quotaDialog(did: string, q: Quota) {
 function QuotaForm({ did, q, close }: { did: string; q: Quota; close: () => void }) {
   const [gb, setGb] = useState(q.override.bytes !== undefined ? String(q.override.bytes / 1e9) : '')
   const [perDay, setPerDay] = useState(q.override.uploadsPerDay !== undefined ? String(q.override.uploadsPerDay) : '')
+  const [maxBlob, setMaxBlob] = useState(q.override.maxBlobBytes !== undefined ? String(q.override.maxBlobBytes / MiB) : '')
   const [reason, setReason] = useState('')
   const [reset, setReset] = useState(false)
   const save = useAction(async () => {
-    const v: { bytes?: number; uploadsPerDay?: number; reason?: string } = { reason: reason.trim() || undefined }
+    const v: QuotaOverride & { reason?: string } = { reason: reason.trim() || undefined }
     if (!reset) {
       if (gb.trim() !== '') v.bytes = Math.round(Number(gb) * 1e9)
       if (perDay.trim() !== '') v.uploadsPerDay = Math.round(Number(perDay))
+      if (maxBlob.trim() !== '') v.maxBlobBytes = Math.round(Number(maxBlob) * MiB)
     }
     await setBlobQuota(did, v)
     close()
@@ -217,8 +223,17 @@ function QuotaForm({ did, q, close }: { did: string; q: Quota; close: () => void
           <input id="q-day" className="cx-inp mono" type="number" min="0" step="1" disabled={reset} value={perDay} onChange={(e) => setPerDay(e.target.value)} placeholder={`default ${q.defaults.uploadsPerDay}`} />
         </div>
       </div>
+      {q.maxBlobCeiling !== undefined && q.defaults.maxBlobBytes !== undefined && (
+        <div>
+          <label className="cx-lbl" htmlFor="q-max">
+            Largest blob (MiB)
+          </label>
+          <input id="q-max" className="cx-inp mono" type="number" min="1" max={Math.floor(q.maxBlobCeiling / MiB)} step="any" disabled={reset} value={maxBlob} onChange={(e) => setMaxBlob(e.target.value)} placeholder={`default ${fmtBytes(q.defaults.maxBlobBytes)}`} />
+        </div>
+      )}
       <p className="muted sm" style={{ margin: 0 }}>
-        Blank keeps the server default. 0 is unlimited.
+        Blank keeps the server default. 0 is unlimited for bytes and uploads.{' '}
+        {q.maxBlobCeiling === undefined ? "The owner node's build has no largest-blob override." : `The largest blob can go up to ${fmtBytes(q.maxBlobCeiling)} (--max-blob-override-mb).`}
       </p>
       <label className="cx-form-row" style={{ cursor: 'pointer' }}>
         <input type="checkbox" checked={reset} onChange={(e) => setReset(e.target.checked)} /> Back to the defaults
@@ -406,7 +421,8 @@ function quotaRows(q: Quota): [string, ReactNode][] {
       </span>,
     ],
     ['Uploads today', `${q.uploadsToday} of ${q.limitUploadsPerDay || 'unlimited'}`],
-    ['Limits', q.override.bytes !== undefined || q.override.uploadsPerDay !== undefined ? 'custom for this account' : 'server defaults'],
+    ['Largest blob', fmtMaxBlob(q, fmtBytes)],
+    ['Limits', customQuota(q) ? 'custom for this account' : 'server defaults'],
   ]
 }
 

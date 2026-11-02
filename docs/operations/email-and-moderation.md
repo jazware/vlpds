@@ -233,6 +233,7 @@ either path take effect on every node. See [Admin console and CLI](admin-console
 - { value: "30", unit: days, label: blob quarantine, note: "`--blob-quarantine-days` · restorable until then", tone: amber }
 - { value: "25 GB", label: per-account blob quota, note: "`--blob-quota-gb` · per-account override in the console", tone: blue }
 - { value: "500", unit: uploads, label: per account per day, note: "`--blob-uploads-per-day`", tone: violet }
+- { value: "100", unit: MiB, label: largest blob, note: "`--max-blob-mb` · per-account override up to `--max-blob-override-mb`", tone: blue }
 ```
 
 Sometimes a notice reaches you directly, like a copyright (DMCA) notice, an abuse report or a
@@ -305,14 +306,24 @@ to re-upload a taken-down blob. The bytes count toward the account's quota until
 ### Upload quotas
 
 Each account can store `--blob-quota-gb` (25 GB, decimal) of blobs and make
-`--blob-uploads-per-day` (500) uploads per UTC day. Setting either to 0 turns it off. An account looked
-up on the console's Moderation page shows its usage and sets a per-account override (or puts it back to the
-defaults). Over a limit, `uploadBlob` answers:
+`--blob-uploads-per-day` (500) uploads per UTC day. Setting either to 0 turns it off. Each blob can be
+up to `--max-blob-mb` (100 MiB). An account looked up on the console's Moderation page shows its usage
+and sets a per-account override of any of the three (or puts it back to the defaults), with
+`vlpds.admin.setBlobQuota`'s `bytes`, `uploadsPerDay` and `maxBlobBytes`. A blank field keeps the
+default. The largest blob can be lowered for any account, from 1 byte, and has no unlimited
+setting. Raising it, say for an account that pays for more, goes up to `--max-blob-override-mb`,
+which defaults to `--max-blob-mb`, so it's off until you set the flag. Both flags are at most 4768
+MiB (5 GB): a blob over 8 MiB is copied to its final key in one request, which S3 caps at 5 GiB.
+Lowering `--max-blob-override-mb` later holds bigger overrides to it. The account's own limit is
+checked before any byte of an upload is read, so the deploy's Caddy lets `uploadBlob` bodies up to
+`--max-blob-override-mb` through (`vlpds_max_blob_override_mb`), and other accounts are still
+refused above the default. Over a limit, `uploadBlob` answers:
 
 | Limit | Answer | Metric |
 |---|---|---|
-| Stored bytes | 413 `BlobQuotaExceeded`, with the account's usage in the message. A blob the account already stores adds nothing | `vlpds_blob_quota_rejections_total{reason="bytes"}` |
+| Stored bytes | 413 `BlobQuotaExceeded`, with the account's usage in the message. A blob the account already stores adds nothing, but a `Content-Length` over what's left is refused before the body is read | `vlpds_blob_quota_rejections_total{reason="bytes"}` |
 | Uploads per day | 429 `RateLimitExceeded`, until 00:00 UTC | `vlpds_blob_quota_rejections_total{reason="uploads"}` |
+| Largest blob | 413 `PayloadTooLarge`, from the `Content-Length` before the body is read, or as soon as a streamed body passes it | |
 
 An account migrating in uploads the blobs its imported repo references without counting toward the
 daily limit, and without being refused for size. Those blobs still count toward its bytes. An

@@ -162,6 +162,12 @@ that ships without a level is a bug, and this page lists each one with what to d
   ([Spaces: operating](../spaces/operating.md#what-you-get-with-spaces)).
 - Client tokens are a format too. If the old build can't verify a session JWT or OAuth token, a
   rollback turns into a forced logout, so a change to them belongs to a level.
+- A largest-blob override sits outside the levels. `setBlobQuota`'s `maxBlobBytes` is stored in
+  the account's blob quota row, which builds from before it read without the field. A node on
+  such a build ignores the override and holds the account to its `--max-blob-mb`, and the
+  console says the node's build doesn't support it. Old builds never rewrite the row, so the
+  override comes back once the account's owner runs a newer build. Set overrides once every node
+  runs one.
 
 The format inventory (every persisted and wire format, and how it's versioned) is in DESIGN.md under
 "Rolling upgrades and format versioning".

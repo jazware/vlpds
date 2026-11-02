@@ -255,7 +255,8 @@ A node sheds load before it runs out of memory. Each limit returns an error the 
 | `--max-connections` | 50,000 | Open connections per listener. More wait in the accept queue (`--listen-backlog` 16,384, and raise `net.core.somaxconn` too). |
 | `--max-exports`, `--export-stall-secs` | 32, 60 | getRepo streams at once (more wait 10 s, then 503). A stream whose client reads nothing for 60 s is ended. |
 | `--max-import-mb`, `--import-memory-mb` | 1,024, 1/16 of the budget | Largest CAR importRepo takes, and the memory imports may hold at once. |
-| `--max-blob-mb` | 100 | Largest uploadBlob. |
+| `--max-blob-mb` | 100 | Largest uploadBlob, and describeServer's `blobUploadLimit`. At most 4768 (5 GB). The console can lower it per account. |
+| `--max-blob-override-mb` | `--max-blob-mb` | The most the console can raise one account's largest blob to, at most 4768. See [Email and moderation](email-and-moderation.md#upload-quotas). |
 | `--blob-quota-gb`, `--blob-uploads-per-day` | 25, 500 | Per-account blob bytes stored and uploads per UTC day (0 means unlimited). The console overrides them per account. See [Email and moderation](email-and-moderation.md#upload-quotas). |
 | `--blob-quarantine-days` | 30 | How long a taken-down blob's bytes are kept (restorable) before they're deleted. |
 | Argon2 permits | one per core, at most 16 | Password hashing. Sign-ins wait at most 2 s for a turn, then get 503 `Overloaded` with Retry-After. |

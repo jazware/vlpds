@@ -352,6 +352,9 @@ argument_specs:
       vlpds_max_blob_mb:
         description: See defaults/main.yml (vlpds_max_blob_mb).
         type: int
+      vlpds_max_blob_override_mb:
+        description: See defaults/main.yml (vlpds_max_blob_override_mb).
+        type: raw
       vlpds_max_import_mb:
         description: Largest CAR importRepo accepts, in MiB (--max-import-mb). Empty = vlpds' default (1024). Caddy's importRepo cap follows it.
         type: str
@@ -409,6 +412,9 @@ argument_specs:
         type: int
       vlpds_caddy_max_body_mb:
         description: See defaults/main.yml (vlpds_caddy_max_body_mb).
+        type: raw
+      vlpds_caddy_upload_max_body_mb:
+        description: See defaults/main.yml (vlpds_caddy_upload_max_body_mb).
         type: raw
       vlpds_caddy_import_max_body:
         description: See defaults/main.yml (vlpds_caddy_import_max_body).

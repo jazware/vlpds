@@ -90,6 +90,8 @@ pub struct Config {
     pub moderation_mailer: Option<crate::mail::SharedMailer>,
     pub email_branding: crate::mail::Branding,
     pub max_blob_size: u64,
+    /// The most a per-account `maxBlobBytes` may be (`--max-blob-override-mb`).
+    pub max_blob_override: u64,
     pub privacy_policy_url: Option<String>,
     pub terms_of_service_url: Option<String>,
     pub contact_email_address: Option<String>,
@@ -320,6 +322,7 @@ impl Default for Config {
             email_branding: Default::default(),
             cluster: None,
             max_blob_size: 100 << 20,
+            max_blob_override: 100 << 20,
             privacy_policy_url: None,
             terms_of_service_url: None,
             contact_email_address: None,

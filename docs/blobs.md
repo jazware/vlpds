@@ -28,7 +28,7 @@ diagram:
     - { from: gc.t, to: blob.b, label: list, dash: true }
     - "gc.b -> q.t: move if not"
 facts:
-  - { value: "100", unit: MiB, label: largest blob, note: "`--max-blob-mb`; Caddy's body limit sits 5 MiB above it" }
+  - { value: "100", unit: MiB, label: largest blob, note: "`--max-blob-mb`, or the account's override (up to `--max-blob-override-mb`)" }
   - { value: "6 h", label: before an unused upload is collected, note: "`--blob-gc-grace-secs`, counted from the upload", tone: violet }
   - { value: "1 day", label: lifecycle rule to add to the bucket, note: "aborts multipart uploads a crash left behind", tone: amber }
   - { value: "~350 TB", label: "of blobs at Bluesky's scale", note: "~$7.8k/mo on S3: more than everything else together", tone: blue }
@@ -48,7 +48,7 @@ the bytes in the bucket, and the bucket needs a lifecycle rule that vlpds can't 
 - title: Authorize
   body: "The upload needs a session or OAuth token (with a `blob:` scope matching the type), or a user service token. The Bluesky video service uses a service token to upload a transcoded video on the user's behalf, and the app gets it from `getServiceAuth`. A cluster sends the upload to the account's owner. Taken-down accounts are refused, but deactivated ones may upload so they can migrate in."
 - title: Stream and hash
-  body: "A `Content-Length` over the limit gets a 413 before any byte is read. The body is hashed (SHA-256) as it arrives. Its first 64 bytes are checked for a known signature (PNG, JPEG, GIF, WebP, AVIF, HEIC, MP4, QuickTime, WebM, PDF), and a match overrides the client's `Content-Type`."
+  body: "The limit is the account's own (`setBlobQuota` `maxBlobBytes`) or `--max-blob-mb`. A `Content-Length` over it gets a 413 before any byte is read, and a body without one is cut off as soon as it passes it. The body is hashed (SHA-256) as it arrives. Its first 64 bytes are checked for a known signature (PNG, JPEG, GIF, WebP, AVIF, HEIC, MP4, QuickTime, WebM, PDF), and a match overrides the client's `Content-Type`."
 - title: Store
   body: "Under 8 MiB, the blob is buffered and written with one PUT to `blob/{did}/{cid}`. Anything larger goes up as a multipart upload in 8 MiB parts (4 in flight) to `blob-tmp/{did}/{random}`, since the CID isn't known until the end. Then it's copied to the final key and the temp object is deleted."
 - title: Answer

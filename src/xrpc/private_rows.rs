@@ -23,6 +23,12 @@ pub fn blob_quota_row_fixtures(did: &str) -> Vec<PrivateRow> {
     super::blob_quota::fixture_rows(did)
 }
 
+/// A blob quota override with `maxBlobBytes`
+/// (`private/blob_quota_max_blob.json`), added after level 2 was released.
+pub fn blob_quota_max_blob_row_fixtures(did: &str) -> Vec<PrivateRow> {
+    super::blob_quota::max_blob_fixture_rows(did)
+}
+
 /// Scoped app passwords, also added after level 1's `private/rows.json`
 /// was frozen (`private/app_password_scopes.json`).
 pub fn app_password_scope_row_fixtures(did: &str) -> Vec<PrivateRow> {

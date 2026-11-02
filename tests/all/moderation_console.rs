@@ -314,8 +314,11 @@ async fn upload_quotas() {
     let r = s.xrpc.post_bytes("com.atproto.repo.uploadBlob", pngs[4].clone(), "image/png", &a.auth()).await;
     r.err(413, "BlobQuotaExceeded");
     assert!(r.json["message"].as_str().unwrap().contains("quota"), "{}", r.text());
-    // bytes already stored add nothing
-    s.upload_blob(&a, &pngs[0], "image/png").await;
+    // bytes already stored add nothing, though a Content-Length past what's
+    // left is refused before the body is read
+    let r = s.xrpc.post_bytes("com.atproto.repo.uploadBlob", pngs[0].clone(), "image/png", &a.auth()).await;
+    r.err(413, "BlobQuotaExceeded");
+    upload_streamed_bytes(&s, &a, pngs[0].clone()).await.expect("streamed").ok();
     assert_eq!(quota(&s, &a.did).await["bytes"].as_u64(), Some(limit - 1));
     assert_eq!(audit(&s, &a.did).await[0]["action"], json!("quota.set"));
 
@@ -328,6 +331,150 @@ async fn upload_quotas() {
     let q = s.xrpc.post("vlpds.admin.setBlobQuota", &json!({"did": a.did}), &Auth::Admin).await.ok();
     assert_eq!(q["limitUploadsPerDay"].as_u64(), Some(3));
     assert_eq!(q["override"], json!({}));
+}
+
+async fn upload_sized(s: &TestServer, a: &TestAccount, n: usize) -> Resp {
+    s.xrpc.post_bytes("com.atproto.repo.uploadBlob", random_bytes(n), "image/jpeg", &a.auth()).await
+}
+
+/// Streamed in 1 KB chunks with no Content-Length. None: the server answered
+/// before taking the whole body and closed (as it may for one over the limit).
+async fn upload_streamed(s: &TestServer, a: &TestAccount, n: usize) -> Option<Resp> {
+    upload_streamed_bytes(s, a, random_bytes(n)).await
+}
+
+async fn upload_streamed_bytes(s: &TestServer, a: &TestAccount, body: Vec<u8>) -> Option<Resp> {
+    let chunks: Vec<Result<Vec<u8>, std::io::Error>> = body.chunks(1000).map(|c| Ok(c.to_vec())).collect();
+    let rb = s
+        .xrpc
+        .http
+        .post(format!("{}/xrpc/com.atproto.repo.uploadBlob", s.xrpc.base))
+        .header("content-type", "image/jpeg")
+        .header("authorization", format!("Bearer {}", a.access))
+        .body(reqwest::Body::wrap_stream(futures::stream::iter(chunks)));
+    s.xrpc.try_send(rb).await.ok()
+}
+
+/// The largest blob an account may upload, `maxBlobBytes` or the default,
+/// both declared and streamed. Refusals store nothing, so the account's
+/// stored bytes show what got in.
+async fn assert_max_blob(s: &TestServer, a: &TestAccount, max: usize) {
+    let before = quota(s, &a.did).await["bytes"].as_u64().unwrap();
+    let r = upload_sized(s, a, max + 1).await;
+    r.err(413, "PayloadTooLarge");
+    assert!(r.json["message"].as_str().unwrap().contains(&format!("max {max} bytes")), "{}", r.text());
+    if let Some(r) = upload_streamed(s, a, max + 1).await {
+        r.err(413, "PayloadTooLarge");
+    }
+    assert_eq!(quota(s, &a.did).await["bytes"].as_u64().unwrap(), before, "a refused upload stored bytes");
+    upload_sized(s, a, max).await.ok();
+    upload_streamed(s, a, max).await.expect("streamed upload at the limit").ok();
+    let q = quota(s, &a.did).await;
+    assert_eq!(
+        (q["bytes"].as_u64(), q["limitMaxBlobBytes"].as_u64()),
+        (Some(before + 2 * max as u64), Some(max as u64))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn per_account_max_blob_size() {
+    let s = TestServer::spawn_with(|c| {
+        c.max_blob_size = 10_000;
+        c.max_blob_override = 60_000;
+    })
+    .await;
+    let a = s.create_account("bigblobs").await;
+    let b = s.create_account("smallblobs").await;
+    let set = |body: J| s.xrpc.post_owned("vlpds.admin.setBlobQuota", body, Auth::Admin);
+
+    let q = quota(&s, &a.did).await;
+    assert_eq!((q["defaults"]["maxBlobBytes"].as_u64(), q["maxBlobCeiling"].as_u64()), (Some(10_000), Some(60_000)));
+    assert_max_blob(&s, &a, 10_000).await;
+
+    // raised for one account (a paid plan); the other keeps the default
+    let q = set(json!({"did": a.did, "maxBlobBytes": 50_000, "reason": "paid plan"})).await.ok();
+    assert_eq!(
+        (q["limitMaxBlobBytes"].as_u64(), q["override"].clone()),
+        (Some(50_000), json!({"maxBlobBytes": 50_000}))
+    );
+    let e = &audit(&s, &a.did).await[0];
+    assert_eq!(
+        (&e["action"], &e["reason"], &e["detail"]),
+        (&json!("quota.set"), &json!("paid plan"), &json!({"maxBlobBytes": 50_000}))
+    );
+    assert_max_blob(&s, &a, 50_000).await;
+    assert_max_blob(&s, &b, 10_000).await;
+
+    // lowered
+    set(json!({"did": a.did, "maxBlobBytes": 5_000})).await.ok();
+    assert_max_blob(&s, &a, 5_000).await;
+
+    // no 0 (unlimited) and nothing past --max-blob-override-mb; a refusal
+    // changes nothing
+    set(json!({"did": a.did, "maxBlobBytes": 0})).await.err(400, "InvalidRequest");
+    let r = set(json!({"did": a.did, "maxBlobBytes": 60_001})).await;
+    r.err(400, "InvalidRequest");
+    assert!(r.json["message"].as_str().unwrap().contains("--max-blob-override-mb"), "{}", r.text());
+    assert_eq!(quota(&s, &a.did).await["limitMaxBlobBytes"].as_u64(), Some(5_000));
+    let q = set(json!({"did": a.did, "maxBlobBytes": 60_000})).await.ok();
+    assert_eq!(q["limitMaxBlobBytes"].as_u64(), Some(60_000));
+
+    // an override that leaves it out, or none at all, is back to the default
+    let q = set(json!({"did": a.did, "uploadsPerDay": 100})).await.ok();
+    assert_eq!((q["limitMaxBlobBytes"].as_u64(), q["override"].clone()), (Some(10_000), json!({"uploadsPerDay": 100})));
+    set(json!({"did": a.did, "maxBlobBytes": 50_000})).await.ok();
+    let q = set(json!({"did": a.did})).await.ok();
+    assert_eq!((q["limitMaxBlobBytes"].as_u64(), q["override"].clone()), (Some(10_000), json!({})));
+    assert_max_blob(&s, &a, 10_000).await;
+
+    // an override stored above the cap (set before the operator lowered
+    // --max-blob-override-mb) is held to the cap
+    let row = json!({"maxBlobBytes": 90_000});
+    s.app
+        .put_private(
+            &a.did,
+            vec![vlsync_store::segment::Mutation {
+                key: vlpds::state::private_key(&a.did, "bq/limit").into(),
+                val: Some(serde_json::to_vec(&row).unwrap().into()),
+            }],
+        )
+        .await
+        .unwrap_or_else(|e| panic!("put_private: {}", e.message));
+    assert_max_blob(&s, &a, 60_000).await;
+}
+
+/// Without --max-blob-override-mb the cap is --max-blob-mb: an override can
+/// lower an account's largest blob but not raise it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn raising_the_largest_blob_is_opt_in() {
+    let s = TestServer::spawn_with(|c| {
+        c.max_blob_size = 10_000;
+        c.max_blob_override = 10_000;
+    })
+    .await;
+    let a = s.create_account("nooptin").await;
+    let set = |body: J| s.xrpc.post_owned("vlpds.admin.setBlobQuota", body, Auth::Admin);
+    assert_eq!(quota(&s, &a.did).await["maxBlobCeiling"].as_u64(), Some(10_000));
+    set(json!({"did": a.did, "maxBlobBytes": 10_001})).await.err(400, "InvalidRequest");
+    set(json!({"did": a.did, "maxBlobBytes": 4_000})).await.ok();
+    assert_max_blob(&s, &a, 4_000).await;
+}
+
+/// A Content-Length past the account's remaining byte quota is refused
+/// before the body is read, with the quota's error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn declared_size_past_the_quota_is_refused_early() {
+    let s = TestServer::spawn().await;
+    let a = s.create_account("quotaearly").await;
+    let first = upload_sized(&s, &a, 3_000).await.ok();
+    assert_eq!(first["blob"]["size"], json!(3_000));
+    s.xrpc.post("vlpds.admin.setBlobQuota", &json!({"did": a.did, "bytes": 5_000}), &Auth::Admin).await.ok();
+    let r = upload_sized(&s, &a, 2_001).await;
+    r.err(413, "BlobQuotaExceeded");
+    assert!(r.json["message"].as_str().unwrap().contains("this blob is 2001 bytes"), "{}", r.text());
+    assert_eq!(quota(&s, &a.did).await["bytes"].as_u64(), Some(3_000));
+    upload_sized(&s, &a, 2_000).await.ok();
+    assert_eq!(quota(&s, &a.did).await["bytes"].as_u64(), Some(5_000));
 }
 
 /// An account moving in uploads the blobs its imported repo references past

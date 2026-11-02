@@ -284,6 +284,10 @@ vlpds_invite_required: true
 vlpds_invite_interval_ms: "" # earned invites; empty = none
 vlpds_invite_epoch_ms: ""
 vlpds_max_blob_mb: 100
+# The most the console may raise one account's largest blob to, in MiB
+# (--max-blob-override-mb, at most 4768). Empty = vlpds_max_blob_mb, so
+# overrides can only lower it; Caddy's uploadBlob cap follows this.
+vlpds_max_blob_override_mb: ""
 # Largest CAR importRepo accepts, in MiB (--max-import-mb). Empty = vlpds'
 # default (1024).
 vlpds_max_import_mb: ""
@@ -348,14 +352,17 @@ vlpds_caddy_hostname_dns01: false
 # or, with vlpds_tailnet_console_port, at https://<tailnet name>:<port>/admin.
 vlpds_caddy_blocked_paths: ["/internal/*", "/metrics", "/debug/*", "/xrpc/vlpds.admin.*", "/admin", "/admin/*"]
 # Body caps, in binary units like vlpds' own (Caddy reads MB/GB as powers of
-# 10, so 1GB would refuse imports vlpds accepts). Everything but importRepo:
-# blobs, vlpds_max_blob_mb MiB + 5 MiB slack (MiB, as --max-blob-mb).
-# importRepo: vlpds_max_import_mb MiB (--max-import-mb) + 64 MiB, so vlpds,
-# not Caddy, answers an oversized CAR.
+# 10, so 1GB would refuse imports vlpds accepts). uploadBlob:
+# vlpds_max_blob_override_mb (or vlpds_max_blob_mb) MiB + 5 MiB, since vlpds
+# holds each account to its own limit before reading the body. importRepo:
+# vlpds_max_import_mb MiB (--max-import-mb) + 64 MiB, so vlpds, not Caddy,
+# answers an oversized CAR. Everything else:
+# vlpds_max_blob_mb MiB + 5 MiB.
 # `tailscale serve` port for the operator console (tailnet only; 0 = off).
 # Not 443: Docker's DNAT for Caddy takes 443 on every local address.
 vlpds_tailnet_console_port: 0
 vlpds_caddy_max_body_mb: "{{ vlpds_max_blob_mb | int + 5 }}"
+vlpds_caddy_upload_max_body_mb: "{{ (vlpds_max_blob_override_mb | string | default(vlpds_max_blob_mb | string, true) | int) + 5 }}"
 vlpds_caddy_import_max_body: "{{ (vlpds_max_import_mb | string | default('1024', true) | int) + 64 }}MiB"
 # Upstream proxies in front of Caddy whose X-Forwarded-For Caddy may trust
 # (e.g. Cloudflare ranges). Empty = Caddy sets X-Forwarded-For to the peer.

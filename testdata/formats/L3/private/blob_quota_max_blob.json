@@ -1,0 +1,7 @@
+[
+  {
+    "name": "bq/limit",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"maxBlobBytes\":2000000000}"
+  }
+]

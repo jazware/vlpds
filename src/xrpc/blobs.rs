@@ -50,6 +50,23 @@ pub(super) async fn count_stored<R: slatedb::DbReadOps + ?Sized>(db: &R, did: &s
     Ok(n)
 }
 
+/// The largest blob any setting can allow. One over 8 MiB is copied from
+/// `blob-tmp/` to its final key in one CopyObject, which S3 caps at 5 GiB.
+pub const MAX_BLOB_CEILING: u64 = 5_000_000_000;
+
+/// `--max-blob-mb` and `--max-blob-override-mb` (None: the former) in bytes.
+pub fn size_flags(max_mb: u64, override_mb: Option<u64>) -> anyhow::Result<(u64, u64)> {
+    let max = max_mb.saturating_mul(1 << 20);
+    let over = override_mb.map_or(max, |m| m.saturating_mul(1 << 20));
+    anyhow::ensure!(
+        max <= MAX_BLOB_CEILING && over <= MAX_BLOB_CEILING,
+        "--max-blob-mb and --max-blob-override-mb are at most {} MiB ({MAX_BLOB_CEILING} bytes, S3's limit on the copy a large blob takes to its final key)",
+        MAX_BLOB_CEILING >> 20
+    );
+    anyhow::ensure!(over >= max, "--max-blob-override-mb ({} MiB) is below --max-blob-mb ({max_mb} MiB)", over >> 20);
+    Ok((max, over))
+}
+
 fn too_large(max: u64) -> XrpcError {
     XrpcError {
         status: StatusCode::PAYLOAD_TOO_LARGE,
@@ -87,13 +104,17 @@ async fn upload_blob(State(app): AppState, Auth(creds): Auth, headers: HeaderMap
     if !moving_in {
         crate::ratelimit::check_ip(&[&crate::ratelimit::UPLOAD_BLOB], 1)?;
     }
-    let max = app.config.max_blob_size;
+    // decided per account before any byte is read: the only cap vlpds puts
+    // on an uploadBlob body (axum's DefaultBodyLimit doesn't apply to a
+    // raw Body)
+    let limits = super::blob_quota::limits(&app, &did).await?;
+    let max = super::blob_quota::max_blob(&app, &limits);
     let declared =
         headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
     if declared.is_some_and(|n| n > max) {
         return Err(too_large(max));
     }
-    super::blob_quota::precheck(&app, &did, declared, moving_in).await?;
+    super::blob_quota::precheck(&app, &did, &limits, declared, moving_in).await?;
     let mut attrs = Attributes::new();
     attrs.insert(Attribute::ContentType, mime.clone().into());
 
@@ -890,4 +911,19 @@ pub async fn sweep_blobs_settle(app: &App, grace: Duration, settle: Duration) ->
         }
     }
     Ok((scanned, deleted))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn size_flags_stay_under_the_copy_limit() {
+        assert_eq!(size_flags(100, None).unwrap(), (100 << 20, 100 << 20));
+        assert_eq!(size_flags(100, Some(4768)).unwrap(), (100 << 20, 4768 << 20));
+        assert!(size_flags(4769, None).is_err());
+        assert!(size_flags(100, Some(4769)).is_err());
+        assert!(size_flags(100, Some(50)).is_err());
+        assert!(size_flags(u64::MAX, None).is_err());
+    }
 }
