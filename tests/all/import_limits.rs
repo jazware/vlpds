@@ -1,6 +1,7 @@
 //! importRepo of CARs built here: legacy blob refs are indexed (as the
 //! reference's `enumBlobRefs(allowLegacy)`), record blocks and whole CARs
-//! are capped, and integers outside JS's safe range are refused on write.
+//! are capped, records holding floats import, and integers outside JS's
+//! safe range are refused on write.
 use crate::common::*;
 use std::time::Duration;
 use vlatproto::cbor::key_cmp;
@@ -108,6 +109,40 @@ async fn import_size_is_configurable() {
     let big =
         import_car(&a.did, &[("com.example.x/a", cbor(json!({"$type": "com.example.x", "v": "y".repeat(5000)})))]);
     assert_eq!(s.import_repo(&a.auth(), big).await.status, 413);
+}
+
+/// A record another PDS stored with floats (jazware/vlpds#8) imports, and
+/// getRecord, listRecords and getRecord's CAR give it back as stored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn records_with_floats_import() {
+    use vlatproto::cbor::{write_array_head, write_float, write_int, write_map_head, write_text};
+    let s = TestServer::spawn().await;
+    let a = s.create_account("floaty").await;
+    let mut rec = Vec::new();
+    write_map_head(&mut rec, 4);
+    write_text(&mut rec, "foo");
+    write_array_head(&mut rec, 2);
+    write_text(&mut rec, "bar");
+    write_float(&mut rec, 16.5);
+    write_text(&mut rec, "key");
+    write_text(&mut rec, "value");
+    write_text(&mut rec, "$type");
+    write_text(&mut rec, "random.nonsense.lol");
+    write_text(&mut rec, "number");
+    write_int(&mut rec, 12);
+    let path = "random.nonsense.lol/3leu747pf5a2q";
+    s.import_repo(&a.auth(), import_car(&a.did, &[(path, rec.clone())])).await.ok();
+    let want = json!({"foo": ["bar", 16.5], "key": "value", "$type": "random.nonsense.lol", "number": 12});
+    let q = [("repo", a.did.as_str()), ("collection", "random.nonsense.lol"), ("rkey", "3leu747pf5a2q")];
+    let r = s.xrpc.get("com.atproto.repo.getRecord", &q, &Auth::None).await.ok();
+    assert_eq!(r["value"], want);
+    assert_eq!(r["cid"], json!(Cid::dag_cbor(&rec).to_string()));
+    let l = s.list_records(&a.did, "random.nonsense.lol", &[]).await.ok();
+    assert_eq!(l["records"][0]["value"], want);
+    let q = [("did", a.did.as_str()), ("collection", "random.nonsense.lol"), ("rkey", "3leu747pf5a2q")];
+    let car = s.xrpc.get("com.atproto.sync.getRecord", &q, &Auth::None).await;
+    assert_eq!(car.status, 200, "{}", car.text());
+    assert!(car.body.windows(rec.len()).any(|w| w == rec), "the CAR holds the record as stored");
 }
 
 /// Integers past 2^53 - 1 are refused like integral floats there (the

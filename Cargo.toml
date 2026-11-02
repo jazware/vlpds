@@ -44,11 +44,11 @@ test-level = ["vlsync-store/test-level"]
 [dependencies]
 # The storage layer and the firehose vlpds shares with vlRelay and delta
 # (vlsync), and atproto (vlatproto)
-vlsync-store = { git = "https://github.com/jazware/vlsync", rev = "85d95355eca816812ddf390ac4a88e470726023c" }
-vlatproto = { git = "https://github.com/jazware/vlatproto", rev = "71d3b351a04b07063cb82b5b67064efb5dceb6c6" }
-vlsync-firehose = { git = "https://github.com/jazware/vlsync", rev = "85d95355eca816812ddf390ac4a88e470726023c" }
+vlsync-store = { git = "https://github.com/jazware/vlsync", rev = "146a426de27dd9d22764da10c3f850615cd5f068" }
+vlatproto = { git = "https://github.com/jazware/vlatproto", rev = "8fd41163c003a39ae73c568d648434ef42f32049" }
+vlsync-firehose = { git = "https://github.com/jazware/vlsync", rev = "146a426de27dd9d22764da10c3f850615cd5f068" }
 # the SlateDB fork every vlsync user builds against (its Cargo.toml lists the patches)
-slatedb = { package = "vlsync-slatedb", git = "https://github.com/jazware/vlsync", rev = "85d95355eca816812ddf390ac4a88e470726023c" }
+slatedb = { package = "vlsync-slatedb", git = "https://github.com/jazware/vlsync", rev = "146a426de27dd9d22764da10c3f850615cd5f068" }
 # the SST block cache (partition.rs BlockCache): SlateDB's FoyerCache can't be resized
 foyer = "0.22"
 # log segment body compression (vlsync-store/src/segment.rs; the same zstd SlateDB links)
@@ -93,12 +93,12 @@ tokio-tungstenite = { version = "0.29", features = ["__rustls-tls"] }
 tikv-jemallocator = { version = "0.7", optional = true }
 tikv-jemalloc-ctl = { version = "0.7", features = ["stats"], optional = true }
 # GET /debug/pprof/heap: jemalloc's heap sampler, on from the start, as pprof
-vlsync-heapprof = { git = "https://github.com/jazware/vlsync", rev = "85d95355eca816812ddf390ac4a88e470726023c", features = ["axum"], optional = true }
+vlsync-heapprof = { git = "https://github.com/jazware/vlsync", rev = "146a426de27dd9d22764da10c3f850615cd5f068", features = ["axum"], optional = true }
 mimalloc = { version = "0.1", optional = true }
 pyroscope = { version = "2.1", default-features = false, features = ["backend-pprof-rs"], optional = true }
 prost = { version = "0.14", optional = true }
 inferno = { version = "0.12", default-features = false, optional = true }
-slate-metrics = { git = "https://github.com/jazware/vlsync", rev = "85d95355eca816812ddf390ac4a88e470726023c", optional = true }
+slate-metrics = { git = "https://github.com/jazware/vlsync", rev = "146a426de27dd9d22764da10c3f850615cd5f068", optional = true }
 prometheus = { version = "0.14", default-features = false }
 hyper = { version = "1", features = ["server", "client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service"] }

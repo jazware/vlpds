@@ -26,7 +26,8 @@ fn fixtures_cbor_to_json() {
 #[test]
 fn cbor_decoder_rejects_non_canonical_or_unsupported() {
     for (b, what) in [
-        (&[0xfb, 0x40, 0x09, 0x21, 0xfb, 0x54, 0x44, 0x2d, 0x18][..], "float64"),
+        (&[0xfa, 0x41, 0x84, 0x00, 0x00][..], "float32"),
+        (&[0xfb, 0x7f, 0xf8, 0, 0, 0, 0, 0, 0], "float64 NaN"),
         (&[0x9f, 0x01, 0xff], "indefinite-length array"),
         (&[0xf7], "undefined"),
         (&[0xc1, 0x01], "tag 1"),

@@ -701,6 +701,7 @@ impl Node for Value {
             Value::Null => Kind::Null,
             Value::Bool(b) => Kind::Bool(*b),
             Value::Int(n) => Kind::Int(*n),
+            Value::Float(_) => Kind::Float,
             Value::Bytes(b) => Kind::Bytes(b.len()),
             Value::Text(s) => Kind::Text(s),
             Value::Array(a) => Kind::Array(a),

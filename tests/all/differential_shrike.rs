@@ -13,9 +13,10 @@
 //! differences below, each pinned by its own test so a change on either
 //! side shows up (bench/results/differential/SHRIKE_ISSUES.md has the analysis):
 //!
-//! - floats: shrike's DRISL decoder accepts 64-bit floats (the DRISL
-//!   spec allows them; shrike rejects them one layer up, in JSON
-//!   conversion); vlpds rejects them while decoding (atproto data model).
+//! - floats: both decoders accept finite 64-bit floats, as DRISL allows
+//!   (vlpds so that repos holding them can migrate in, like the reference;
+//!   its writes still refuse them). shrike then refuses them in JSON
+//!   conversion, where vlpds prints them as JavaScript would.
 //! - nesting: shrike caps CBOR nesting at 64 levels, vlpds at 128.
 //! - lex-json: shrike follows @atproto/lex-json's non-strict mode (a
 //!   malformed `$link`/`$bytes` object stays a plain map, and `$link`
@@ -79,8 +80,9 @@ fn rand_cid(rng: &mut impl Rng) -> Cid {
 enum Cbor {
     /// both accept with identical canonical re-encodings and JSON, or both reject
     Agree,
-    /// only shrike accepts, and the value holds a float (DRISL vs data model)
-    FloatShrikeOnly,
+    /// both accept and re-encode a value holding a float identically, but only
+    /// vlpds converts it to JSON
+    FloatJsonVlpdsOnly,
     /// only vlpds accepts: nested deeper than shrike's 64-level cap
     DepthVlpdsOnly,
     Disagree(String),
@@ -120,12 +122,9 @@ fn cbor_compare(b: &[u8]) -> Cbor {
                 vlatproto::cbor::write_json(b, &mut stream).map(|()| serde_json::from_slice::<J>(&stream).unwrap());
             match (sj, streamed) {
                 (Ok(sj), Ok(vj)) if sj == v.to_json() && vj == sj => Cbor::Agree,
+                (Err(_), Ok(vj)) if has_float(&s) && vj == v.to_json() => Cbor::FloatJsonVlpdsOnly,
                 (sj, vj) => Cbor::Disagree(format!("JSON differs: vlpds {vj:?} / {}, shrike {sj:?}", v.to_json())),
             }
-        }
-        (Err(ve), Ok(s)) if has_float(&s) => {
-            let _ = ve;
-            Cbor::FloatShrikeOnly
         }
         (Err(ve), Ok(s)) => Cbor::Disagree(format!("vlpds rejects ({ve}), shrike accepts {s:?}")),
         (Ok(_), Err(se)) if se.to_string().contains("nesting depth") => Cbor::DepthVlpdsOnly,
@@ -173,7 +172,7 @@ fn mutate(rng: &mut impl Rng, b: &[u8]) -> Vec<u8> {
 fn cbor_interop_fixtures_identical() {
     let mut d = Diffs::new("data-model fixtures");
     for DataModelFixture { json: j, cbor, cid } in data_model_fixtures() {
-        if let o @ (Cbor::Disagree(_) | Cbor::FloatShrikeOnly | Cbor::DepthVlpdsOnly) = cbor_compare(&cbor) {
+        if let o @ (Cbor::Disagree(_) | Cbor::FloatJsonVlpdsOnly | Cbor::DepthVlpdsOnly) = cbor_compare(&cbor) {
             d.push(format!("{cid}: {o:?}"));
         }
         // JSON -> CBOR: vlpds's tree and one-pass encoders, shrike's converter
@@ -229,7 +228,7 @@ fn cbor_rfc8949_vectors() {
                     d.push(format!("{}: both {} but flags {:?}", v.hex, if ok { "accept" } else { "reject" }, v.flags));
                 }
             }
-            Cbor::FloatShrikeOnly => {
+            Cbor::FloatJsonVlpdsOnly => {
                 floats += 1;
                 assert!(flag("float") && flag("canonical"), "{}: {:?}", v.hex, v.flags);
             }
@@ -237,8 +236,8 @@ fn cbor_rfc8949_vectors() {
         }
     }
     d.assert_none();
-    // the only split: shrike's DRISL decoder takes the canonical 64-bit
-    // floats (f16/f32 are rejected by both), the data model takes none
+    // the only split: both take the canonical 64-bit floats (f16/f32 are
+    // rejected by both), and only vlpds turns them into JSON
     assert_eq!(floats, vs.iter().filter(|v| v.flags.iter().any(|f| f == "float") && v.hex.starts_with("fb")).count());
     assert!(floats > 0);
     assert!(accepted >= 30, "{accepted}");
@@ -277,7 +276,7 @@ fn cbor_random_values_and_mutations() {
                     agreed += 1;
                     rejected += Value::decode(&m).is_err() as usize;
                 }
-                Cbor::FloatShrikeOnly => floats += 1,
+                Cbor::FloatJsonVlpdsOnly => floats += 1,
                 o => d.push(format!("mutant {}: {o:?}", hex::encode(&m))),
             }
         }
@@ -285,14 +284,16 @@ fn cbor_random_values_and_mutations() {
     d.assert_none();
     // the mutations do reach both sides of the decision
     assert!(rejected > agreed / 4 && rejected < agreed, "{rejected}/{agreed}");
-    eprintln!("cbor mutations: {agreed} agreed ({rejected} rejected by both), {floats} float-only splits");
+    eprintln!("cbor mutations: {agreed} agreed ({rejected} rejected by both), {floats} float JSON splits");
 }
 
 #[test]
 fn cbor_policy_differences_pinned() {
-    // floats: DRISL (shrike's decoder) allows canonical f64, the atproto data model doesn't
+    // floats: DRISL allows canonical f64 and both decode it; vlpds keeps
+    // stored ones (jazware/vlpds#8) and prints them, shrike's JSON layer refuses them
     let pi = [0xfb, 0x40, 0x09, 0x21, 0xfb, 0x54, 0x44, 0x2d, 0x18];
-    assert_eq!(cbor_compare(&pi), Cbor::FloatShrikeOnly);
+    assert_eq!(cbor_compare(&pi), Cbor::FloatJsonVlpdsOnly);
+    assert_eq!(Value::decode(&pi).unwrap(), Value::Float(std::f64::consts::PI));
     assert!(drisl_to_json(&pi).is_err(), "shrike rejects the float one layer up");
     // f16/f32, NaN and infinities: rejected by both
     for b in [
