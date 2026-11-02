@@ -101,6 +101,8 @@ for (const [w, theme, tag] of [[1440, 'light', 'desktop'], [1440, 'dark', 'dark'
   await pg.locator('#sign-in-methods').waitFor()
   await pg.getByText('alice@old.example.org').waitFor()
   await shot(pg, `account-${tag}`, '#sign-in-methods')
+  const manage = await pg.locator('#sign-in-methods').getByRole('link', { name: 'Manage' }).getAttribute('href')
+  if (manage !== '/oauth/account?login_hint=did%3Aplc%3Amock&return=sign-in-methods#sign-in-methods') (failures++, console.error('bad Manage link', manage))
   await pg.context().close()
 }
 {

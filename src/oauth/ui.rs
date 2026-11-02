@@ -219,7 +219,23 @@ pub struct LoginForm<'a> {
     /// The password step: sign-in providers (GET links, so the page's
     /// form-action needn't allow the provider).
     pub providers: &'a [ProviderLink],
+    /// `/oauth/account` only: signing in to change sign-in methods.
+    pub step_up: Option<StepUp<'a>>,
 }
+
+/// `/oauth/account` asking for the sign-in that adding or removing a
+/// sign-in method needs, then back to that section.
+pub struct StepUp<'a> {
+    /// The hinted account's own handle.
+    pub handle: Option<&'a str>,
+    /// The hinted account's DID, posted back so a failed sign-in's page
+    /// keeps it.
+    pub hint: Option<&'a str>,
+}
+
+/// The `return` value, on `/oauth/account` and its sign-in forms, that
+/// lands a sign-in on the account's sign-in methods.
+pub const METHODS_RETURN: &str = "sign-in-methods";
 
 pub struct ProviderLink {
     pub name: String,
@@ -348,14 +364,35 @@ pub fn login(ctx: Option<&Ctx>, f: &LoginForm, csrf_only: &str) -> String {
                 client_block(c)
             ));
         }
-        None => b.push_str("<h1>Sign in</h1><p class=\"muted\">Manage the apps connected to your account.</p>"),
+        None => match &f.step_up {
+            Some(su) => {
+                let whose = su.handle.map(|h| format!(" for <b>@{}</b>", e(h))).unwrap_or_default();
+                b.push_str(&format!(
+                    "<h1>Confirm it's you</h1><p class=\"muted\">Sign in again to add or remove sign-in methods{whose}. \
+This browser hasn't signed in here yet, or it was more than 10 minutes ago.</p>"
+                ));
+            }
+            None => b.push_str("<h1>Sign in</h1><p class=\"muted\">Manage the apps connected to your account.</p>"),
+        },
     }
     if let Some(err) = f.error {
         b.push_str(&format!("<p class=\"err\" role=\"alert\">{}</p>", e(err)));
     }
     let hidden_fields = match ctx {
         Some(c) => hidden(c),
-        None => format!("<input type=\"hidden\" name=\"csrf\" value=\"{}\">", e(csrf_only)),
+        None => format!(
+            "<input type=\"hidden\" name=\"csrf\" value=\"{}\">{}",
+            e(csrf_only),
+            match &f.step_up {
+                Some(su) => format!(
+                    "<input type=\"hidden\" name=\"return\" value=\"{METHODS_RETURN}\">{}",
+                    su.hint
+                        .map(|d| format!("<input type=\"hidden\" name=\"login_hint\" value=\"{}\">", e(d)))
+                        .unwrap_or_default()
+                ),
+                None => String::new(),
+            }
+        ),
     };
     let username = format!(
         "<input type=\"text\" class=\"u\" autocomplete=\"username\" value=\"{}\" readonly tabindex=\"-1\" aria-hidden=\"true\">",
@@ -1407,8 +1444,9 @@ pub struct IdentityRow {
     pub dormant: bool,
 }
 
-fn methods_block(csrf: &str, did: &str, m: &Methods) -> String {
-    let mut b = String::from("<h2>Sign-in methods</h2>");
+/// `anchor`: the block a step-up sign-in lands on.
+fn methods_block(csrf: &str, did: &str, m: &Methods, anchor: bool) -> String {
+    let mut b = format!("<h2{}>Sign-in methods</h2>", if anchor { " id=\"sign-in-methods\"" } else { "" });
     if m.identities.is_empty() {
         b.push_str("<p class=\"muted\">Only your password and passkeys.</p>");
     }
@@ -1418,28 +1456,39 @@ fn methods_block(csrf: &str, did: &str, m: &Methods) -> String {
             (Some(d), false) => d.clone(),
             (None, false) => String::new(),
         };
+        // without a fresh sign-in, Remove would only be refused
+        let remove = if m.fresh {
+            format!(
+                "<form method=\"post\" action=\"/oauth/account/unlink\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><input type=\"hidden\" name=\"did\" value=\"{}\"><input type=\"hidden\" name=\"ref\" value=\"{}\"><button type=\"submit\" class=\"danger\">Remove</button></form>",
+                e(csrf),
+                e(did),
+                e(&i.r)
+            )
+        } else {
+            String::new()
+        };
         b.push_str(&format!(
-            "<div class=\"acct\"><div class=\"who\"><b>{}</b><div class=\"muted\">{}</div></div>\
-<form method=\"post\" action=\"/oauth/account/unlink\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><input type=\"hidden\" name=\"did\" value=\"{}\"><input type=\"hidden\" name=\"ref\" value=\"{}\"><button type=\"submit\" class=\"danger\">Remove</button></form></div>",
+            "<div class=\"acct\"><div class=\"who\"><b>{}</b><div class=\"muted\">{}</div></div>{remove}</div>",
             e(&i.label),
-            e(&sub),
-            e(csrf),
-            e(did),
-            e(&i.r)
+            e(&sub)
         ));
     }
-    if !m.add.is_empty() {
-        if m.fresh {
-            b.push_str(&provider_links(&m.add, "Add"));
-        } else {
-            b.push_str("<p class=\"muted\">To add or remove one, <a href=\"/oauth/account?add=1\">sign in again</a> first.</p>");
-        }
+    if m.fresh {
+        b.push_str(&provider_links(&m.add, "Add"));
+    } else if !m.add.is_empty() || !m.identities.is_empty() {
+        b.push_str(&format!(
+            "<p class=\"muted\">To add or remove one, sign in again on this browser. Changing these needs a sign-in here in the last 10 minutes.</p>\
+<div class=\"fed\"><a class=\"fedbtn\" href=\"/oauth/account?login_hint={}&amp;return={METHODS_RETURN}\"><span>Sign in again to change these</span></a></div>",
+            e(&super::util::encode_uri_component(did))
+        ));
     }
     b
 }
 
-/// `notice`: (message, an error).
-pub fn account_page(csrf: &str, accounts: &[AccountRow], notice: Option<(&str, bool)>) -> String {
+/// `notice`: (message, an error). `anchor`: the account whose sign-in
+/// methods a step-up sign-in lands on (else the first shown).
+pub fn account_page(csrf: &str, accounts: &[AccountRow], notice: Option<(&str, bool)>, anchor: Option<&str>) -> String {
+    let anchor = anchor.or_else(|| accounts.iter().find(|a| a.methods.is_some()).map(|a| a.did.as_str()));
     let mut b = String::from("<h1>Connected apps</h1><p class=\"muted\">Apps you have authorized with OAuth. Revoking access signs the app out immediately.</p>");
     if let Some((m, error)) = notice {
         b.push_str(&format!("<p class=\"{}\" role=\"status\">{}</p>", if error { "err" } else { "note" }, e(m)));
@@ -1474,7 +1523,7 @@ pub fn account_page(csrf: &str, accounts: &[AccountRow], notice: Option<(&str, b
             b.push_str("</table>");
         }
         if let Some(m) = &a.methods {
-            b.push_str(&methods_block(csrf, did, m));
+            b.push_str(&methods_block(csrf, did, m, anchor == Some(did.as_str())));
         }
     }
     b.push_str("<div class=\"row\"><a href=\"/oauth/account?add=1\">Add another account</a></div><footer class=\"muted\"><a href=\"/account\">Open account settings</a></footer>");

@@ -1,6 +1,6 @@
 import { ErrorNotice, Panel, Status } from '../../components/ui'
 import { fmtTime } from '../../lib/format'
-import { useLoad } from '../../lib/hooks'
+import { useLoad, useSession } from '../../lib/hooks'
 import { acall, XrpcError } from '../../lib/xrpc'
 
 type Identity = { ref: string; issuer: string; provider: string | null; providerName: string | null; display: string | null; addedAt: string; lastUsedAt: string | null; dormant: boolean }
@@ -15,8 +15,21 @@ const host = (s: string) => {
   }
 }
 
+/**
+ * The server page asks this account to sign in there, unless this browser did in the last 10 minutes: this session
+ * doesn't count, so that adding a way in always takes a fresh sign-in. `return` brings it back to the section.
+ */
+function manageHref(manageUrl: string, did: string) {
+  const u = new URL(manageUrl, location.origin)
+  u.searchParams.set('login_hint', did)
+  u.searchParams.set('return', 'sign-in-methods')
+  u.hash = 'sign-in-methods'
+  return u.origin === location.origin ? u.pathname + u.search + u.hash : u.href
+}
+
 /** Identities linked for sign-in with another provider. Adding and removing happen on the server-rendered page `manageUrl`. */
 export function SignInMethods() {
+  const s = useSession()!
   const st = useLoad<Identities>(() => acall('vlpds.server.listFederatedIdentities'), [])
   // a server without sign-in providers has no such method: nothing to show
   if (st.error instanceof XrpcError && (st.error.status === 404 || st.error.status === 501 || st.error.error === 'MethodNotImplemented')) return null
@@ -34,6 +47,7 @@ export function SignInMethods() {
   return (
     <Panel
       title="Sign-in methods"
+      desc="Adding or removing one asks you to sign in again on the next page."
       id="sign-in-methods"
       flush={d.identities.length > 0}
       actions={
@@ -41,7 +55,7 @@ export function SignInMethods() {
           <span className="small muted mono" title="Linked of the most you can link">
             {d.identities.length} of {d.max}
           </span>
-          <a className="btn sm" href={d.manageUrl}>
+          <a className="btn sm" href={manageHref(d.manageUrl, s.did)} title="Opens the sign-in page, which asks you to confirm it's you">
             Manage
           </a>
         </>

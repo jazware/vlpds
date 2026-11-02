@@ -319,7 +319,9 @@ are the existing ones.
 **Linking and unlinking.** A user links a provider on `/oauth/account`, always through the provider's account chooser (`prompt=select_account`), after a fresh sign-in on that
 browser (password plus second factor, a passkey, or an identity already linked, within the last
 10 minutes). A stolen account-page token can't add a way in. The Security tab lists the identities
-and sends the user to `/oauth/account` to change them. Limits are 10 identities per account and one
+and sends the user to `/oauth/account` to change them. Without a fresh sign-in on that browser, that
+page asks the user to confirm it's them (handle filled in), then lands on the account's sign-in
+methods. Limits are 10 identities per account and one
 per issuer, 10 link attempts a day. Every add and remove mails the owner. Removing an identity ends the
 sessions it signed in, and is refused if it is the last way into the account (a password, a passkey or
 another identity must remain).

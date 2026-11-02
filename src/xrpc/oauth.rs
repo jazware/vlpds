@@ -950,6 +950,7 @@ fn login_page(app: &App, flow: &Flow, identifier: &str, error: Option<&str>, sta
             second: None,
             passkey: pk.as_ref().map(|(c, r)| ui::PasskeyUi { challenge: c, rp_id: r, allow: "[]" }),
             providers: &provider_links(app, &format!("request_uri={}", ou::encode_uri_component(&flow.uri))),
+            step_up: None,
         },
         "",
     );
@@ -1706,6 +1707,7 @@ fn code_page(app: &App, flow: &Flow, p: &Pending, error: Option<LoginError>) -> 
             second: Some(second_factor_form(p, &pk, super::signin::trust_days(app))),
             passkey: None,
             providers: &[],
+            step_up: None,
         },
         "",
     );
@@ -2402,7 +2404,19 @@ async fn account_page(State(app): AppState, headers: HeaderMap, Query(q): Query<
     let csrf = csrf_token(&app, &device.id, "account");
     let accounts = device_accounts(&app, &device).await;
     let cookie = new_cookie.then_some(&device);
-    if accounts.is_empty() || q.contains_key("add") {
+    let step_up = q.get("return").is_some_and(|r| r == ui::METHODS_RETURN);
+    let hint = account_hint(&app, &q).await;
+    let hinted = hint.as_ref().map(|h| &h.did).filter(|did| accounts.iter().any(|(d, _)| d == *did)).cloned();
+    // the account page app sent its account here to change sign-in methods:
+    // that takes a recent sign-in on this browser, and signing in adds the
+    // account when the browser is signed in to another one or none
+    let needs_sign_in = step_up
+        && hint.is_some()
+        && match &hinted {
+            Some(did) => !fresh_sign_in(&app, &device, did).await,
+            None => true,
+        };
+    if accounts.is_empty() || q.contains_key("add") || needs_sign_in {
         // never echo the query text
         let error = q.get("error").and_then(|c| LoginError::from_code(c)).map(LoginError::message);
         let pending_did = device
@@ -2431,15 +2445,21 @@ async fn account_page(State(app): AppState, headers: HeaderMap, Query(q): Query<
             .and_then(|p| passkey_ui(&app, &passkey_binding(&device.id, "account", Some(&p.did)), &p.passkeys));
         let pwless =
             if pending.is_none() { passwordless_ui(&app, &passkey_binding(&device.id, "account", None)) } else { None };
+        let start = match step_up {
+            true => format!("account=1&return={}", ui::METHODS_RETURN),
+            false => "account=1".into(),
+        };
+        let handle = pending.as_ref().map(|p| p.handle.as_str()).or(hint.as_ref().map(|h| h.handle.as_str()));
         let body = ui::login(
             None,
             &ui::LoginForm {
                 action: "/oauth/account/sign-in",
-                identifier: pending.as_ref().map_or("", |p| p.handle.as_str()),
+                identifier: handle.unwrap_or(""),
                 error,
                 second: pending.as_ref().map(|p| second_factor_form(p, &pk, super::signin::trust_days(&app))),
                 passkey: pwless.as_ref().map(|(c, r)| ui::PasskeyUi { challenge: c, rp_id: r, allow: "[]" }),
-                providers: &if pending.is_none() { provider_links(&app, "account=1") } else { Vec::new() },
+                providers: &if pending.is_none() { provider_links(&app, &start) } else { Vec::new() },
+                step_up: step_up.then_some(ui::StepUp { handle, hint: hint.as_ref().map(|h| h.did.as_str()) }),
             },
             &csrf,
         );
@@ -2465,7 +2485,24 @@ async fn account_page(State(app): AppState, headers: HeaderMap, Query(q): Query<
         rows.push(ui::AccountRow { did, handle, sessions: list, methods });
     }
     let notice = q.get("notice").and_then(|c| AccountNotice::from_code(c)).map(|n| (n.message(), n.is_error()));
-    html(&app, StatusCode::OK, ui::account_page(&csrf, &rows, notice), &[], cookie)
+    html(&app, StatusCode::OK, ui::account_page(&csrf, &rows, notice, hinted.as_deref()), &[], cookie)
+}
+
+/// `/oauth/account?login_hint=`: the DID of an active account here, shown by
+/// its own handle. A handle hint would put any text after "for @" on this
+/// server's page, and an inactive account's handle is hidden everywhere else.
+struct AccountHint {
+    did: String,
+    handle: String,
+}
+
+async fn account_hint(app: &App, q: &HashMap<String, String>) -> Option<AccountHint> {
+    let h = q.get("login_hint")?.trim();
+    if !is_atproto_did(h) {
+        return None;
+    }
+    let a = ensure_active_any(app, h).await.ok()?;
+    Some(AccountHint { did: a.did, handle: a.handle })
 }
 
 /// Each offered provider as a start link; `rest` names where it continues.
@@ -2588,7 +2625,7 @@ pub(super) async fn federated_signed_up(
                 Err(e) => return server_error_page(app, "Sign-up failed", &e.description),
             };
             let r = finish_device_sign_in(app, &mut device, did.to_string(), epoch, Some(cred), for_app).await;
-            account_sign_in_response(app, r, for_app)
+            account_sign_in_response(app, r, for_app, None)
         }
     }
 }
@@ -2731,6 +2768,7 @@ pub(super) async fn flow_for_federated(
 /// A provider sign-in resolved to `acct`: the rest of it happens where it
 /// started, the OAuth page (`request_id`) or `/oauth/account`. The account's
 /// second factor still applies.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn federated_continue(
     app: &App,
     headers: &HeaderMap,
@@ -2739,6 +2777,7 @@ pub(super) async fn federated_continue(
     acct: Account,
     epoch: String,
     first: store::FirstFactor,
+    methods: bool,
 ) -> Response {
     let ua = super::signin::user_agent(headers);
     let none = HashMap::new();
@@ -2770,7 +2809,7 @@ pub(super) async fn federated_continue(
             let for_app = first.app;
             let r = after_first_step(app, &mut device, &none, &req, acct, handle, epoch, true, Some(first)).await;
             crate::metrics::login("federated", login_result(&r));
-            account_sign_in_response(app, r, for_app)
+            account_sign_in_response(app, r, for_app, methods.then_some(MethodsReturn { hint: None }))
         }
     }
 }
@@ -2854,26 +2893,59 @@ async fn account_sign_in(
     let req = SignInReq { ip, user_agent: super::signin::user_agent(&headers), client_id: None, flow_key: "account" };
     let for_app =
         f.get("step").map(String::as_str) == Some("2fa") && device.pending_2fa_first.as_ref().is_some_and(|ff| ff.app);
+    // the hint the page was given, not one from what was typed: that would
+    // tell a password guesser the account's DID
+    let methods = f
+        .get("return")
+        .is_some_and(|r| r == ui::METHODS_RETURN)
+        .then(|| MethodsReturn { hint: f.get("login_hint").filter(|d| is_atproto_did(d)).cloned() });
     let r = sign_in(&app, &mut device, &f, &req).await;
-    account_sign_in_response(&app, r, for_app)
+    account_sign_in_response(&app, r, for_app, methods)
 }
 
 /// Where the account page app picks up a sign-in it asked for.
 pub(super) const APP_RETURN: &str = "/account?signin=device";
 
-fn account_sign_in_response(app: &App, r: Result<SignIn, OAuthError>, for_app: bool) -> Response {
+/// A sign-in started on the step-up page.
+pub(super) struct MethodsReturn {
+    /// The page's hint: a DID by syntax only (the page checks the account).
+    pub hint: Option<String>,
+}
+
+/// `methods`: the steps keep the step-up page's heading and hint, and a
+/// sign-in lands on the account's sign-in methods. The redirect holds fixed
+/// paths, the signed-in DID and the hint (DID syntax, encoded), so it can't
+/// leave `/oauth/account`.
+fn account_sign_in_response(
+    app: &App,
+    r: Result<SignIn, OAuthError>,
+    for_app: bool,
+    methods: Option<MethodsReturn>,
+) -> Response {
+    let ret = match &methods {
+        Some(m) => format!(
+            "&return={}{}",
+            ui::METHODS_RETURN,
+            m.hint.as_deref().map(|d| format!("&login_hint={}", ou::encode_uri_component(d))).unwrap_or_default()
+        ),
+        None => String::new(),
+    };
     match r {
         Ok(SignIn::Ok(_)) if for_app => redirect_to(APP_RETURN),
-        Ok(SignIn::Ok(_)) => redirect_to("/oauth/account"),
-        Ok(SignIn::NeedFactor(p)) => {
-            redirect_to(&format!("/oauth/account?add=1&2fa=1{}", if p.email_hint.is_some() { "&email=1" } else { "" }))
+        Ok(SignIn::Ok(did)) if methods.is_some() => {
+            redirect_to(&format!("/oauth/account?login_hint={}#{}", ou::encode_uri_component(&did), ui::METHODS_RETURN))
         }
+        Ok(SignIn::Ok(_)) => redirect_to("/oauth/account"),
+        Ok(SignIn::NeedFactor(p)) => redirect_to(&format!(
+            "/oauth/account?add=1&2fa=1{}{ret}",
+            if p.email_hint.is_some() { "&email=1" } else { "" }
+        )),
         Ok(SignIn::NeedFactorErr(p, e)) => redirect_to(&format!(
-            "/oauth/account?add=1&2fa=1{}&error={}",
+            "/oauth/account?add=1&2fa=1{}&error={}{ret}",
             if p.email_hint.is_some() { "&email=1" } else { "" },
             e.code()
         )),
-        Ok(SignIn::Failed(_, e)) => redirect_to(&format!("/oauth/account?add=1&error={}", e.code())),
+        Ok(SignIn::Failed(_, e)) => redirect_to(&format!("/oauth/account?add=1&error={}{ret}", e.code())),
         Err(e) if e.status == StatusCode::SERVICE_UNAVAILABLE => {
             with_retry_after(error_page(app, e.status, "Sign-in failed", BUSY_MESSAGE))
         }

@@ -508,6 +508,9 @@ pub(super) struct FedState {
     /// Started from the account page app, which gets the session.
     #[serde(default, skip_serializing_if = "is_false")]
     pub app: bool,
+    /// Started from `/oauth/account`'s step-up page, which it returns to.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub methods: bool,
     /// A signup ticket (purpose "signup"): the identity and what the
     /// provider said about its email.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -589,6 +592,9 @@ struct StartQ {
     /// With `account`: the account page app gets the session.
     #[serde(default)]
     app: Option<String>,
+    /// With `account`: only [`crate::oauth::ui::METHODS_RETURN`] means anything.
+    #[serde(default, rename = "return")]
+    ret: Option<String>,
 }
 
 /// `link`: the provider asks which of its accounts to use, so a link never
@@ -685,6 +691,9 @@ async fn start_flow(State(app): AppState, headers: HeaderMap, Query(q): Query<St
         expires_at: now + STATE_TTL,
         handoff: None,
         app: purpose == "sign_in" && q.request_uri.is_none() && q.app.is_some(),
+        methods: purpose == "sign_in"
+            && q.request_uri.is_none()
+            && q.ret.as_deref() == Some(crate::oauth::ui::METHODS_RETURN),
         identity: None,
     };
     let val = Bytes::from(super::server::to_json_bytes(&row));
@@ -967,7 +976,7 @@ async fn finish(
         cred: crate::federated::auth_ref(&id.iss, &id.sub),
         provider: p.name.clone(),
     };
-    super::oauth::federated_continue(app, headers, ip, st.request_id.as_deref(), acct, epoch, first).await
+    super::oauth::federated_continue(app, headers, ip, st.request_id.as_deref(), acct, epoch, first, st.methods).await
 }
 
 /// A signup ticket lives this long: the user picks a handle and email.
@@ -998,6 +1007,7 @@ async fn signup_ticket(
         expires_at: now + SIGNUP_TTL,
         handoff: None,
         app: st.app,
+        methods: false,
         identity: Some(TicketIdentity {
             iss: id.iss.clone(),
             sub: id.sub.clone(),
@@ -1650,6 +1660,7 @@ pub(super) fn fixture_rows(did: &str) -> Vec<super::private_rows::PrivateRow> {
         expires_at: 1_790_000_600,
         handoff,
         app: false,
+        methods: false,
         identity: None,
     };
     let link = FedState {
@@ -1662,6 +1673,7 @@ pub(super) fn fixture_rows(did: &str) -> Vec<super::private_rows::PrivateRow> {
         expires_at: 1_790_000_600,
         handoff: None,
         app: false,
+        methods: false,
         identity: None,
     };
     let ticket = FedState {
@@ -1674,6 +1686,7 @@ pub(super) fn fixture_rows(did: &str) -> Vec<super::private_rows::PrivateRow> {
         expires_at: 1_790_000_900,
         handoff: None,
         app: true,
+        methods: false,
         identity: Some(TicketIdentity {
             iss: "https://accounts.example.com".into(),
             sub: "110248495921238986421".into(),

@@ -1528,3 +1528,253 @@ fn eip191_matches_web3() {
     .unwrap();
     assert_eq!(eth_address(sk.verifying_key()), "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23");
 }
+
+// ---------------------------------------------------------------- the step-up page (jazware/vlpds#10)
+
+/// The account page app's Manage link, as `SignInMethods.tsx` builds it.
+fn step_up_url(s: &Srv, hint: &str) -> String {
+    format!(
+        "{}/oauth/account?login_hint={}&return=sign-in-methods",
+        s.base,
+        vlpds::oauth::util::form_encode_component(hint)
+    )
+}
+
+fn methods_return(did: &str) -> String {
+    format!("/oauth/account?login_hint={}#sign-in-methods", vlpds::oauth::util::encode_uri_component(did))
+}
+
+/// Ages every sign-in on `b`'s device past the step-up window.
+async fn age_sign_ins(s: &Srv, b: &Browser) {
+    let id = b.cookie.as_deref().unwrap().trim_start_matches("vlpds-device=").to_string();
+    let mut d = vlpds::oauth::store::get_device(&s.app, &id).await.unwrap().unwrap();
+    for a in &mut d.accounts {
+        a.authenticated_at -= 3600;
+    }
+    vlpds::oauth::store::put_device(&s.app, &d).await.unwrap();
+}
+
+/// The page's password form as a browser posts it, its hidden `login_hint`
+/// included when it has one.
+async fn step_up_post(s: &Srv, b: &mut Browser, html: &str, ident: &str, password: &str, ret: &str) -> Page {
+    let hint = hidden_field(html, "login_hint");
+    let csrf = csrf_of(html);
+    let mut pairs = vec![
+        ("csrf", csrf.as_str()),
+        ("identifier", ident),
+        ("password", password),
+        ("return", ret),
+        ("action", "sign-in"),
+    ];
+    if let Some(h) = &hint {
+        pairs.push(("login_hint", h));
+    }
+    b.post(s, "/oauth/account/sign-in", &pairs).await
+}
+
+async fn step_up_sign_in(s: &Srv, b: &mut Browser, html: &str, acct: &Account, ret: &str) -> Page {
+    step_up_post(s, b, html, &acct.handle, PASSWORD, ret).await
+}
+
+fn hint_q(did: &str) -> String {
+    format!("&login_hint={}", vlpds::oauth::util::encode_uri_component(did))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn manage_from_the_app_asks_to_confirm_and_returns_to_sign_in_methods() {
+    let Setup { s, idp, acct } = setup(json!({})).await;
+    // a browser that never signed in here: the step-up copy, the handle filled in
+    let mut b = Browser::default();
+    let (st, _, html) = b.get(&s, &step_up_url(&s, &acct.did)).await;
+    assert_eq!(st, 200);
+    assert!(html.contains("Confirm it's you"), "{html}");
+    assert!(html.contains(&format!("for <b>@{}</b>", acct.handle)), "{html}");
+    assert!(html.contains(&format!("name=\"identifier\" value=\"{}\"", acct.handle)), "{html}");
+    assert!(!html.contains("Manage the apps"), "{html}");
+    assert_eq!(hidden_field(&html, "return").as_deref(), Some("sign-in-methods"));
+    let (_, _, plain) = Browser::default().get(&s, &format!("{}/oauth/account", s.base)).await;
+    assert_eq!(html.contains("id=\"pk\""), plain.contains("id=\"pk\""), "the passkey form as on the plain page");
+    let start = href(&html, "/oauth/federated/start?provider=").unwrap();
+    assert!(start.ends_with("&account=1&return=sign-in-methods"), "{start}");
+    assert_eq!(hidden_field(&html, "login_hint").as_deref(), Some(acct.did.as_str()));
+    // the app sends a DID; a handle isn't taken, so the page never says
+    // "for @" with text it was handed
+    let (_, _, by_handle) = Browser::default().get(&s, &step_up_url(&s, &format!("@{}", acct.handle))).await;
+    assert!(by_handle.contains("Confirm it's you") && !by_handle.contains(" for <b>@"), "{by_handle}");
+    assert!(!by_handle.contains(&acct.handle), "{by_handle}");
+
+    // a wrong password comes back with the page's hint, so the handle stays
+    let (st, h, _) = step_up_post(&s, &mut b, &html, &acct.handle, "wrong-password", "sign-in-methods").await;
+    assert_eq!(st, 303);
+    let back = location(&h);
+    assert!(
+        back.starts_with("/oauth/account?add=1&error=")
+            && back.ends_with(&format!("&return=sign-in-methods{}", hint_q(&acct.did))),
+        "{back}"
+    );
+    let (_, _, retry) = b.get(&s, &format!("{}{back}", s.base)).await;
+    assert!(retry.contains(&format!("for <b>@{}</b>", acct.handle)) && retry.contains("role=\"alert\""), "{retry}");
+    assert!(retry.contains(&format!("name=\"identifier\" value=\"{}\"", acct.handle)), "{retry}");
+    // with no hint on the page, nothing is derived from what was typed
+    let mut b3 = Browser::default();
+    let (_, _, nohint) = b3.get(&s, &format!("{}/oauth/account?add=1&return=sign-in-methods", s.base)).await;
+    assert!(hidden_field(&nohint, "login_hint").is_none(), "{nohint}");
+    let (_, h, _) = step_up_post(&s, &mut b3, &nohint, &acct.handle, "wrong-password", "sign-in-methods").await;
+    assert!(!location(&h).contains("login_hint"), "{}", location(&h));
+
+    // signing in lands on the sign-in methods, which it may change now
+    let (st, h, body) = step_up_sign_in(&s, &mut b, &html, &acct, "sign-in-methods").await;
+    assert_eq!((st, location(&h)), (303, methods_return(&acct.did)), "{body}");
+    let (st, _, page) = b.get(&s, &format!("{}{}", s.base, methods_return(&acct.did))).await;
+    assert_eq!(st, 200);
+    assert!(page.contains("<h2 id=\"sign-in-methods\">Sign-in methods</h2>"), "{page}");
+    assert!(page.contains("&amp;link="), "an Add link: {page}");
+    // fresh, the same link goes straight to the page
+    let (_, _, again) = b.get(&s, &step_up_url(&s, &acct.did)).await;
+    assert!(again.contains("id=\"sign-in-methods\"") && !again.contains("Confirm it's you"), "{again}");
+
+    // a provider sign-in from the step-up page returns there too
+    let add = href(&page, "/oauth/federated/start?provider=").unwrap();
+    assert_eq!(location(&through_idp(&s, &mut b, &add).await.1), "/oauth/account?notice=linked");
+    let mut b2 = Browser::default();
+    let (_, _, html) = b2.get(&s, &step_up_url(&s, &acct.did)).await;
+    let start = href(&html, "/oauth/federated/start?provider=").unwrap();
+    let p = through_idp(&s, &mut b2, &start).await;
+    assert_eq!((p.0, location(&p.1)), (303, methods_return(&acct.did)));
+    let _ = idp;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_step_up_hint_and_return_take_only_what_they_expect() {
+    let Setup { s, idp, acct } = setup(json!({})).await;
+    for bad in ["<script>alert(1)</script>", "not a handle", "did:plc:\"><b>x", "https://evil.example/"] {
+        let (st, _, html) = Browser::default().get(&s, &step_up_url(&s, bad)).await;
+        assert_eq!(st, 200, "{bad}");
+        assert!(html.contains("Confirm it's you"), "{html}");
+        assert!(!html.contains(" for <b>@"), "{bad}: {html}");
+        assert!(
+            !html.contains("alert(1)") && !html.contains("evil.example") && !html.contains("<b>x"),
+            "{bad}: {html}"
+        );
+        assert!(html.contains("name=\"identifier\" value=\"\""), "{bad}: {html}");
+    }
+    // a DID with no account here is no hint
+    let (_, _, html) = Browser::default().get(&s, &step_up_url(&s, "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa")).await;
+    assert!(!html.contains(" for <b>@"), "{html}");
+    // nor is an inactive account, whose handle describeRepo and
+    // resolveHandle hide; nor any handle
+    let gone = create_account(&s, "fedgone").await;
+    let (st, j) = s.bearer(&gone.jwt, "com.atproto.server.deactivateAccount", true, Some(json!({}))).await;
+    assert_eq!(st, 200, "{j}");
+    let down = create_account(&s, "feddown").await;
+    let body =
+        json!({"subject": {"$type": "com.atproto.admin.defs#repoRef", "did": down.did}, "takedown": {"applied": true}});
+    let (st, j) = admin_post(&s, "com.atproto.admin.updateSubjectStatus", body).await;
+    assert_eq!(st, 200, "{j}");
+    for (hint, handle) in [
+        (gone.did.clone(), &gone.handle),
+        (down.did.clone(), &down.handle),
+        (acct.handle.clone(), &acct.handle),
+        (format!("@{}", acct.handle), &acct.handle),
+    ] {
+        let (st, _, html) = Browser::default().get(&s, &step_up_url(&s, &hint)).await;
+        assert_eq!(st, 200, "{hint}");
+        assert!(!html.contains(" for <b>@") && !html.contains(handle.as_str()), "{hint}: {html}");
+        assert!(hidden_field(&html, "login_hint").is_none(), "{hint}: {html}");
+    }
+    // any other return is the plain page, and its sign-ins stay on it
+    for ret in ["https://evil.example/", "//evil.example", "/account", "sign-in-methods#x"] {
+        let mut b = Browser::default();
+        let q = vlpds::oauth::util::form_encode_component(ret);
+        let (_, _, html) = b.get(&s, &format!("{}/oauth/account?return={q}", s.base)).await;
+        assert!(html.contains("Manage the apps") && hidden_field(&html, "return").is_none(), "{ret}: {html}");
+        let (st, h, body) = step_up_sign_in(&s, &mut b, &html, &acct, ret).await;
+        assert_eq!((st, location(&h)), (303, "/oauth/account".to_string()), "{ret}: {body}");
+        let start = format!("/oauth/federated/start?provider=example&account=1&return={q}");
+        let (st, h, _) = b.get(&s, &format!("{}{start}", s.base)).await;
+        assert_eq!(st, 303);
+        assert!(!location(&h).contains("evil"), "only the provider: {}", location(&h));
+    }
+    let _ = idp;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stale_sign_in_says_to_sign_in_again_and_offers_the_step_up() {
+    let Setup { s, idp, acct } = setup(json!({})).await;
+    let mut b = Browser::default();
+    link(&s, &mut b, &acct).await;
+    age_sign_ins(&s, &b).await;
+    let (_, _, html) = b.get(&s, &format!("{}/oauth/account", s.base)).await;
+    assert!(html.contains("<h2 id=\"sign-in-methods\">"), "{html}");
+    assert!(html.contains("Sign in again to change these"), "{html}");
+    assert!(hidden_field(&html, "ref").is_none(), "no Remove that would only be refused: {html}");
+    assert!(href(&html, "/oauth/federated/start?").is_none(), "no Add either: {html}");
+    let again = href(&html, "/oauth/account?login_hint=").expect("a sign-in-again link");
+    assert_eq!(
+        again,
+        format!(
+            "/oauth/account?login_hint={}&return=sign-in-methods",
+            vlpds::oauth::util::encode_uri_component(&acct.did)
+        )
+    );
+    let (_, _, html) = b.get(&s, &format!("{}{again}", s.base)).await;
+    assert!(html.contains("Confirm it's you") && html.contains(&format!("@{}", acct.handle)), "{html}");
+    let (st, h, _) = step_up_sign_in(&s, &mut b, &html, &acct, "sign-in-methods").await;
+    assert_eq!((st, location(&h)), (303, methods_return(&acct.did)));
+    let (_, _, html) = b.get(&s, &format!("{}{}", s.base, methods_return(&acct.did))).await;
+    assert!(hidden_field(&html, "ref").is_some(), "Remove is back: {html}");
+    let _ = idp;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_step_up_adds_the_apps_account_beside_another() {
+    let Setup { s, idp, acct } = setup(json!({})).await;
+    let other = create_account(&s, "fedother").await;
+    let mut b = Browser::default();
+    device_sign_in(&s, &mut b, &other).await;
+    // signed in here as someone else: the hint asks for the app's account
+    let (_, _, html) = b.get(&s, &step_up_url(&s, &acct.did)).await;
+    assert!(html.contains("Confirm it's you") && html.contains(&format!("@{}", acct.handle)), "{html}");
+    assert!(!html.contains(&other.did), "nothing of the other account: {html}");
+    let (st, h, _) = step_up_sign_in(&s, &mut b, &html, &acct, "sign-in-methods").await;
+    assert_eq!((st, location(&h)), (303, methods_return(&acct.did)));
+    let (_, _, page) = b.get(&s, &format!("{}{}", s.base, methods_return(&acct.did))).await;
+    assert!(page.contains(&other.did) && page.contains(&acct.did), "both signed in: {page}");
+    assert_eq!(page.matches("id=\"sign-in-methods\"").count(), 1, "{page}");
+    let anchor = page.find("id=\"sign-in-methods\"").unwrap();
+    let last_account = page[..anchor].rfind("<div class=\"who\"><b>@").unwrap();
+    assert!(page[last_account..anchor].contains(&acct.handle), "the anchor is the app account's: {page}");
+    let _ = idp;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_step_up_keeps_its_return_through_the_second_factor() {
+    let Setup { s, idp, acct } = setup(json!({})).await;
+    let (secret, step) = enable_totp(&s, &acct).await;
+    let mut b = Browser::default();
+    let (_, _, html) = b.get(&s, &step_up_url(&s, &acct.did)).await;
+    let (st, h, _) = step_up_sign_in(&s, &mut b, &html, &acct, "sign-in-methods").await;
+    assert_eq!(
+        (st, location(&h)),
+        (303, format!("/oauth/account?add=1&2fa=1&return=sign-in-methods{}", hint_q(&acct.did)))
+    );
+    let (_, _, html) = b.get(&s, &format!("{}{}", s.base, location(&h))).await;
+    assert!(html.contains("Confirm it's you") && html.contains("Authenticator code"), "{html}");
+    assert_eq!(hidden_field(&html, "return").as_deref(), Some("sign-in-methods"));
+    let code = vlpds::totp::code_for_step(&secret, step + 1);
+    let (st, h, body) = b
+        .post(
+            &s,
+            "/oauth/account/sign-in",
+            &[
+                ("csrf", &csrf_of(&html)),
+                ("step", "2fa"),
+                ("code", &code),
+                ("return", "sign-in-methods"),
+                ("action", "sign-in"),
+            ],
+        )
+        .await;
+    assert_eq!((st, location(&h)), (303, methods_return(&acct.did)), "{body}");
+    let _ = idp;
+}
