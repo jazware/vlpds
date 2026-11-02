@@ -637,6 +637,12 @@ struct Args {
     /// Delete unreferenced blobs uploaded more than this many seconds ago.
     #[arg(long, env = "VLPDS_BLOB_GC_GRACE_SECS", default_value_t = 6 * 3600)]
     blob_gc_grace_secs: u64,
+    /// Seconds between blob GC sweeps. Each sweep LISTs every blob in the
+    /// bucket from every node, which can cost more than storing them when
+    /// blobs are many and small. Default: a quarter of the grace, between
+    /// 10 s and 1 h. At most 30 days.
+    #[arg(long, env = "VLPDS_BLOB_GC_INTERVAL_SECS", value_parser = clap::value_parser!(u64).range(1..=30 * 86_400))]
+    blob_gc_interval_secs: Option<u64>,
     /// Per-account blob storage quota (GB = 10^9 bytes; 0: unlimited). The
     /// console overrides it per account. Blobs of a repo moving in count but
     /// are never refused.
@@ -1581,6 +1587,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
         terms_of_service_url: flag_or_env(&args.terms_of_service_url, "PDS_TERMS_OF_SERVICE_URL"),
         contact_email_address: flag_or_env(&args.contact_email_address, "PDS_CONTACT_EMAIL_ADDRESS"),
         blob_gc_grace: Duration::from_secs(args.blob_gc_grace_secs),
+        blob_gc_interval: args.blob_gc_interval_secs.map(Duration::from_secs),
         blob_quota_bytes: args.blob_quota_gb.saturating_mul(1_000_000_000),
         blob_uploads_per_day: args.blob_uploads_per_day,
         blob_quarantine: Duration::from_secs(args.blob_quarantine_days.saturating_mul(86_400)),

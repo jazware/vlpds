@@ -117,3 +117,15 @@ async fn blob_refs_must_match_stored_blob() {
 
     put(profile(&png)).await.ok();
 }
+
+/// Without `--blob-gc-interval-secs`, sweeps run every quarter of the grace,
+/// between 10 s and 1 h.
+#[test]
+fn default_blob_gc_interval() {
+    use vlpds::xrpc::blobs::default_gc_interval;
+    let s = Duration::from_secs;
+    assert_eq!(default_gc_interval(s(6 * 3600)), s(3600));
+    assert_eq!(default_gc_interval(s(48 * 3600)), s(3600));
+    assert_eq!(default_gc_interval(s(20)), s(10));
+    assert_eq!(default_gc_interval(s(1200)), s(300));
+}

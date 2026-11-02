@@ -94,6 +94,8 @@ pub struct Config {
     pub terms_of_service_url: Option<String>,
     pub contact_email_address: Option<String>,
     pub blob_gc_grace: Duration,
+    /// None: [`crate::xrpc::blobs::default_gc_interval`] of the grace.
+    pub blob_gc_interval: Option<Duration>,
     /// Per-account stored blob bytes; 0: unlimited. Overridable per DID.
     pub blob_quota_bytes: u64,
     /// Per-account uploadBlob calls per UTC day; 0: unlimited.
@@ -322,6 +324,7 @@ impl Default for Config {
             terms_of_service_url: None,
             contact_email_address: None,
             blob_gc_grace: Duration::from_secs(6 * 3600),
+            blob_gc_interval: None,
             blob_quota_bytes: DEFAULT_BLOB_QUOTA_GB * 1_000_000_000,
             blob_uploads_per_day: DEFAULT_BLOB_UPLOADS_PER_DAY,
             blob_quarantine: Duration::from_secs(DEFAULT_BLOB_QUARANTINE_DAYS * 86_400),

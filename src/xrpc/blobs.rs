@@ -659,11 +659,17 @@ async fn space_referenced_blobs(
     Ok(out)
 }
 
+/// A quarter of the grace, so an orphan goes within 1.25 graces, but at
+/// least hourly.
+pub fn default_gc_interval(grace: Duration) -> Duration {
+    (grace / 4).clamp(Duration::from_secs(10), Duration::from_secs(3600))
+}
+
 /// Only DIDs whose partition this node owns are swept.
 pub fn spawn_blob_gc(app: Arc<App>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let grace = app.config.blob_gc_grace;
-        let every = (grace / 4).clamp(Duration::from_secs(10), Duration::from_secs(3600));
+        let every = app.config.blob_gc_interval.unwrap_or_else(|| default_gc_interval(grace));
         let mut tick = tokio::time::interval(every);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {

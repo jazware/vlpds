@@ -274,7 +274,7 @@ has the flags the sections above don't cover.
 | Resharding | `--reshard-split-mb`, `--reshard-split-writes`, `--reshard-gc-grace` (1 h), `--forced-detach-after` (5 min), `--full-compaction-every` (off) |
 | Takeover | `--preload-recent` (2,048 repos per shard), `--forwarded-write-start-ms` (1,000), `--retry-unapplied-writes` (on), `--checkpoint-stagger` (on) |
 | Repo cache | `--cache-per-worker` (50,000 repos), `--lazy-mst-prefetch-kb` (1,024) |
-| Blobs | `--max-blob-mb`, `--blob-gc-grace-secs` (6 h), `--blob-quota-gb`, `--blob-uploads-per-day`, `--blob-quarantine-days` |
+| Blobs | `--max-blob-mb`, `--blob-gc-grace-secs` (6 h), `--blob-gc-interval-secs` (a quarter of the grace, at most 1 h: each sweep lists every blob in the bucket from every node, so with many small blobs a longer interval saves LIST requests and leaves orphans longer), `--blob-quota-gb`, `--blob-uploads-per-day`, `--blob-quarantine-days` |
 | Web UI | `--ui-dir` (the image's `/usr/share/vlpds/ui`). Startup fails if it isn't a complete build. |
 | Logging | `--log-format` (`text`, `json`), `RUST_LOG` (`info,slatedb=warn`), `--exit-state-file`, `--pyroscope-url` (profiling builds) |
 | Development | `--dev-mode`, `--memory` (in-memory store), `--allow-bulk-create`, `--no-rate-limits`, `--inject-put-ms`, `--lexicon-authority-override <authority>=<did>` (repeatable, `--dev-mode` only: lexicons of that NSID authority come from the DID's repo with no DNS lookup) |

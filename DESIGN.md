@@ -581,7 +581,9 @@ commit hot path.
   write to the real-repo fixture (`~/repo.car`, 812 blob refs;
   `mst_lazy::bench_cold_open_blobs`), every GET +20 ms: median ~150 ms
   instead of ~270 ms.
-- **GC** (`blobs::sweep_blobs`, owned partitions only). A blob unreferenced
+- **GC** (`blobs::sweep_blobs`, owned partitions only, every
+  `--blob-gc-interval-secs`: by default a quarter of the grace, at most
+  1 h; each pass lists the whole `blob/` prefix). A blob unreferenced
   for longer than `--blob-gc-grace-secs` is moved to `blob-gc/{did}/{cid}`,
   not deleted. A write checks that its blob exists before it is sequenced, so
   a write that checked just before the move can apply its reference just
