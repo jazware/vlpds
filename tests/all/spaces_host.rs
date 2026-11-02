@@ -1,9 +1,11 @@
-//! The space host role (`--spaces`; src/xrpc/simplespace.rs, the host
-//! methods of src/xrpc/space.rs, src/space/host.rs): simplespace management
-//! and its policies, the gates of getSpaceCredential (member lists, public
-//! spaces, managing apps, app allow lists with client attestations),
-//! deleteSpace's tombstone, inbound notifyWrite from another vlpds with
-//! listRepos, and registrations that get writes forwarded.
+//! The space host role (`--spaces`; src/xrpc/space_policy.rs, the host
+//! methods of src/xrpc/space.rs, src/space/host.rs, src/space/policy.rs):
+//! space management under the baseline policies (personal, member and
+//! managed spaces), published policy and member records, the writer set,
+//! the gates of getSpaceCredential (member lists, public reads, managing
+//! apps, allowed apps with client attestations), deleteSpace's tombstone,
+//! inbound notifyWrite from another vlpds with listRepos, and registrations
+//! that get writes forwarded.
 
 use crate::common::spaces::{resp, SpaceClient};
 use crate::common::*;
@@ -27,50 +29,97 @@ const ANY: &str = "space:com.example.group?authority=*&collection=com.example.po
 /// Another account that may manage anyone's spaces (and so is refused only
 /// for not being the owner).
 const MANAGER: &str = "space:com.example.group?authority=*&action=read&manage=create&manage=update&manage=delete";
+const POLICY_REC: &str = "com.atproto.space.policy";
+const MEMBER_REC: &str = "com.atproto.memberspace.member";
+const CHECK: &str = "/xrpc/com.atproto.managedspace.checkUserAccess";
 
 fn rec(text: &str) -> J {
     json!({"$type": COLL, "text": text, "createdAt": "2026-10-01T00:00:00.000Z"})
 }
 
-fn policy(name: &str) -> J {
-    json!({"$type": format!("com.atproto.simplespace.defs#{name}")})
+/// A member space: `fields` over the defaults, as getSpace returns it.
+fn members_policy(fields: J) -> J {
+    let mut p = json!({
+        "$type": "com.atproto.memberspace.policy",
+        "publicRead": false,
+        "publicWrite": false,
+        "publishPolicy": false,
+        "publishMembers": false,
+    });
+    for (k, v) in fields.as_object().unwrap() {
+        p[k] = v.clone();
+    }
+    p
 }
 
-fn managing(app: &str) -> J {
-    json!({"$type": "com.atproto.simplespace.defs#managingAppPolicy", "managingApp": app})
+fn ml() -> J {
+    members_policy(json!({}))
 }
 
-fn allow(clients: &[&str]) -> J {
-    json!({"$type": "com.atproto.simplespace.defs#allowList", "allowed": clients})
+fn public_read() -> J {
+    members_policy(json!({"publicRead": true}))
+}
+
+fn managed(app: &str) -> J {
+    json!({"$type": "com.atproto.managedspace.policy", "managingApp": app, "publishPolicy": false})
+}
+
+fn personal() -> J {
+    json!({"$type": "com.atproto.personalspace.policy"})
 }
 
 async fn spawn() -> TestServer {
     TestServer::spawn_with(|c| c.spaces = true).await
 }
 
-async fn create(owner: &SpaceClient, skey: &str, read: J, write: J, app: J) -> Resp {
-    owner
-        .post(
-            "com.atproto.simplespace.createSpace",
-            json!({"spaceType": TYPE, "skey": skey, "readPolicy": read, "writePolicy": write, "appAccess": app}),
-        )
-        .await
+async fn create(owner: &SpaceClient, skey: &str, policy: J) -> Resp {
+    owner.post("com.atproto.space.createSpace", json!({"spaceType": TYPE, "skey": skey, "policy": policy})).await
+}
+
+async fn created(owner: &SpaceClient, skey: &str, policy: J) -> String {
+    create(owner, skey, policy).await.ok()["uri"].as_str().unwrap().to_string()
+}
+
+async fn update(owner: &SpaceClient, space: &str, policy: J) -> Resp {
+    owner.post("com.atproto.space.updateSpace", json!({"space": space, "policy": policy})).await
 }
 
 async fn put_member(owner: &SpaceClient, space: &str, did: &str, read: bool, write: bool) -> Resp {
     owner
-        .post("com.atproto.simplespace.putMember", json!({"space": space, "did": did, "read": read, "write": write}))
+        .post("com.atproto.memberspace.putMember", json!({"space": space, "did": did, "read": read, "write": write}))
         .await
 }
 
+async fn remove_member(owner: &SpaceClient, space: &str, did: &str) -> Resp {
+    owner.post("com.atproto.memberspace.removeMember", json!({"space": space, "did": did})).await
+}
+
 async fn get_space(c: &SpaceClient, space: &str) -> Resp {
-    c.get("com.atproto.simplespace.getSpace", &[("space", space)]).await
+    c.get("com.atproto.space.getSpace", &[("space", space)]).await
+}
+
+async fn delete_space(c: &SpaceClient, space: &str) -> Resp {
+    c.post("com.atproto.space.deleteSpace", json!({"space": space})).await
 }
 
 async fn members(c: &SpaceClient, space: &str, extra: &[(&str, &str)]) -> Resp {
     let mut q = vec![("space", space)];
     q.extend_from_slice(extra);
-    c.get("com.atproto.simplespace.listMembers", &q).await
+    c.get("com.atproto.memberspace.listMembers", &q).await
+}
+
+/// A record in `c`'s own repo in the space (None: not there).
+async fn own_record(c: &SpaceClient, space: &str, collection: &str, rkey: &str) -> Option<J> {
+    let r = c
+        .get(
+            "com.atproto.space.getRecord",
+            &[("space", space), ("repo", &c.did), ("collection", collection), ("rkey", rkey)],
+        )
+        .await;
+    if r.status == 400 && r.json["error"] == json!("RecordNotFound") {
+        return None;
+    }
+    Some(r.ok()["value"].clone())
 }
 
 async fn eventually<F, Fut>(within: Duration, mut f: F) -> bool
@@ -163,10 +212,8 @@ async fn stub(fragment: &str) -> Stub {
             let body = serde_json::from_slice(&body).unwrap_or(J::Null);
             s.lock().push(Seen { path: path.clone(), query, body, auth });
             match (path.as_str(), *a.lock()) {
-                ("/xrpc/com.atproto.simplespace.checkUserAccess", Answer::Authorized(ok)) => {
-                    json(200, json!({"authorized": ok}))
-                }
-                ("/xrpc/com.atproto.simplespace.checkUserAccess", Answer::Status(st)) => {
+                (CHECK, Answer::Authorized(ok)) => json(200, json!({"authorized": ok})),
+                (CHECK, Answer::Status(st)) => {
                     json(st, json!({"error": "InternalServerError"}))
                 }
                 _ => json(200, json!({})),
@@ -186,86 +233,59 @@ async fn dead_did() -> String {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn space_lifecycle_and_config() {
+async fn space_lifecycle_and_policies() {
     let s = spawn().await;
     let owner = SpaceClient::new(&s, "shl1", OWNER).await;
     let other = SpaceClient::new(&s, "shl2", MANAGER).await;
-    let ml = || policy("memberListPolicy");
-    let r = create(&owner, "main", ml(), ml(), policy("open")).await;
+    let r = create(&owner, "main", json!({"$type": "com.atproto.memberspace.policy"})).await;
     let space = r.ok()["uri"].as_str().unwrap().to_string();
     assert_eq!(space, format!("at://{}/space/{TYPE}/main", owner.did));
-    create(&owner, "main", ml(), ml(), policy("open")).await.err(400, "SpaceAlreadyExists");
+    create(&owner, "main", ml()).await.err(400, "SpaceAlreadyExists");
     // an auto-generated skey is a TID
-    let auto = owner
-        .post(
-            "com.atproto.simplespace.createSpace",
-            json!({"spaceType": TYPE, "readPolicy": ml(), "writePolicy": ml(), "appAccess": policy("open")}),
-        )
-        .await
-        .ok();
+    let auto = owner.post("com.atproto.space.createSpace", json!({"spaceType": TYPE, "policy": ml()})).await.ok();
     let skey = auto["uri"].as_str().unwrap().rsplit('/').next().unwrap().to_string();
     assert!(Tid::parse(&skey).is_some(), "{auto}");
     for bad in ["a b", "..", "a/b", ""] {
-        create(&owner, bad, ml(), ml(), policy("open")).await.err(400, "InvalidRequest");
+        create(&owner, bad, ml()).await.err(400, "InvalidRequest");
     }
-    let r = owner
-        .post(
-            "com.atproto.simplespace.createSpace",
-            json!({"spaceType": "nope", "readPolicy": ml(), "writePolicy": ml(), "appAccess": policy("open")}),
-        )
-        .await;
+    let r = owner.post("com.atproto.space.createSpace", json!({"spaceType": "nope", "policy": ml()})).await;
     r.err(400, "InvalidRequest");
-    // unknown variants are refused, not stored
-    create(&owner, "x1", policy("someOtherPolicy"), ml(), policy("open")).await.err(400, "UnsupportedPolicy");
-    create(&owner, "x2", managing("not-a-did"), ml(), policy("open")).await.err(400, "UnsupportedPolicy");
-    create(&owner, "x3", ml(), ml(), policy("someOtherAccess")).await.err(400, "UnsupportedAppAccess");
+    owner.post("com.atproto.space.createSpace", json!({"spaceType": TYPE, "skey": "np"})).await.err(400, "InvalidRequest");
+    // an unknown policy is refused, not stored; so is a managing app that
+    // isn't a DID
+    create(&owner, "x1", json!({"$type": "com.example.somePolicy"})).await.err(400, "UnsupportedPolicy");
+    create(&owner, "x2", managed("not-a-did")).await.err(400, "InvalidRequest");
     get_space(&owner, &format!("at://{}/space/{TYPE}/x1", owner.did)).await.err(400, "SpaceNotFound");
 
-    let got = get_space(&owner, &space).await.ok();
-    assert_eq!(got["readPolicy"], ml());
-    assert_eq!(got["appAccess"], policy("open"));
+    // stored with its defaults filled in and unknown fields dropped
+    assert_eq!(get_space(&owner, &space).await.ok(), json!({"uri": space, "policy": ml()}));
+    let p = created(&owner, "p", json!({"$type": "com.atproto.personalspace.policy", "extra": 1})).await;
+    assert_eq!(get_space(&owner, &p).await.ok()["policy"], personal());
+    let m = created(&owner, "mg", json!({"$type": "com.atproto.managedspace.policy", "managingApp": "did:web:a.example#x"})).await;
+    assert_eq!(get_space(&owner, &m).await.ok()["policy"], managed("did:web:a.example#x"));
     get_space(&other, &space).await.err(400, "NotSpaceOwner");
 
-    // patches are independent
-    let update = |body: J| async { owner.post("com.atproto.simplespace.updateSpace", body).await };
-    update(json!({"space": space, "readPolicy": policy("publicPolicy")})).await.ok();
-    let got = get_space(&owner, &space).await.ok();
-    assert_eq!((got["readPolicy"].clone(), got["writePolicy"].clone()), (policy("publicPolicy"), ml()));
-    update(json!({"space": space, "writePolicy": managing("did:web:app.example#forum")})).await.ok();
-    update(json!({"space": space, "appAccess": allow(&["https://app.example/client-metadata.json"])})).await.ok();
-    let got = get_space(&owner, &space).await.ok();
-    assert_eq!(got["readPolicy"], policy("publicPolicy"));
-    assert_eq!(got["writePolicy"], managing("did:web:app.example#forum"));
-    assert_eq!(got["appAccess"], allow(&["https://app.example/client-metadata.json"]));
-    // switching policy drops the managing app
-    update(json!({"space": space, "writePolicy": ml()})).await.ok();
-    let got = get_space(&owner, &space).await.ok();
-    assert_eq!(got["writePolicy"], ml(), "{got}");
-    // nothing given: nothing changes
-    update(json!({"space": space})).await.ok();
-    assert_eq!(get_space(&owner, &space).await.ok(), got);
-    update(json!({"space": space, "readPolicy": policy("nope")})).await.err(400, "UnsupportedPolicy");
-    update(json!({"space": format!("at://{}/space/{TYPE}/none", owner.did), "readPolicy": ml()}))
-        .await
-        .err(400, "SpaceNotFound");
-    let r = other.post("com.atproto.simplespace.updateSpace", json!({"space": space, "readPolicy": ml()})).await;
-    r.err(400, "NotSpaceOwner");
+    // the policy is replaced wholesale: omitted fields go back to defaults
+    let apps = members_policy(json!({"publicRead": true, "allowedApps": ["https://app.example/client-metadata.json"]}));
+    update(&owner, &space, apps.clone()).await.ok();
+    assert_eq!(get_space(&owner, &space).await.ok()["policy"], apps);
+    update(&owner, &space, json!({"$type": "com.atproto.memberspace.policy", "publicWrite": true})).await.ok();
+    assert_eq!(get_space(&owner, &space).await.ok()["policy"], members_policy(json!({"publicWrite": true})));
+    update(&owner, &space, json!({"$type": "nope"})).await.err(400, "UnsupportedPolicy");
+    owner.post("com.atproto.space.updateSpace", json!({"space": space})).await.err(400, "InvalidRequest");
+    update(&owner, &format!("at://{}/space/{TYPE}/none", owner.did), ml()).await.err(400, "SpaceNotFound");
+    update(&other, &space, ml()).await.err(400, "NotSpaceOwner");
     // a grant without manage=update is refused for its scope
     let reader = SpaceClient::new(&s, "shl3", "space:com.example.group?action=read").await;
-    let r = reader
-        .post(
-            "com.atproto.simplespace.updateSpace",
-            json!({"space": format!("at://{}/space/{TYPE}/main", reader.did), "readPolicy": ml()}),
-        )
-        .await;
+    let r = update(&reader, &format!("at://{}/space/{TYPE}/main", reader.did), ml()).await;
     assert_eq!(r.status, 403, "{r:?}");
 
     // listSpaces by type and authority, a deleted space left out
-    let second = create(&owner, "second", ml(), ml(), policy("open")).await.ok()["uri"].as_str().unwrap().to_string();
-    owner.post("com.atproto.simplespace.deleteSpace", json!({"space": second})).await.ok();
+    let second = created(&owner, "second", ml()).await;
+    delete_space(&owner, &second).await.ok();
     let listed = owner.get("com.atproto.space.listSpaces", &[("spaceType", TYPE), ("did", &owner.did)]).await.ok();
     let uris: Vec<&str> = listed["spaces"].as_array().unwrap().iter().map(|s| s["uri"].as_str().unwrap()).collect();
-    assert_eq!(uris.len(), 2, "{listed}");
+    assert_eq!(uris.len(), 4, "{listed}");
     assert!(uris.contains(&space.as_str()) && !uris.contains(&second.as_str()), "{listed}");
     let other_type =
         owner.get("com.atproto.space.listSpaces", &[("spaceType", "com.example.other"), ("did", &owner.did)]).await;
@@ -278,8 +298,7 @@ async fn member_list() {
     let owner = SpaceClient::new(&s, "shm1", OWNER).await;
     let other = SpaceClient::new(&s, "shm2", MANAGER).await;
     let member = SpaceClient::new(&s, "shm3", ANY).await;
-    let ml = || policy("memberListPolicy");
-    let space = create(&owner, "m", ml(), ml(), policy("open")).await.ok()["uri"].as_str().unwrap().to_string();
+    let space = created(&owner, "m", ml()).await;
     assert_eq!(members(&owner, &space, &[]).await.ok(), json!({"members": []}));
     put_member(&owner, &space, &member.did, true, false).await.ok();
     let m = members(&owner, &space, &[]).await.ok();
@@ -290,12 +309,10 @@ async fn member_list() {
     assert_eq!(m["members"], json!([{"did": member.did, "read": false, "write": true}]));
     // the owner only
     put_member(&other, &space, &other.did, true, true).await.err(400, "NotSpaceOwner");
-    let r = other.post("com.atproto.simplespace.removeMember", json!({"space": space, "did": member.did})).await;
-    r.err(400, "NotSpaceOwner");
+    remove_member(&other, &space, &member.did).await.err(400, "NotSpaceOwner");
     members(&other, &space, &[]).await.err(400, "NotSpaceOwner");
     put_member(&owner, &space, "not-a-did", true, true).await.err(400, "InvalidRequest");
-    let r =
-        owner.post("com.atproto.simplespace.putMember", json!({"space": space, "did": member.did, "read": true})).await;
+    let r = owner.post("com.atproto.memberspace.putMember", json!({"space": space, "did": member.did, "read": true})).await;
     r.err(400, "InvalidRequest");
     let none = format!("at://{}/space/{TYPE}/none", owner.did);
     put_member(&owner, &none, &member.did, true, true).await.err(400, "SpaceNotFound");
@@ -318,23 +335,221 @@ async fn member_list() {
     let got: Vec<&str> = p2["members"].as_array().unwrap().iter().map(|m| m["did"].as_str().unwrap()).collect();
     assert_eq!(got, &all[2..]);
 
-    // a credential doesn't reach the member list
+    // a credential reaches neither the member list nor getSpace, which are
+    // the owner's
     put_member(&owner, &space, &member.did, true, true).await.ok();
     let cred = member.credential(&space).await;
     let r =
-        member.signed_get(&s.url, "com.atproto.simplespace.listMembers", &[("space", &space)], &cred, &owner.did).await;
+        member.signed_get(&s.url, "com.atproto.memberspace.listMembers", &[("space", &space)], &cred, &owner.did).await;
     assert_eq!(r.status, 401, "{r:?}");
-    // but getSpace does, addressed to the authority
-    let r =
-        member.signed_get(&s.url, "com.atproto.simplespace.getSpace", &[("space", &space)], &cred, &owner.did).await;
-    assert_eq!(r.ok()["uri"], json!(space));
+    let r = member.signed_get(&s.url, "com.atproto.space.getSpace", &[("space", &space)], &cred, &owner.did).await;
+    assert_eq!(r.status, 401, "{r:?}");
 
-    owner.post("com.atproto.simplespace.removeMember", json!({"space": space, "did": member.did})).await.ok();
+    remove_member(&owner, &space, &member.did).await.ok();
     let m = members(&owner, &space, &[]).await.ok();
     assert!(m["members"].as_array().unwrap().iter().all(|x| x["did"] != json!(member.did)), "{m}");
-    member.try_credential_at(&s.url, &space, None).await.err(400, "UserNotAuthorized");
+    // a refused user learns nothing about the space
+    member.try_credential_at(&s.url, &space, None).await.err(400, "SpaceNotFound");
     // removing a non-member is fine
-    owner.post("com.atproto.simplespace.removeMember", json!({"space": space, "did": member.did})).await.ok();
+    remove_member(&owner, &space, &member.did).await.ok();
+
+    // the member methods are the member space's own
+    for policy in [personal(), managed("did:web:a.example#x")] {
+        let skey = if policy == personal() { "pers" } else { "mgd" };
+        let other_policy = created(&owner, skey, policy).await;
+        put_member(&owner, &other_policy, &member.did, true, true).await.err(400, "PolicyMismatch");
+        remove_member(&owner, &other_policy, &member.did).await.err(400, "PolicyMismatch");
+        members(&owner, &other_policy, &[]).await.err(400, "PolicyMismatch");
+    }
+}
+
+/// A new `$type` migrates the space and discards the member list, which
+/// migrating back doesn't restore.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn migrating_the_policy_discards_its_state() {
+    let s = spawn().await;
+    let owner = SpaceClient::new(&s, "shx1", OWNER).await;
+    let member = SpaceClient::new(&s, "shx2", ANY).await;
+    let space = created(&owner, "mig", ml()).await;
+    put_member(&owner, &space, &member.did, true, true).await.ok();
+    member.try_credential_at(&s.url, &space, None).await.ok();
+    update(&owner, &space, personal()).await.ok();
+    member.try_credential_at(&s.url, &space, None).await.err(400, "SpaceNotFound");
+    owner.try_credential_at(&s.url, &space, None).await.ok();
+    update(&owner, &space, ml()).await.ok();
+    assert_eq!(members(&owner, &space, &[]).await.ok(), json!({"members": []}));
+    member.try_credential_at(&s.url, &space, None).await.err(400, "SpaceNotFound");
+    // a same-type update keeps the list
+    put_member(&owner, &space, &member.did, true, false).await.ok();
+    update(&owner, &space, public_read()).await.ok();
+    assert_eq!(members(&owner, &space, &[]).await.ok()["members"].as_array().unwrap().len(), 1);
+}
+
+/// publishPolicy and publishMembers: the authority's repo in the space
+/// holds the policy and member records, created, updated and withdrawn as
+/// the configuration changes, and nobody writes them directly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn published_policy_and_members() {
+    let s = spawn().await;
+    let owner = SpaceClient::new(&s, "shb1", OWNER).await;
+    let member = SpaceClient::new(&s, "shb2", ANY).await;
+    let reader = SpaceClient::new(&s, "shb3", ANY).await;
+    let published = members_policy(json!({"publishPolicy": true, "publishMembers": true}));
+    let space = created(&owner, "pub", published.clone()).await;
+    assert_eq!(
+        own_record(&owner, &space, POLICY_REC, "self").await,
+        Some(json!({"$type": POLICY_REC, "policy": published}))
+    );
+    put_member(&owner, &space, &member.did, true, true).await.ok();
+    put_member(&owner, &space, &reader.did, true, false).await.ok();
+    assert_eq!(
+        own_record(&owner, &space, MEMBER_REC, &member.did).await,
+        Some(json!({"$type": MEMBER_REC, "read": true, "write": true}))
+    );
+    put_member(&owner, &space, &member.did, true, false).await.ok();
+    assert_eq!(own_record(&owner, &space, MEMBER_REC, &member.did).await.unwrap()["write"], json!(false));
+    remove_member(&owner, &space, &member.did).await.ok();
+    assert_eq!(own_record(&owner, &space, MEMBER_REC, &member.did).await, None);
+
+    // readers sync them like any record: a member reads them with a credential
+    let cred = reader.credential(&space).await;
+    let r = reader
+        .signed_get(
+            &s.url,
+            "com.atproto.space.listRecords",
+            &[("space", &space), ("repo", &owner.did), ("collection", MEMBER_REC)],
+            &cred,
+            &owner.did,
+        )
+        .await
+        .ok();
+    let rkeys: Vec<&str> = r["records"].as_array().unwrap().iter().map(|r| r["rkey"].as_str().unwrap()).collect();
+    assert_eq!(rkeys, [reader.did.as_str()], "{r}");
+
+    // clearing a flag withdraws its records; setting it again republishes
+    let only_policy = members_policy(json!({"publishPolicy": true}));
+    update(&owner, &space, only_policy.clone()).await.ok();
+    assert_eq!(own_record(&owner, &space, MEMBER_REC, &reader.did).await, None);
+    assert_eq!(own_record(&owner, &space, POLICY_REC, "self").await.unwrap()["policy"], only_policy);
+    update(&owner, &space, published.clone()).await.ok();
+    assert!(own_record(&owner, &space, MEMBER_REC, &reader.did).await.is_some());
+    // a migration away withdraws both (and drops the member list)
+    update(&owner, &space, personal()).await.ok();
+    assert_eq!(own_record(&owner, &space, MEMBER_REC, &reader.did).await, None);
+    assert_eq!(own_record(&owner, &space, POLICY_REC, "self").await, None);
+    let mp = json!({"$type": "com.atproto.managedspace.policy", "managingApp": "did:web:a.example#x", "publishPolicy": true});
+    update(&owner, &space, mp.clone()).await.ok();
+    assert_eq!(own_record(&owner, &space, POLICY_REC, "self").await.unwrap()["policy"], mp);
+    // an unchanged policy writes nothing new
+    let head = || async {
+        owner.get("com.atproto.space.getLatestCommit", &[("space", &space), ("repo", &owner.did)]).await.ok()["rev"].clone()
+    };
+    let before = head().await;
+    update(&owner, &space, mp.clone()).await.ok();
+    assert_eq!(head().await, before);
+
+    // direct writes to either collection are refused, in any repo
+    for c in [&owner, &member] {
+        let r = c
+            .post(
+                "com.atproto.space.createRecord",
+                json!({"space": space, "repo": c.did, "collection": POLICY_REC, "rkey": "self", "record": {"policy": ml()}}),
+            )
+            .await;
+        r.err(400, "InvalidRequest");
+        let r = c
+            .post(
+                "com.atproto.space.putRecord",
+                json!({"space": space, "repo": c.did, "collection": MEMBER_REC, "rkey": c.did, "record": {"read": true, "write": true}}),
+            )
+            .await;
+        r.err(400, "InvalidRequest");
+        let r = c
+            .post(
+                "com.atproto.space.deleteRecord",
+                json!({"space": space, "repo": c.did, "collection": POLICY_REC, "rkey": "self"}),
+            )
+            .await;
+        r.err(400, "InvalidRequest");
+        let r = c
+            .post(
+                "com.atproto.space.applyWrites",
+                json!({"space": space, "repo": c.did, "writes": [{"$type": "com.atproto.space.applyWrites#delete", "collection": MEMBER_REC, "rkey": c.did}]}),
+            )
+            .await;
+        r.err(400, "InvalidRequest");
+    }
+    assert!(own_record(&owner, &space, POLICY_REC, "self").await.is_some());
+}
+
+/// removeWriter, and the member changes that take a writer out of
+/// listRepos; a writer comes back with its next authorized write.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_writer_set() {
+    let s = spawn().await;
+    let owner = SpaceClient::new(&s, "shz1", OWNER).await;
+    let other = SpaceClient::new(&s, "shz2", MANAGER).await;
+    let member = SpaceClient::new(&s, "shz3", ANY).await;
+    let space = created(&owner, "w", ml()).await;
+    put_member(&owner, &space, &member.did, true, true).await.ok();
+    let cred = owner.credential(&space).await;
+    let repos = || async {
+        let r = owner.signed_get(&s.url, "com.atproto.space.listRepos", &[("space", &space)], &cred, &owner.did).await;
+        r.ok()["repos"].as_array().unwrap().iter().map(|r| r["did"].as_str().unwrap().to_string()).collect::<Vec<_>>()
+    };
+    let has = |dids: Vec<String>| {
+        let repos = &repos;
+        async move {
+            eventually(Duration::from_secs(10), || async {
+                let mut got = repos().await;
+                got.sort();
+                let mut want = dids.clone();
+                want.sort();
+                got == want
+            })
+            .await
+        }
+    };
+    member.create_record(&space, COLL, Some("1"), rec("one")).await.ok();
+    owner.create_record(&space, COLL, Some("1"), rec("owner")).await.ok();
+    assert!(has(vec![member.did.clone(), owner.did.clone()]).await);
+
+    async fn remove_writer(c: &SpaceClient, space: &str, did: &str) -> Resp {
+        c.post("com.atproto.space.removeWriter", json!({"space": space, "did": did})).await
+    }
+    let remove = |c, did| remove_writer(c, &space, did);
+    remove(&other, &member.did).await.err(400, "NotSpaceOwner");
+    let reader = SpaceClient::new(&s, "shz4", "space:com.example.group?action=read").await;
+    let r = remove(&reader, &member.did).await;
+    assert!(r.status == 403 || r.status == 400, "{r:?}");
+    remove(&owner, &member.did).await.ok();
+    assert!(has(vec![owner.did.clone()]).await);
+    // idempotent
+    remove(&owner, &member.did).await.ok();
+    remove(&owner, "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa").await.ok();
+    remove(&owner, &format!("at://{}/space/{TYPE}/none", owner.did)).await.err(400, "InvalidRequest");
+    owner
+        .post("com.atproto.space.removeWriter", json!({"space": format!("at://{}/space/{TYPE}/none", owner.did), "did": member.did}))
+        .await
+        .err(400, "SpaceNotFound");
+    // the member's records stay on its host
+    assert!(own_record(&member, &space, COLL, "1").await.is_some());
+    // tracked again with its next write
+    member.create_record(&space, COLL, Some("2"), rec("two")).await.ok();
+    assert!(has(vec![member.did.clone(), owner.did.clone()]).await);
+    // read-only: out
+    put_member(&owner, &space, &member.did, true, false).await.ok();
+    assert!(has(vec![owner.did.clone()]).await);
+    put_member(&owner, &space, &member.did, true, true).await.ok();
+    member.create_record(&space, COLL, Some("3"), rec("three")).await.ok();
+    assert!(has(vec![member.did.clone(), owner.did.clone()]).await);
+    // removed: out
+    remove_member(&owner, &space, &member.did).await.ok();
+    assert!(has(vec![owner.did.clone()]).await);
+    // and its writes aren't tracked any more
+    member.create_record(&space, COLL, Some("4"), rec("four")).await.ok();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(repos().await, vec![owner.did.clone()]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -344,26 +559,47 @@ async fn credential_gates() {
     let reader = SpaceClient::new(&s, "shg2", ANY).await;
     let writer_only = SpaceClient::new(&s, "shg3", ANY).await;
     let stranger = SpaceClient::new(&s, "shg4", ANY).await;
-    let ml = || policy("memberListPolicy");
-    let listed = create(&owner, "listed", ml(), ml(), policy("open")).await.ok()["uri"].as_str().unwrap().to_string();
+    let listed = created(&owner, "listed", ml()).await;
     put_member(&owner, &listed, &reader.did, true, false).await.ok();
     put_member(&owner, &listed, &writer_only.did, false, true).await.ok();
     reader.try_credential_at(&s.url, &listed, None).await.ok();
-    writer_only.try_credential_at(&s.url, &listed, None).await.err(400, "UserNotAuthorized");
-    stranger.try_credential_at(&s.url, &listed, None).await.err(400, "UserNotAuthorized");
-    // the authority is always admitted, listed or not
+    // a refusal is SpaceNotFound, as for a space that doesn't exist
+    writer_only.try_credential_at(&s.url, &listed, None).await.err(400, "SpaceNotFound");
+    stranger.try_credential_at(&s.url, &listed, None).await.err(400, "SpaceNotFound");
+    // the authority is always admitted, listed or not, under every policy
     owner.try_credential_at(&s.url, &listed, None).await.ok();
-    let public = create(&owner, "public", policy("publicPolicy"), ml(), policy("open")).await.ok()["uri"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let public = created(&owner, "public", public_read()).await;
     stranger.try_credential_at(&s.url, &public, None).await.ok();
+    let mine = created(&owner, "mine", personal()).await;
+    owner.try_credential_at(&s.url, &mine, None).await.ok();
+    stranger.try_credential_at(&s.url, &mine, None).await.err(400, "SpaceNotFound");
     // a space this host doesn't govern, or that was never created
     let elsewhere = format!("at://{}/space/{TYPE}/x", dead_did().await);
     let r = stranger.try_credential_at(&s.url, &elsewhere, None).await;
     r.err(400, "SpaceNotFound");
     let uncreated = format!("at://{}/space/{TYPE}/never", owner.did);
     stranger.try_credential_at(&s.url, &uncreated, None).await.err(400, "SpaceNotFound");
+
+    // without a delegation token: only a public-read member space issues one
+    let holder = crate::common::spaces::Holder::new();
+    async fn credential_without_token(url: &str, kid: &str, space: &str) -> Resp {
+        let body = json!({"space": space, "credentialKid": kid});
+        resp(
+            reqwest::Client::new()
+                .post(format!("{url}/xrpc/com.atproto.space.getSpaceCredential"))
+                .json(&body)
+                .send()
+                .await
+                .unwrap(),
+        )
+        .await
+    }
+    let tokenless = |space| credential_without_token(&s.url, &holder.did, space);
+    assert!(tokenless(&public).await.ok()["credential"].is_string());
+    tokenless(&listed).await.err(400, "SpaceNotFound");
+    tokenless(&mine).await.err(400, "SpaceNotFound");
+    let mg = created(&owner, "mg", managed("did:web:a.example#x")).await;
+    tokenless(&mg).await.err(400, "SpaceNotFound");
 }
 
 /// A client attestation signed by `sk` for `client_id`, addressed to `aud`.
@@ -388,11 +624,9 @@ async fn allow_list_takes_client_attestations() {
     let unlisted =
         oauth::serve_metadata(|id| oauth::confidential_metadata(id, "https://app.example.com/callback", &other_jwk))
             .await;
-    let space = create(&owner, "apps", policy("publicPolicy"), policy("publicPolicy"), allow(&[&client])).await.ok()
-        ["uri"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let space =
+        created(&owner, "apps", members_policy(json!({"publicRead": true, "publicWrite": true, "allowedApps": [client]})))
+            .await;
     let aud = format!("{}#atproto_pds", owner.did);
     let now = chrono::Utc::now().timestamp();
     user.try_credential_at(&s.url, &space, None).await.err(400, "AppNotAuthorized");
@@ -419,12 +653,20 @@ async fn allow_list_takes_client_attestations() {
     // not a JWT at all
     user.try_credential_at(&s.url, &space, Some("nope")).await.err(400, "InvalidClientAttestation");
     // an open space takes an attestation too, and ignores the client
-    let open = create(&owner, "open", policy("publicPolicy"), policy("publicPolicy"), policy("open")).await.ok()["uri"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let open = created(&owner, "open", members_policy(json!({"publicRead": true, "publicWrite": true}))).await;
     let fresh = attestation(&other_sk, &unlisted, &aud, now, now + 60);
     user.try_credential_at(&s.url, &open, Some(&fresh)).await.ok();
+    // the user goes first: a non-member with a disallowed app learns only
+    // that the space isn't there for it
+    let closed = created(&owner, "closed", members_policy(json!({"allowedApps": [client]}))).await;
+    let other = attestation(&other_sk, &unlisted, &aud, now, now + 60);
+    user.try_credential_at(&s.url, &closed, Some(&other)).await.err(400, "SpaceNotFound");
+    put_member(&owner, &closed, &user.did, true, false).await.ok();
+    let other = attestation(&other_sk, &unlisted, &aud, now, now + 60);
+    user.try_credential_at(&s.url, &closed, Some(&other)).await.err(400, "AppNotAuthorized");
+    user.try_credential_at(&s.url, &closed, None).await.err(400, "AppNotAuthorized");
+    let good = attestation(&sk, &client, &aud, now, now + 60);
+    user.try_credential_at(&s.url, &closed, Some(&good)).await.ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -433,41 +675,43 @@ async fn managing_app_decides() {
     let owner = SpaceClient::new(&s, "shp1", OWNER).await;
     let user = SpaceClient::new(&s, "shp2", ANY).await;
     let app = stub("forum").await;
-    let managed = managing(&app.service("forum"));
-    let space = create(&owner, "managed", managed.clone(), managed.clone(), policy("open")).await.ok()["uri"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    user.try_credential_at(&s.url, &space, None).await.ok();
-    let calls = app.calls("/xrpc/com.atproto.simplespace.checkUserAccess");
+    let space = created(&owner, "managed", managed(&app.service("forum"))).await;
+    // an attested app's client_id goes along on reads
+    let (sk, jwk) = oauth::client_key();
+    let client =
+        oauth::serve_metadata(|id| oauth::confidential_metadata(id, "https://app.example.com/callback", &jwk)).await;
+    let now = chrono::Utc::now().timestamp();
+    let att = attestation(&sk, &client, &format!("{}#atproto_pds", owner.did), now, now + 60);
+    user.try_credential_at(&s.url, &space, Some(&att)).await.ok();
+    let calls = app.calls(CHECK);
     assert_eq!(calls.len(), 1);
     let q: std::collections::HashMap<String, String> =
         reqwest::Url::parse(&format!("http://x/?{}", calls[0].query)).unwrap().query_pairs().into_owned().collect();
     assert_eq!(
-        (q["space"].as_str(), q["user"].as_str(), q["access"].as_str()),
-        (space.as_str(), user.did.as_str(), "read")
+        (q["space"].as_str(), q["user"].as_str(), q["access"].as_str(), q["clientId"].as_str()),
+        (space.as_str(), user.did.as_str(), "read", client.as_str())
     );
     let p = jwt_payload(&calls[0].auth);
     assert_eq!(p["iss"], json!(owner.did));
     assert_eq!(p["aud"], json!(app.service("forum")));
-    assert_eq!(p["lxm"], json!("com.atproto.simplespace.checkUserAccess"));
+    assert_eq!(p["lxm"], json!("com.atproto.managedspace.checkUserAccess"));
     *app.answer.lock() = Answer::Authorized(false);
-    user.try_credential_at(&s.url, &space, None).await.err(400, "UserNotAuthorized");
+    user.try_credential_at(&s.url, &space, None).await.err(400, "SpaceNotFound");
     *app.answer.lock() = Answer::Status(500);
-    user.try_credential_at(&s.url, &space, None).await.err(400, "UserNotAuthorized");
+    user.try_credential_at(&s.url, &space, None).await.err(400, "SpaceNotFound");
     // the authority isn't asked about
-    let before = app.calls("/xrpc/com.atproto.simplespace.checkUserAccess").len();
+    let before = app.calls(CHECK).len();
     owner.try_credential_at(&s.url, &space, None).await.ok();
-    assert_eq!(app.calls("/xrpc/com.atproto.simplespace.checkUserAccess").len(), before);
+    assert_eq!(app.calls(CHECK).len(), before);
     // an app that can't be resolved denies
-    let gone = managing(&format!("{}#forum", dead_did().await));
-    owner.post("com.atproto.simplespace.updateSpace", json!({"space": space, "readPolicy": gone})).await.ok();
-    user.try_credential_at(&s.url, &space, None).await.err(400, "UserNotAuthorized");
-    let nameless = managing(&app.service("other"));
-    owner.post("com.atproto.simplespace.updateSpace", json!({"space": space, "readPolicy": nameless})).await.ok();
-    user.try_credential_at(&s.url, &space, None).await.err(400, "UserNotAuthorized");
+    update(&owner, &space, managed(&format!("{}#forum", dead_did().await))).await.ok();
+    user.try_credential_at(&s.url, &space, None).await.err(400, "SpaceNotFound");
+    update(&owner, &space, managed(&app.service("other"))).await.ok();
+    user.try_credential_at(&s.url, &space, None).await.err(400, "SpaceNotFound");
+    update(&owner, &space, managed(&app.service("forum"))).await.ok();
 
-    // the write policy: a local writer's notify asks the app too
+    // writes are the app's too: a local writer's notify asks it, with no
+    // clientId
     let cred = owner.credential(&space).await;
     let repos = || async {
         let r = owner.signed_get(&s.url, "com.atproto.space.listRepos", &[("space", &space)], &cred, &owner.did).await;
@@ -477,14 +721,18 @@ async fn managing_app_decides() {
     user.create_record(&space, COLL, Some("1"), rec("refused")).await.ok();
     assert!(
         eventually(Duration::from_secs(10), || async {
-            app.calls("/xrpc/com.atproto.simplespace.checkUserAccess").iter().any(|c| c.query.contains("access=write"))
+            app.calls(CHECK).iter().any(|c| c.query.contains("access=write"))
         })
         .await
     );
+    let write = app.calls(CHECK).into_iter().find(|c| c.query.contains("access=write")).unwrap();
+    assert!(!write.query.contains("clientId"), "{}", write.query);
     assert!(repos().await.is_empty());
     *app.answer.lock() = Answer::Authorized(true);
     user.create_record(&space, COLL, Some("2"), rec("admitted")).await.ok();
     assert!(eventually(Duration::from_secs(10), || async { repos().await == vec![user.did.clone()] }).await);
+    // a managed space issues nothing without a delegation token: covered in
+    // credential_gates
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -493,8 +741,7 @@ async fn delete_space_tombstones_and_recreates_fresh() {
     let owner = SpaceClient::new(&s, "shd1", OWNER).await;
     let member = SpaceClient::new(&s, "shd2", ANY).await;
     let syncer = stub("atproto_space_syncer").await;
-    let ml = || policy("memberListPolicy");
-    let space = create(&owner, "d", ml(), ml(), policy("open")).await.ok()["uri"].as_str().unwrap().to_string();
+    let space = created(&owner, "d", ml()).await;
     put_member(&owner, &space, &member.did, true, true).await.ok();
     owner.create_record(&space, COLL, Some("own"), rec("owner's")).await.ok();
     member.create_record(&space, COLL, Some("mine"), rec("member's")).await.ok();
@@ -517,9 +764,9 @@ async fn delete_space_tombstones_and_recreates_fresh() {
         .ok();
 
     // only the owner deletes
-    let r = member.post("com.atproto.simplespace.deleteSpace", json!({"space": space})).await;
+    let r = delete_space(&member, &space).await;
     assert!(r.status == 400 || r.status == 403, "{r:?}");
-    owner.post("com.atproto.simplespace.deleteSpace", json!({"space": space})).await.ok();
+    delete_space(&owner, &space).await.ok();
     get_space(&owner, &space).await.err(400, "SpaceNotFound");
     members(&owner, &space, &[]).await.err(400, "SpaceNotFound");
     member.try_credential_at(&s.url, &space, None).await.err(400, "SpaceDeleted");
@@ -552,16 +799,13 @@ async fn delete_space_tombstones_and_recreates_fresh() {
     assert_eq!(mine.ok()["value"]["text"], json!("member's"));
     owner.create_record(&space, COLL, Some("late"), rec("late")).await.err(400, "SpaceDeleted");
     // deleting again is fine
-    owner.post("com.atproto.simplespace.deleteSpace", json!({"space": space})).await.ok();
-    owner
-        .post("com.atproto.simplespace.deleteSpace", json!({"space": format!("at://{}/space/{TYPE}/never", owner.did)}))
-        .await
-        .err(400, "SpaceNotFound");
+    delete_space(&owner, &space).await.ok();
+    delete_space(&owner, &format!("at://{}/space/{TYPE}/never", owner.did)).await.err(400, "SpaceNotFound");
 
     // re-created, it starts fresh: no members, no writers, no registrations
-    create(&owner, "d", ml(), ml(), policy("open")).await.ok();
+    create(&owner, "d", ml()).await.ok();
     assert_eq!(members(&owner, &space, &[]).await.ok(), json!({"members": []}));
-    member.try_credential_at(&s.url, &space, None).await.err(400, "UserNotAuthorized");
+    member.try_credential_at(&s.url, &space, None).await.err(400, "SpaceNotFound");
     let cred = owner.credential(&space).await;
     let r = owner.signed_get(&s.url, "com.atproto.space.listRepos", &[("space", &space)], &cred, &owner.did).await;
     assert_eq!(r.ok(), json!({"repos": []}));
@@ -584,14 +828,13 @@ async fn written_before_created() {
     let space = format!("at://{}/space/{TYPE}/early", owner.did);
     owner.create_record(&space, COLL, Some("1"), rec("early")).await.ok();
     get_space(&owner, &space).await.err(400, "SpaceNotFound");
-    let ml = || policy("memberListPolicy");
-    create(&owner, "early", ml(), ml(), policy("open")).await.ok();
+    create(&owner, "early", ml()).await.ok();
     let cred = owner.credential(&space).await;
     let r = owner.signed_get(&s.url, "com.atproto.space.listRepos", &[("space", &space)], &cred, &owner.did).await;
     assert_eq!(r.ok()["repos"][0]["did"], json!(owner.did), "{:?}", r.json);
     let only = format!("at://{}/space/{TYPE}/written", owner.did);
     owner.create_record(&only, COLL, Some("1"), rec("only written")).await.ok();
-    owner.post("com.atproto.simplespace.deleteSpace", json!({"space": only})).await.ok();
+    delete_space(&owner, &only).await.ok();
     let r = owner.get("com.atproto.space.listRecords", &[("space", &only), ("repo", &owner.did)]).await;
     assert_eq!(r.ok()["records"], json!([]));
 }
@@ -642,8 +885,7 @@ async fn notify_write_from_another_vlpds() {
     let stranger = SpaceClient::new(&a, "shs1", ANY).await;
     let reader = SpaceClient::new(&a, "shr1", ANY).await;
     let syncer = stub("atproto_space_syncer").await;
-    let ml = || policy("memberListPolicy");
-    let space = create(&owner, "pair", ml(), ml(), policy("open")).await.ok()["uri"].as_str().unwrap().to_string();
+    let space = created(&owner, "pair", ml()).await;
     put_member(&owner, &space, &member.did, true, true).await.ok();
     put_member(&owner, &space, &reader.did, true, false).await.ok();
     let cred = owner.credential(&space).await;
@@ -781,9 +1023,9 @@ async fn notify_write_from_another_vlpds() {
     let listed = repos().await;
     assert_eq!(listed.len(), 1, "{listed:?}");
 
-    // a removed member stays at its last repoRev
-    owner.post("com.atproto.simplespace.removeMember", json!({"space": space, "did": member.did})).await.ok();
-    assert_eq!(repos().await[0]["repoRev"], json!(rev2));
+    // a removed member leaves the writer set
+    remove_member(&owner, &space, &member.did).await.ok();
+    assert!(repos().await.is_empty());
 
     // unregistered: forwards stop
     put_member(&owner, &space, &member.did, true, true).await.ok();
@@ -871,8 +1113,7 @@ async fn get_repo_star() {
     use vlpds::space::{commit, lthash::LtHash, mac, star};
     let s = spawn().await;
     let owner = SpaceClient::new(&s, "shc1", OWNER).await;
-    let ml = || policy("memberListPolicy");
-    let space = create(&owner, "car", ml(), ml(), policy("open")).await.ok()["uri"].as_str().unwrap().to_string();
+    let space = created(&owner, "car", ml()).await;
     for rkey in ["b", "aa", "a", "c"] {
         owner.create_record(&space, COLL, Some(rkey), rec(rkey)).await.ok();
     }
@@ -1048,18 +1289,14 @@ async fn spaces_and_registrations_are_capped_per_authority() {
     let limits = json!({"config": {"limiters": {"space-create": {"points": 4}, "space-register": {"points": 3}}}, "ifVersion": 0, "actor": "it-test"});
     s.xrpc.post("vlpds.admin.updateRateLimits", &limits, &Auth::Admin).await.ok();
     let owner = SpaceClient::new(&s, "shc1", OWNER).await;
-    let ml = || policy("memberListPolicy");
     let mut spaces = vec![];
     for k in ["a", "b"] {
-        spaces.push(create(&owner, k, ml(), ml(), policy("open")).await.ok()["uri"].as_str().unwrap().to_string());
+        spaces.push(created(&owner, k, ml()).await);
     }
-    let r = create(&owner, "c", ml(), ml(), policy("open")).await;
+    let r = create(&owner, "c", ml()).await;
     assert!(r.status == 400 && r.text().contains("governs 2 spaces"), "{r:?}");
     // updating one isn't creating one
-    owner
-        .post("com.atproto.simplespace.updateSpace", json!({"space": spaces[0], "readPolicy": policy("publicPolicy")}))
-        .await
-        .ok();
+    update(&owner, &spaces[0], public_read()).await.ok();
 
     let mut syncers = vec![];
     for _ in 0..4 {
@@ -1087,8 +1324,8 @@ async fn spaces_and_registrations_are_capped_per_authority() {
     register(spaces[0].clone(), svc(0), c0.clone()).await.err(429, "RateLimitExceeded");
 
     // space-create: 4 a day; 3 spent (2 made, 1 refused at the cap)
-    owner.post("com.atproto.simplespace.deleteSpace", json!({"space": spaces[1]})).await.ok();
-    create(&owner, "d", ml(), ml(), policy("open")).await.ok();
-    owner.post("com.atproto.simplespace.deleteSpace", json!({"space": spaces[0]})).await.ok();
-    create(&owner, "e", ml(), ml(), policy("open")).await.err(429, "RateLimitExceeded");
+    delete_space(&owner, &spaces[1]).await.ok();
+    create(&owner, "d", ml()).await.ok();
+    delete_space(&owner, &spaces[0]).await.ok();
+    create(&owner, "e", ml()).await.err(429, "RateLimitExceeded");
 }

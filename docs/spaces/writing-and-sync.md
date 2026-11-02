@@ -91,6 +91,30 @@ edges:
   PUTs per write with 4 writers on one repo and 0.125 with 16, the same for space and public writes
   ([Operating](operating.md#server-cost-on-one-node)).
 
+## Clearing a repo
+
+`com.atproto.space.clearRecords` `{space, repo}` deletes every record in the caller's own repo in a
+space, with their blob refs, and moves the repo to a new rev with no ops. Its `data` is the empty
+repo's digest (`e5a00aa9…`), except in the authority's own repo, which keeps the
+`com.atproto.space.policy` and `com.atproto.memberspace.member` records the host publishes, so its
+digest covers those.
+
+- `repo` must be the caller. With OAuth the caller needs a `delete` grant for every collection it
+  holds records in; the kept collections need none. It costs one delete point of the repo-write
+  limits.
+- The handler scans the repo's records and hands the paths to the repo's worker, which deletes them
+  as it holds them, so a write still in flight is cleared too. One that landed in a collection the
+  scan hadn't seen (so no grant was checked for it) is refused and the handler scans again.
+- One entry holds the whole clear for a repo of up to 5,000 records. A bigger one is cleared in
+  entries of 5,000, each a consistent repo at its own rev, the last one empty. Each entry is a write
+  like any other: the authority is notified (or, for its own repo, sequences it), and the repo stays
+  in the writer set at its new rev.
+- The oplog rows before the clear's rev are deleted after it lands, in batches of 500. Until then a
+  `listRepoOps` from an earlier `since` gets the old ops and then the clear's commit, whose `data`
+  won't match what they replay to, so the syncer resyncs from getRepo, as after any gap. Once they're
+  gone it gets the commit alone.
+- Nothing to delete is a no-op: no new rev, no notification. A clear during an import of the repo is
+  refused, as a write is.
 ## The outbox
 
 ```timeline
@@ -132,7 +156,7 @@ or a takeover. The sending side lives in memory on the shard's owner.
 
 ```steps
 - title: Check the rev
-  body: "`repoRev` more than 5 min in the future gets `FutureRev`. The writer must pass the space's `writePolicy` (a managing app is asked with `checkUserAccess`)."
+  body: "`repoRev` more than 5 min in the future gets `FutureRev`. The writer must pass the space's policy for writes: a member with `write`, anyone under `publicWrite`, or a managed space's app (asked with `com.atproto.managedspace.checkUserAccess`). A writer the policy refuses is never in the writer set."
 - title: Sequence it on the authority's worker
   body: "A `repoRev` below the writer's last one is a no-op, and so is the same `repoRev` with the same hash, so a resent notify is harmless. The same `repoRev` with another hash is a record takedown or its reversal changing what the writer serves ([Privacy](privacy.md#takedowns)), so it's sequenced again. From another host, it's sequenced only once the writer's PDS serves a commit with that hash at that rev (read as a syncer reads it, with a credential the authority issues itself and a MAC against the writer's `#atproto_kem` key), and at most 3 times per writer and space in 10 min. The rest are dropped and left to polls. The push isn't logged either, so if the author's host crashes before it goes, syncers find out on their next poll. Otherwise the worker assigns the next `spaceRev` (a TID) and writes `sW` plus the `sQ` swap as one private entry. One worker per authority means no lock."
 - title: Answer 200 once it's durable

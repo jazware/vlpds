@@ -219,19 +219,16 @@ impl SpaceClient {
         oauth_resp(oauth::xrpc_dpop(&self.srv, &self.key, &self.access, "POST", nsid, Some(body)).await)
     }
 
-    /// simplespace.createSpace with the default policies; the space's URI.
+    /// space.createSpace as a member space with no members (only the
+    /// authority reads and writes); the space's URI.
     pub async fn create_space(&self, space_type: &str, skey: &str) -> String {
+        self.create_space_with(space_type, skey, json!({"$type": "com.atproto.memberspace.policy"})).await
+    }
+
+    /// space.createSpace governed by `policy`; the space's URI.
+    pub async fn create_space_with(&self, space_type: &str, skey: &str, policy: J) -> String {
         let r = self
-            .post(
-                "com.atproto.simplespace.createSpace",
-                json!({
-                    "spaceType": space_type,
-                    "skey": skey,
-                    "readPolicy": {"$type": "com.atproto.simplespace.defs#memberListPolicy"},
-                    "writePolicy": {"$type": "com.atproto.simplespace.defs#memberListPolicy"},
-                    "appAccess": {"$type": "com.atproto.simplespace.defs#open"},
-                }),
-            )
+            .post("com.atproto.space.createSpace", json!({"spaceType": space_type, "skey": skey, "policy": policy}))
             .await;
         r.ok()["uri"].as_str().unwrap().to_string()
     }
@@ -272,8 +269,8 @@ impl SpaceClient {
         self.exchange_with(holder, host, space, token, None).await
     }
 
-    /// getSpaceCredential with a client attestation (an `appAccess` allow
-    /// list's proof of which app asks).
+    /// getSpaceCredential with a client attestation (a member space's
+    /// `allowedApps` proof of which app asks).
     pub async fn exchange_with(
         &self,
         holder: &Holder,
@@ -348,8 +345,7 @@ pub async fn signed_post_as(
 
 /// getSpaceCredential at `host` with `body` as is.
 pub async fn get_space_credential(http: &reqwest::Client, host: &str, body: J) -> Resp {
-    resp(http.post(format!("{host}/xrpc/com.atproto.space.getSpaceCredential")).json(&body).send().await.unwrap())
-        .await
+    resp(http.post(format!("{host}/xrpc/com.atproto.space.getSpaceCredential")).json(&body).send().await.unwrap()).await
 }
 
 /// The MAC type of a method that returns one.
@@ -365,7 +361,8 @@ pub fn mac_type(nsid: &str) -> Option<&'static str> {
 
 /// `did`'s `#atproto_kem` key, as `base` resolves its DID.
 pub async fn kem_key_at(http: &reqwest::Client, base: &str, did: &str) -> Option<String> {
-    let r = resp(http.get(xrpc_url(base, "com.atproto.identity.resolveDid", &[("did", did)])).send().await.unwrap()).await;
+    let r =
+        resp(http.get(xrpc_url(base, "com.atproto.identity.resolveDid", &[("did", did)])).send().await.unwrap()).await;
     vlpds::space::kem::kem_key_of(&r.json["didDoc"])
 }
 

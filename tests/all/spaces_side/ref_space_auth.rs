@@ -202,9 +202,8 @@ async fn requires_the_authority_as_audience_for_space_host_requests() {
     let space = net.create_space(&alice, SpaceOpts { members: &[&bob], ..Default::default() }).await;
     let cred = net.credential_for(&bob, &space).await;
     let q = [("space", space.as_str())];
-    for nsid in ["com.atproto.space.listRepos", "com.atproto.simplespace.getSpace"] {
-        cred.get_for(&net.pds[0].url, nsid, &q, &bob.did).await.err(401, "BadSpaceAudience");
-    }
+    // (getSpace takes no credential at all since the October 29 alpha)
+    cred.get_for(&net.pds[0].url, "com.atproto.space.listRepos", &q, &bob.did).await.err(401, "BadSpaceAudience");
 }
 
 /// HTTP message signature binding: "reuses a signature for the same
@@ -340,7 +339,8 @@ async fn refuses_a_credential_for_a_removed_member() {
     let space = net.create_space(&alice, SpaceOpts { members: &[&carol], ..Default::default() }).await;
     let token = delegation_token(&carol, &space).await;
     remove_member(&alice, &space, &carol).await.ok();
-    net.mint_credential(&space, &token, None).await.0.err(400, "UserNotAuthorized");
+    // the October 29 authority answers a refused user as it would a missing space
+    net.mint_credential(&space, &token, None).await.0.err(400, "SpaceNotFound");
 }
 
 // ---------------------------------------------------------------------------

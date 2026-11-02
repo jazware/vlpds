@@ -38,7 +38,9 @@ use crate::space::star;
 use vlatproto::tid::Tid;
 
 pub fn routes() -> Router<Arc<App>> {
-    Router::new().route("/xrpc/vlpds.space.importRepo", post(import_repo))
+    Router::new()
+        .route("/xrpc/vlpds.space.importRepo", post(import_repo))
+        .route("/xrpc/com.atproto.space.importRepo", post(import_repo_standard))
 }
 
 /// Rows per staged entry, or fewer at [`BATCH_BYTES`].
@@ -162,25 +164,32 @@ fn record_blobs(path: &str, bytes: &[u8]) -> XResult<Vec<Cid>> {
 /// hosts the authority, it's refused up front. Run at the owner of the
 /// authority's shard (a shard nobody holds right now is refused for a
 /// retry, never skipped).
-async fn authority_check(app: &App, space: &Space, did: &str, rev: Tid) -> XResult<()> {
+///
+/// `require_space` (com.atproto.space.importRepo): the authority's own
+/// repo comes only after its space (importSpaceMeta), else SpaceNotFound.
+async fn authority_check(app: &App, space: &Space, did: &str, rev: Tid, require_space: bool) -> XResult<()> {
     app.partition(&space.authority)?;
-    // (no row: the authority moved in without its spaces, which aren't
-    // migrated; its own repos come first)
+    let own = require_space && did == space.authority;
+    // (no row: the authority moved in without its spaces; its own repos
+    // come first)
     if super::server::account_if_exists(app, &space.authority).await?.is_none() {
         return Ok(());
     }
-    let Some(row) = super::simplespace::space_row_opt(app, space).await? else {
-        return Ok(());
+    let Some(row) = super::space_policy::space_row_opt(app, space).await? else {
+        return match own {
+            true => Err(super::space_policy::space_not_found()),
+            false => Ok(()),
+        };
     };
     if !row.live() {
-        return Err(super::simplespace::space_not_found());
+        return Err(super::space_policy::space_not_found());
     }
     // a repo from before the space was (re)created belongs to an
     // incarnation that was deleted: importing it would bring that back
     if rev.micros() + CREATED_SLACK_MICROS < created_micros(&row.created_at)? {
         return Err(invalid("the imported commit predates the space (it was deleted and made again since)"));
     }
-    if !super::simplespace::authorize_user(app, space, &row, did, "write", None).await? {
+    if !super::space_policy::authorize_user(app, space, &row, did, "write", None).await? {
         return Err(bad("NotAuthorized", "Not a member allowed to write in this space"));
     }
     Ok(())
@@ -191,6 +200,8 @@ pub(super) struct CheckQ {
     space: String,
     did: String,
     rev: String,
+    #[serde(default)]
+    require_space: bool,
 }
 
 /// [`authority_check`] for an import on another node of the cluster.
@@ -202,7 +213,7 @@ pub(super) async fn internal_import_check(
     super::internal::check(&app, &headers)?;
     let space = Space::parse(&q.space)?;
     let rev = Tid::parse(&q.rev).ok_or_else(|| invalid("rev must be a TID"))?;
-    authority_check(&app, &space, &q.did, rev).await?;
+    authority_check(&app, &space, &q.did, rev, q.require_space).await?;
     Ok(Json(json!({})))
 }
 
@@ -237,6 +248,14 @@ impl Drop for Claim<'_> {
     }
 }
 
+fn import_result<T>(r: &XResult<T>) {
+    crate::metrics::space_import(match r {
+        Ok(_) => "ok",
+        Err(e) if e.status.is_server_error() => "error",
+        Err(_) => "refused",
+    });
+}
+
 async fn import_repo(
     State(app): AppState,
     Auth(creds): Auth,
@@ -244,24 +263,52 @@ async fn import_repo(
     headers: HeaderMap,
     body: Body,
 ) -> XResult<Json<J>> {
-    let r = import(&app, &creds, &q, &headers, body).await;
-    crate::metrics::space_import(match &r {
-        Ok(_) => "ok",
-        Err(e) if e.status.is_server_error() => "error",
-        Err(_) => "refused",
-    });
+    let r = import(&app, &creds, Some(&q.space), &headers, body)
+        .await
+        .map(|(rev, records)| Json(json!({"rev": rev.to_string(), "records": records})));
+    import_result(&r);
     r
 }
 
-async fn import(app: &Arc<App>, creds: &Credentials, q: &ImportQ, headers: &HeaderMap, body: Body) -> XResult<Json<J>> {
+/// Reference com.atproto.space.importRepo (account migration): the space
+/// is the archive's; a full-access session or OAuth (a `create` grant per
+/// collection); the repo gets a new rev with the archive's `data`,
+/// replacing what was here, so a retry lands the same. The authority's
+/// own repo needs its space imported first (SpaceNotFound).
+async fn import_repo_standard(
+    State(app): AppState,
+    Auth(creds): Auth,
+    headers: HeaderMap,
+    body: Body,
+) -> XResult<StatusCode> {
+    let r = import(&app, &creds, None, &headers, body).await.map(|_| StatusCode::OK);
+    import_result(&r);
+    r
+}
+
+/// `space`: vlpds.space.importRepo's, the archive's commit at its own rev.
+/// None: com.atproto.space.importRepo's, at a new rev.
+async fn import(
+    app: &Arc<App>,
+    creds: &Credentials,
+    space_q: Option<&str>,
+    headers: &HeaderMap,
+    body: Body,
+) -> XResult<(Tid, u64)> {
     let sp = spaces(app)?;
-    let space = Space::parse(&q.space)?;
+    let standard = space_q.is_none();
     let did = creds.user_did()?.to_string();
     // Everything before the body is read: a grant that writes in the space
-    // (OAuth, as every space write: need_space refuses anything else), the
-    // account's budget and slot, and the import's memory. Which
-    // collections it writes is checked as its records come in.
-    creds.need_space(&space.target(), SpaceAccess::WriteAny("create"))?;
+    // (OAuth, as every space write: need_space refuses anything else; the
+    // standard method also takes a full-access session, and learns its
+    // space from the archive), the account's budget and slot, and the
+    // import's memory. Which collections it writes is checked as its
+    // records come in.
+    let named = space_q.map(Space::parse).transpose()?;
+    match &named {
+        Some(space) => creds.need_space(&space.target(), SpaceAccess::WriteAny("create"))?,
+        None => super::space_migrate::import_credentials(creds)?,
+    }
     let max = app.config.max_import_bytes;
     let declared =
         headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
@@ -281,8 +328,6 @@ async fn import(app: &Arc<App>, creds: &Credentials, q: &ImportQ, headers: &Head
         false => XrpcError::unavailable("Overloaded", "too many space imports in progress; retry shortly"),
     })?;
     let _room = app.imports.admit_working_set(working_set(declared)).await?;
-    // (the worker checks again)
-    let held = super::space::load_head(sp, &*app.partition(&did)?, &did, &space).await?;
     let body = super::import_stream::TimedBody::new(body, app.config.import_body_idle, app.config.import_body_deadline);
     let mut star = StarReader::new(body, max);
     star.magic().await?;
@@ -292,19 +337,40 @@ async fn import(app: &Arc<App>, creds: &Credentials, q: &ImportQ, headers: &Head
     if commit.ver != crate::space::commit::COMMIT_VERSION {
         return Err(invalid(format!("unsupported commit version {}", commit.ver)));
     }
+    let space = match named {
+        Some(s) => s,
+        None => {
+            let s = Space::parse(&commit.space)?;
+            super::space_migrate::need_import_grant(creds, &s, SpaceAccess::WriteAny("create"))?;
+            s
+        }
+    };
     if commit.repo != did || commit.space != space.uri {
-        return Err(invalid("the archive's commit is another repo's"));
+        return Err(invalid("Repo does not match the authenticated account"));
     }
+    // (the worker checks again)
+    let held = super::space::load_head(sp, &*app.partition(&did)?, &did, &space).await?;
     if commit.data.len() != 32 {
         return Err(invalid("commit.data must be 32 bytes"));
     }
-    let rev = Tid::parse(&commit.rev).ok_or_else(|| invalid("commit.rev must be a TID"))?;
+    let mut rev = Tid::parse(&commit.rev).ok_or_else(|| invalid("commit.rev must be a TID"))?;
+    if standard {
+        // a new rev, newer than any the repo had here, over the same data
+        rev = app.tids.next();
+        if let Some(h) = held.as_ref().filter(|h| h.rev >= rev) {
+            rev = Tid(h.rev.0 + (1 << 10));
+        }
+    }
     match app.remote_owner(&space.authority) {
         Some(owner) => {
-            let q = [("space", space.uri.as_str()), ("did", did.as_str()), ("rev", commit.rev.as_str())];
+            let rev_s = rev.to_string();
+            let mut q = vec![("space", space.uri.as_str()), ("did", did.as_str()), ("rev", rev_s.as_str())];
+            if standard {
+                q.push(("require_space", "true"));
+            }
             super::internal::owner_get(app, &owner, "/internal/v1/space/importCheck", &q).await?;
         }
-        None => authority_check(app, &space, &did, rev).await?,
+        None => authority_check(app, &space, &did, rev, standard).await?,
     }
     // every later write's rev follows it, and an authority refuses a
     // notify this far ahead (FutureRev), so the account would go unheard
@@ -317,7 +383,7 @@ async fn import(app: &Arc<App>, creds: &Credentials, q: &ImportQ, headers: &Head
         return Err(invalid("the imported commit's rev must be newer than the repo's in the space"));
     }
     let limits = Limits { max_records: sp.limits.max_records, creds, space: &space };
-    if let Some(h) = held.filter(|h| h.rev == rev) {
+    if let Some(h) = held.filter(|h| h.rev == rev && !standard) {
         // a retried import of the repo as it stands: the set hash covers
         // every (path, CID), so an equal digest and count is the same records
         if h.hash.digest()[..] != commit.data[..] {
@@ -327,7 +393,7 @@ async fn import(app: &Arc<App>, creds: &Credentials, q: &ImportQ, headers: &Head
         if records != h.records || set.state() != h.hash.state() {
             return Err(invalid("the imported commit's rev must be newer than the repo's in the space"));
         }
-        return Ok(Json(json!({"rev": rev.to_string(), "records": records})));
+        return Ok((rev, records));
     }
 
     let nonce = rand::random::<u64>();
@@ -353,7 +419,7 @@ async fn import(app: &Arc<App>, creds: &Credentials, q: &ImportQ, headers: &Head
         SpaceAck::Write { .. } => {}
         _ => return Err(XrpcError::internal("unexpected space ack")),
     }
-    Ok(Json(json!({"rev": rev.to_string(), "records": records})))
+    Ok((rev, records))
 }
 
 /// What an import may hold: the record cap, and the grant's collections.
@@ -390,7 +456,11 @@ async fn stage(
         let (collection, rkey) = path.split_once('/').unwrap_or_default();
         check_path(collection, Some(rkey))?;
         if !collections.contains(collection) {
-            limits.creds.need_space(&limits.space.target(), SpaceAccess::Write("create", collection))?;
+            super::space_migrate::need_import_grant(
+                limits.creds,
+                limits.space,
+                SpaceAccess::Write("create", collection),
+            )?;
             collections.insert(collection.to_string());
         }
         if archive.records > limits.max_records {

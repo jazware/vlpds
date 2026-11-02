@@ -13,7 +13,7 @@ timeline:
   lanes:
     - { id: app, label: App, sub: "OAuth client · P-256 key", tone: ink }
     - { id: user, label: Your PDS, sub: holds your account key, tone: accent }
-    - { id: auth, label: Authority's host, sub: simplespace, tone: accent }
+    - { id: auth, label: Authority's host, sub: space host, tone: accent }
     - { id: bob, label: bob's PDS, sub: member repo, tone: accent }
     - { id: carol, label: carol's PDS, sub: member repo, tone: accent }
   spans:
@@ -64,9 +64,12 @@ another node after a failover.
 The request is a JSON body: `space` and `credentialKid` (a P-256 did:key) always, and
 `delegationToken` and `clientAttestation` when the space needs them. A bad delegation token (its
 signature, expiry, audience, subject, or a replay) is `InvalidDelegationToken`, a 400. Without a
-token, only a space whose read policy is public issues a credential; any other answers
-`SpaceNotFound`, so a request without one can't learn that it exists. An `appAccess` allow list holds
-either way, and a deleted space answers `SpaceDeleted` with or without a token.
+token, only a member space with `publicRead` issues a credential; any other answers
+`SpaceNotFound`, so a request without one can't learn that it exists. The user is checked before the
+app: a user the policy refuses gets `SpaceNotFound` too (never `UserNotAuthorized`), so a refusal
+discloses nothing about the space, and `AppNotAuthorized` comes only once the user passes. A member
+space's `allowedApps` holds with a token or without, and a deleted space answers `SpaceDeleted` either
+way.
 
 ## OAuth only
 
@@ -79,7 +82,7 @@ either way, and a deleted space answers `SpaceDeleted` with or without a token.
 Space data is OAuth-only on vlpds. The reference lets legacy app passwords read and write the
 account's own space records, so this is a deliberate divergence
 ([Interop](interop.md#where-vlpds-differs)). `getServiceAuth` follows the same rule for a
-`com.atproto.space.*` or `com.atproto.simplespace.*` method, with `--spaces` on or off: an app
+`com.atproto.space.*`, `com.atproto.memberspace.*` or `com.atproto.managedspace.*` method, with `--spaces` on or off: an app
 password or password session never gets a token for one, and an OAuth app needs a `space:` grant
 that covers it. `transition:generic` or `rpc:` alone isn't enough. A `notifyCredentialRevoked`
 token (an authority's app revoking at member hosts) needs `manage` or the account's own spaces, a

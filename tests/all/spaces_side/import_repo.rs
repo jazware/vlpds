@@ -432,8 +432,8 @@ pub(super) async fn two_hosts() -> TwoHosts {
     let skey = last_segment(&space).to_string();
     let r = alice
         .post(
-            "com.atproto.simplespace.createSpace",
-            json!({"spaceType": TEST_SPACE_TYPE, "skey": skey, "readPolicy": member_list(), "writePolicy": member_list(), "appAccess": open()}),
+            "com.atproto.space.createSpace",
+            json!({"spaceType": TEST_SPACE_TYPE, "skey": skey, "policy": {"$type": "com.atproto.memberspace.policy"}}),
         )
         .await;
     assert_eq!(r.ok()["uri"], json!(space));
@@ -862,13 +862,13 @@ async fn a_repo_from_before_the_space_was_made_again_is_refused() {
     let o = one().await;
     let old = records(RepoBuilder::new(&o.space, &o.alice.did, &rev_ago(Duration::from_secs(600))), 2).build();
     write(&o.alice, &o.space, W::new().rkey("live").text("before the delete")).await.ok();
-    o.alice.post("com.atproto.simplespace.deleteSpace", json!({"space": o.space})).await.ok();
+    o.alice.post("com.atproto.space.deleteSpace", json!({"space": o.space})).await.ok();
     let skey = last_segment(&o.space).to_string();
     let again = o
         .alice
         .post(
-            "com.atproto.simplespace.createSpace",
-            json!({"spaceType": TEST_SPACE_TYPE, "skey": skey, "readPolicy": member_list(), "writePolicy": member_list(), "appAccess": open()}),
+            "com.atproto.space.createSpace",
+            json!({"spaceType": TEST_SPACE_TYPE, "skey": skey, "policy": {"$type": "com.atproto.memberspace.policy"}}),
         )
         .await;
     assert_eq!(again.ok()["uri"], json!(o.space));
@@ -891,15 +891,15 @@ async fn a_repo_from_before_the_space_was_made_again_is_refused_across_a_cluster
     let alice = SpaceClient::new(&n1, &unique_name("imra"), FULL_SCOPE).await;
     let bob = SpaceClient::new(&n2, &unique_name("imrb"), FULL_SCOPE).await;
     let make = || async {
-        let body = json!({"spaceType": TEST_SPACE_TYPE, "skey": "again", "readPolicy": member_list(), "writePolicy": member_list(), "appAccess": open()});
+        let body = json!({"spaceType": TEST_SPACE_TYPE, "skey": "again", "policy": {"$type": "com.atproto.memberspace.policy"}});
         let space =
-            alice.post("com.atproto.simplespace.createSpace", body).await.ok()["uri"].as_str().unwrap().to_string();
+            alice.post("com.atproto.space.createSpace", body).await.ok()["uri"].as_str().unwrap().to_string();
         put_member(&alice, &space, &bob, true, true).await.ok();
         space
     };
     let space = make().await;
     let old = records(RepoBuilder::new(&space, &bob.did, &rev_ago(Duration::from_secs(600))), 2).build();
-    alice.post("com.atproto.simplespace.deleteSpace", json!({"space": space})).await.ok();
+    alice.post("com.atproto.space.deleteSpace", json!({"space": space})).await.ok();
     assert_eq!(make().await, space);
     let r = import_repo(&bob, &space, &old.star()).await;
     refused_mentioning(&r, &["predates the space"]);

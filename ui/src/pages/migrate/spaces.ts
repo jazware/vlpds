@@ -9,7 +9,7 @@ import { XrpcError } from '../../lib/xrpc'
 import { retry } from '../../lib/backoff'
 
 export const OLD_SCOPE = 'atproto space:*?authority=*&action=read_self'
-export const NEW_SCOPE = 'atproto space:*?authority=*&collection=*&action=create&action=read_self'
+export const NEW_SCOPE = 'atproto space:*?authority=*&collection=*&action=create&action=read_self&manage=create&manage=update'
 export const BLOB_SCOPE = 'blob:*/*'
 
 /** Saved per space (no secrets), so a reload shows the outcome and retries only what didn't move. */
@@ -89,6 +89,7 @@ export function reasonOf(e: unknown): string {
       NotAuthorized: "the space's owner no longer lets you write there",
       SpaceNotFound: 'the space no longer exists',
       SpaceDeleted: 'the space was deleted',
+      UnsupportedPolicy: "this server doesn't support the space's policy",
       FutureRev: "its last change is dated in the future; check your device's clock and the old server's",
       RepoTooLarge: 'it is larger than this server takes',
       ScopeMissing: "the sign-in here didn't grant what the copy needs; sign in again and allow everything asked",
@@ -98,8 +99,28 @@ export function reasonOf(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
 
-/** Old server's getRepo, then importRepo here (a retried import of the
- * same rev is accepted as is), then any blobs its records name. */
+/** A space the account governs: its policy, members and writer set, from
+ * the old server's exportSpaceMeta to importSpaceMeta here, before its
+ * repo (October 29 alpha). An old server from before it has none to give:
+ * the space then arrives as it did before, with the repo alone. */
+async function copySpaceMeta(old: OAuthSession, here: OAuthSession, uri: string, onPause: (until: number) => void): Promise<void> {
+  if (spaceLabel(uri).authority !== old.did) return
+  let meta: Blob
+  try {
+    meta = await retry(
+      () => old.call<Response>('com.atproto.space.exportSpaceMeta', { params: { space: uri }, raw: true }).then((r) => r.blob()),
+      onPause,
+    )
+  } catch (e) {
+    if (e instanceof XrpcError && (e.error === 'MethodNotImplemented' || e.status === 404 || e.status === 501)) return
+    throw e
+  }
+  await retry(() => here.call('com.atproto.space.importSpaceMeta', { body: meta, type: 'application/octet-stream' }), onPause)
+}
+
+/** The space's meta when the account governs it, then the old server's
+ * getRepo, then importRepo here (a retried import of the same rev is
+ * accepted as is), then any blobs its records name. */
 export async function copySpace(
   old: OAuthSession,
   here: OAuthSession,
@@ -107,6 +128,7 @@ export async function copySpace(
   onPause: (until: number) => void,
   onBlob: (done: number) => void,
 ): Promise<SpaceMove> {
+  await copySpaceMeta(old, here, p.uri, onPause)
   if (p.empty) return { uri: p.uri, state: 'empty' }
   // a STAR archive (the October 22 alpha), passed on as is
   let archive: Blob

@@ -20,7 +20,8 @@
 //! - [`repo`]: space writes and space host ops on the repo worker.
 //! - [`heads`]: durable space repo heads for reads.
 //! - [`outbox`]: delivery of notifyWrite to space authorities.
-//! - [`host`]: the space host role (simplespace policies, notifyWrite).
+//! - [`host`]: the space host's calls out (managing apps, notifyWrite).
+//! - [`policy`]: the records a policy publishes in the authority's repo.
 //! - [`fanout`]: forwarding of sequenced writes to registered services.
 //! - [`deletions`]: notifySpaceDeleted, delivered until it lands.
 //! - [`kem_keys`]: accounts' `#atproto_kem` keys, made and published.
@@ -41,8 +42,10 @@ pub mod httpsig;
 pub mod kem;
 pub mod kem_keys;
 pub mod lthash;
+pub mod meta_archive;
 pub mod mac;
 pub mod outbox;
+pub mod policy;
 pub mod repo;
 pub mod retention;
 pub mod revocations;
@@ -561,7 +564,7 @@ impl Default for Spaces {
 /// The XRPC methods of the Spaces lexicons. NSID authorities are
 /// case-insensitive, as the proxy's method lists match them.
 pub fn is_space_nsid(nsid: &str) -> bool {
-    ["com.atproto.space.", "com.atproto.simplespace."]
+    ["com.atproto.space.", "com.atproto.memberspace.", "com.atproto.managedspace.", "com.atproto.personalspace."]
         .iter()
         .any(|p| nsid.get(..p.len()).is_some_and(|h| h.eq_ignore_ascii_case(p)))
 }
@@ -654,10 +657,17 @@ mod tests {
 
     #[test]
     fn space_nsids() {
-        for yes in ["com.atproto.space.getRecord", "com.atproto.simplespace.createSpace", "COM.ATPROTO.Space.x"] {
+        for yes in ["com.atproto.space.getRecord", "com.atproto.memberspace.putMember", "COM.ATPROTO.Space.x"] {
             assert!(is_space_nsid(yes), "{yes}");
         }
-        for no in ["com.atproto.repo.getRecord", "com.atproto.spaces.x", "com.atproto.space", "app.bsky.space.x", ""] {
+        for no in [
+            "com.atproto.repo.getRecord",
+            "com.atproto.spaces.x",
+            "com.atproto.space",
+            "app.bsky.space.x",
+            "com.atproto.simplespace.createSpace",
+            "",
+        ] {
             assert!(!is_space_nsid(no), "{no}");
         }
     }

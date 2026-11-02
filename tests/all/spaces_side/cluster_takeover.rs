@@ -59,7 +59,7 @@ async fn takeover_mid_burst(authority_on_victim: bool) {
     let local = auth.create_space(&st, "tx").await;
     for w in &writers {
         let m = json!({"space": local, "did": w.did, "read": true, "write": true});
-        auth.post("com.atproto.simplespace.putMember", m).await.ok();
+        auth.post("com.atproto.memberspace.putMember", m).await.ok();
     }
     let (remote_auth, syncer) = (StubDid::spawn().await, StubDid::spawn().await);
     let remote = space_uri(&remote_auth.did, &st, "tx");
@@ -248,7 +248,7 @@ async fn takeover_sends_each_registration_one_catch_up_forward() {
     let local = auth.create_space(&st, "tc").await;
     for w in &writers {
         let m = json!({"space": local, "did": w.did, "read": true, "write": true});
-        auth.post("com.atproto.simplespace.putMember", m).await.ok();
+        auth.post("com.atproto.memberspace.putMember", m).await.ok();
     }
     let cred = auth.credential(&local).await;
     let mut syncers = Vec::new();

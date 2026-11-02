@@ -2523,6 +2523,53 @@ fn process_space(st: &mut RepoState, r: crate::space::repo::SpaceReq, clock_id: 
             };
             (b.muts, Box::new(ack))
         }
+        SpaceOp::ClearRecords { paths, collections, last } => {
+            if let Some(s) = status {
+                let _ = reply.send(Err(WriteError::RepoInactive(s).into()));
+                return Ok(());
+            }
+            if spaces.import_nonce(&did, sid).is_some() {
+                let m = "an import of this space repo is in progress; retry once it is done";
+                let _ = reply.send(Err(WriteError::Invalid(m.into()).into()));
+                return Ok(());
+            }
+            let applied = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let b = match sr::clear(st.spaces_mut(), &did, sid, &uri, paths, &collections, last, clock_id, &applied) {
+                Err(e) => {
+                    let _ = reply.send(Err(e));
+                    return Ok(());
+                }
+                Ok(None) => return space_noop(st, reply, SpaceAck::Write { rev: None, results: Vec::new() }),
+                Ok(Some(b)) => b,
+            };
+            let mut head = b.head;
+            (head.shard, head.epoch) = (st.partition.id, st.partition.epoch);
+            let (head, notify, rev) = (Arc::new(head), b.notify, b.rev);
+            let fanout = b.sequenced.map(|seq| crate::space::fanout::Job {
+                authority: did.clone(),
+                uri: uri.clone(),
+                sid,
+                writer: did.to_string(),
+                repo_rev: rev,
+                hash: head.hash.digest(),
+                seq,
+                epoch: st.partition.epoch,
+                catch_up: false,
+            });
+            let (sp, d) = (spaces.clone(), did.clone());
+            let ack = move || {
+                sp.heads.publish(&d, &sid, head);
+                if let Some(n) = notify {
+                    sp.outbox.enqueue(&d, sid, &n.uri, n.repo_rev, n.hash, true);
+                }
+                if let Some(job) = fanout {
+                    sp.fanout.notify(job);
+                }
+                applied.store(true, Ordering::Release);
+                SpaceAck::Write { rev: Some(rev), results: Vec::new() }
+            };
+            (b.muts, Box::new(ack))
+        }
         SpaceOp::RecordWriter { writer, repo_rev, hash, managing_app, same_rev } => {
             let r = sr::record_writer(
                 st.spaces_mut(),
@@ -2636,27 +2683,100 @@ fn process_space(st: &mut RepoState, r: crate::space::repo::SpaceReq, clock_id: 
         | SpaceOp::UpdateSpace { .. }
         | SpaceOp::PutMember { .. }
         | SpaceOp::RemoveMember { .. }
+        | SpaceOp::RemoveWriter { .. }
+        | SpaceOp::ImportSpaceMeta { .. }
         | SpaceOp::DeleteSpace { .. }
             if status.is_some() =>
         {
             let _ = reply.send(Err(WriteError::RepoInactive(status.unwrap_or_default()).into()));
             return Ok(());
         }
+        // a policy or member change, and the published records it moves
+        // (`crate::space::policy`), in one entry
+        op @ (SpaceOp::CreateSpace { .. }
+        | SpaceOp::UpdateSpace { .. }
+        | SpaceOp::PutMember { .. }
+        | SpaceOp::RemoveMember { .. }) => {
+            let ss = st.spaces_mut();
+            let snapshot = ss.hosts.get(&sid).cloned();
+            let (r, ack) = match op {
+                SpaceOp::CreateSpace { row } => (sr::create_space(ss, &did, sid, row, clock_id), SpaceAck::Created),
+                SpaceOp::UpdateSpace { policy, members } => {
+                    (sr::update_space(ss, &did, sid, policy, members), SpaceAck::Host)
+                }
+                SpaceOp::PutMember { member, access } => {
+                    (sr::set_member(ss, &did, sid, &member, Some(access)), SpaceAck::Host)
+                }
+                SpaceOp::RemoveMember { member } => (sr::set_member(ss, &did, sid, &member, None), SpaceAck::Host),
+                _ => unreachable!("matched above"),
+            };
+            let (mut muts, publish) = match r {
+                Ok(x) => x,
+                Err(e) => {
+                    let _ = reply.send(Err(e));
+                    return Ok(());
+                }
+            };
+            let mut published = None;
+            if !publish.is_empty() {
+                let applied = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                match sr::write(ss, &did, sid, &uri, publish, clock_id, &applied, Vec::new(), u64::MAX) {
+                    Ok(Ok(b)) => published = Some((b, applied)),
+                    Ok(Err(_)) => {}
+                    Err(e) => {
+                        // nothing was sent: the host state goes back to what it was
+                        match snapshot {
+                            Some(h) => ss.hosts.insert(sid, h),
+                            None => ss.hosts.remove(&sid),
+                        };
+                        let _ = reply.send(Err(e));
+                        return Ok(());
+                    }
+                }
+            }
+            if muts.is_empty() && published.is_none() {
+                return space_noop(st, reply, ack);
+            }
+            let after = published.map(|(b, applied)| {
+                let mut head = b.head;
+                (head.shard, head.epoch) = (st.partition.id, st.partition.epoch);
+                let head = Arc::new(head);
+                let fanout = b.sequenced.map(|seq| crate::space::fanout::Job {
+                    authority: did.clone(),
+                    uri: uri.clone(),
+                    sid,
+                    writer: did.to_string(),
+                    repo_rev: b.rev,
+                    hash: head.hash.digest(),
+                    seq,
+                    epoch: st.partition.epoch,
+                    catch_up: false,
+                });
+                muts.extend(b.muts);
+                (head, fanout, applied)
+            });
+            let (sp, d) = (spaces.clone(), did.clone());
+            let ack = move || {
+                if let Some((head, fanout, applied)) = after {
+                    sp.heads.publish(&d, &sid, head);
+                    if let Some(job) = fanout {
+                        sp.fanout.notify(job);
+                    }
+                    applied.store(true, Ordering::Release);
+                }
+                ack
+            };
+            (muts, Box::new(ack))
+        }
         op => {
             let ss = st.spaces_mut();
             let r = match op {
-                SpaceOp::CreateSpace { row } => {
-                    sr::create_space(ss, &did, sid, row, clock_id).map(|m| (m, SpaceAck::Created))
+                SpaceOp::RemoveWriter { writer } => {
+                    sr::remove_writer(ss, &did, sid, &writer).map(|m| (m, SpaceAck::Host))
                 }
-                SpaceOp::UpdateSpace { read_policy, write_policy, app_access } => {
-                    sr::update_space(ss, &did, sid, read_policy, write_policy, app_access)
-                        .map(|m| (m.into_iter().collect(), SpaceAck::Host))
-                }
-                SpaceOp::PutMember { member, access } => {
-                    sr::set_member(ss, &did, sid, &member, Some(access)).map(|m| (vec![m], SpaceAck::Host))
-                }
-                SpaceOp::RemoveMember { member } => {
-                    sr::set_member(ss, &did, sid, &member, None).map(|m| (vec![m], SpaceAck::Host))
+                SpaceOp::ImportSpaceMeta { row, members, writers, drop_members, drop_writers } => {
+                    sr::import_space_meta(ss, &did, sid, row, members, writers, drop_members, drop_writers)
+                        .map(|m| (m, SpaceAck::Created))
                 }
                 SpaceOp::RegisterNotify { service, row } => {
                     sr::set_registration(ss, &did, sid, &service, Some(row), None)
@@ -2674,7 +2794,12 @@ fn process_space(st: &mut RepoState, r: crate::space::repo::SpaceReq, clock_id: 
                 SpaceOp::Write { .. }
                 | SpaceOp::RecordWriter { .. }
                 | SpaceOp::ImportBegin { .. }
-                | SpaceOp::ImportCommit { .. } => unreachable!("matched above"),
+                | SpaceOp::ImportCommit { .. }
+                | SpaceOp::ClearRecords { .. }
+                | SpaceOp::CreateSpace { .. }
+                | SpaceOp::UpdateSpace { .. }
+                | SpaceOp::PutMember { .. }
+                | SpaceOp::RemoveMember { .. } => unreachable!("matched above"),
             };
             match r {
                 Err(e) => {

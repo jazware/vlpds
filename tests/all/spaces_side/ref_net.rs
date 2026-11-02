@@ -1,5 +1,5 @@
 //! The reference's `tests/_space.ts` for the ported space suites
-//! (`ref_space_*`, `ref_simplespace`, `ref_client_attestation`), over XRPC:
+//! (`ref_space_*`, `ref_policy`, `ref_client_attestation`), over XRPC:
 //!
 //! - [`Net`]: the reference's `TestNetworkNoAppView` with `extraPdses`, as
 //!   `--spaces` PDSes registering DIDs with one in-process PLC directory, so
@@ -41,24 +41,10 @@ pub const FULL_SCOPE: &str = "transition:generic space:*?authority=*&collection=
 
 pub const MEMBER_LIST: &str = "com.atproto.simplespace.defs#memberListPolicy";
 pub const PUBLIC: &str = "com.atproto.simplespace.defs#publicPolicy";
-pub const MANAGING_APP: &str = "com.atproto.simplespace.defs#managingAppPolicy";
-pub const OPEN: &str = "com.atproto.simplespace.defs#open";
 pub const ALLOW_LIST: &str = "com.atproto.simplespace.defs#allowList";
-
-pub fn member_list() -> J {
-    json!({"$type": MEMBER_LIST})
-}
 
 pub fn public() -> J {
     json!({"$type": PUBLIC})
-}
-
-pub fn managing_app(app: &str) -> J {
-    json!({"$type": MANAGING_APP, "managingApp": app})
-}
-
-pub fn open() -> J {
-    json!({"$type": OPEN})
 }
 
 pub fn allow_list(allowed: &[&str]) -> J {
@@ -182,13 +168,11 @@ impl Net {
         if !o.ungoverned {
             let r = owner
                 .post(
-                    "com.atproto.simplespace.createSpace",
+                    "com.atproto.space.createSpace",
                     json!({
                         "spaceType": space_type,
                         "skey": skey,
-                        "readPolicy": o.read_policy.unwrap_or_else(member_list),
-                        "writePolicy": o.write_policy.unwrap_or_else(member_list),
-                        "appAccess": o.app_access.unwrap_or_else(open),
+                        "policy": policy_of(o.read_policy, o.write_policy, o.app_access),
                     }),
                 )
                 .await;
@@ -251,6 +235,25 @@ impl Net {
     }
 }
 
+/// The October 29 policy for an October 22 style configuration (the
+/// reference's `006-space-policy` conversion).
+pub fn policy_of(read: Option<J>, write: Option<J>, apps: Option<J>) -> J {
+    let ty = |p: &Option<J>| p.as_ref().and_then(|p| p["$type"].as_str()).unwrap_or(MEMBER_LIST).to_string();
+    let app = |p: &Option<J>| p.as_ref().and_then(|p| p["managingApp"].as_str()).map(String::from);
+    if let Some(m) = app(&read).or_else(|| app(&write)) {
+        return json!({"$type": "com.atproto.managedspace.policy", "managingApp": m});
+    }
+    let mut p = json!({
+        "$type": "com.atproto.memberspace.policy",
+        "publicRead": ty(&read) == PUBLIC,
+        "publicWrite": ty(&write) == PUBLIC,
+    });
+    if let Some(a) = apps.filter(|a| a["$type"] == json!(ALLOW_LIST)) {
+        p["allowedApps"] = a["allowed"].clone();
+    }
+    p
+}
+
 #[derive(Default)]
 pub struct SpaceOpts<'a> {
     pub skey: Option<&'a str>,
@@ -266,14 +269,14 @@ pub struct SpaceOpts<'a> {
 pub async fn put_member(owner: &SpaceClient, space: &str, member: &SpaceClient, read: bool, write: bool) -> Resp {
     owner
         .post(
-            "com.atproto.simplespace.putMember",
+            "com.atproto.memberspace.putMember",
             json!({"space": space, "did": member.did, "read": read, "write": write}),
         )
         .await
 }
 
 pub async fn remove_member(owner: &SpaceClient, space: &str, member: &SpaceClient) -> Resp {
-    owner.post("com.atproto.simplespace.removeMember", json!({"space": space, "did": member.did})).await
+    owner.post("com.atproto.memberspace.removeMember", json!({"space": space, "did": member.did})).await
 }
 
 pub async fn delegation_token(actor: &SpaceClient, space: &str) -> String {

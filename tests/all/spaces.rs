@@ -14,8 +14,8 @@ const METHODS: &[(&str, bool)] = &[
     ("com.atproto.space.getDelegationToken?space=at://did:plc:x/space/com.example.group/default", false),
     ("com.atproto.space.createRecord", true),
     ("com.atproto.space.notifyWrite", true),
-    ("com.atproto.simplespace.createSpace", true),
-    ("com.atproto.simplespace.getSpace", false),
+    ("com.atproto.space.createSpace", true),
+    ("com.atproto.space.getSpace", false),
     // NSID authorities are case-insensitive
     ("COM.ATPROTO.Space.getRecord", false),
 ];
@@ -24,7 +24,7 @@ const METHODS: &[(&str, bool)] = &[
 /// locally.
 const UNIMPLEMENTED: &[(&str, bool)] = &[
     ("com.atproto.space.notifySpaceDeleted", true),
-    ("com.atproto.simplespace.checkUserAccess", false),
+    ("com.atproto.managedspace.checkUserAccess", false),
     // NSID authorities are case-insensitive
     ("COM.ATPROTO.Space.getRecord", false),
 ];

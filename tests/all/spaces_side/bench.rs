@@ -37,7 +37,7 @@
 //!
 //! Metrics are process-wide, so run it alone (`--test-threads=1`, no other
 //! test filter). `SPACES_BENCH_SECS` sets each timed window (default 20).
-//! Members (M > 0) need simplespace putMember and member writes (core C3);
+//! Members (M > 0) need memberspace putMember and member writes (core C3);
 //! syncers need registerNotify and fan-out (C3, C4). With C1 alone run
 //! `SPACES_BENCH_M=0 SPACES_BENCH_SYNCERS=0`.
 
@@ -392,7 +392,7 @@ impl Fixture {
             let m = SpaceClient::new(nodes[(i + 1) % nodes.len()], &unique_name("sbm"), &member_scope()).await;
             authority
                 .post(
-                    "com.atproto.simplespace.putMember",
+                    "com.atproto.memberspace.putMember",
                     json!({"space": space, "did": m.did, "read": true, "write": true}),
                 )
                 .await

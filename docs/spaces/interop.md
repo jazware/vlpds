@@ -10,7 +10,7 @@ summary: "Which upstream vlpds tracks, where it deliberately differs from the re
 diagram:
   caption: "vlpds speaks the reference's wire in every role, and the interop harness runs it both ways: ref-ref, vlpds-authority, ref-authority and vlpds-only, plus a three-node vlpds cluster on MinIO."
   nodes:
-    - { id: v, label: vlpds, sub: "repo host · simplespace host", at: [0, 3], size: [12, 3], tone: accent }
+    - { id: v, label: vlpds, sub: "repo host · space host", at: [0, 3], size: [12, 3], tone: accent }
     - { id: r, label: Reference PDS, sub: "atproto `5b95b2f2`", at: [26, 3], size: [12, 3], tone: muted }
     - { id: s, label: Syncer, sub: "`@atproto/space` consumer", at: [13, 10], size: [12, 3], tone: blue }
   edges:

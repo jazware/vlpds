@@ -47,7 +47,7 @@ async fn eventually(within: Duration, mut f: impl AsyncFnMut() -> bool) -> bool 
 
 async fn put_member(owner: &SpaceClient, space: &str, did: &str) {
     let body = json!({"space": space, "did": did, "read": true, "write": true});
-    owner.post("com.atproto.simplespace.putMember", body).await.ok();
+    owner.post("com.atproto.memberspace.putMember", body).await.ok();
 }
 
 /// A moderator reads space records; every read is in the audit log first,

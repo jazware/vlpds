@@ -10,7 +10,7 @@ summary: "No new storage system: space rows are slot-prefixed key families in th
 diagram:
   caption: "The author's shard holds its space repos and the authority's shard holds the space host's state. Both are ordinary slot-prefixed families, so they ride the node log and move with their shards like every other row. Space entries carry an empty frame, which the firehose skips."
   nodes:
-    - { id: api, label: Apps · syncers, sub: "space.* · simplespace.*", at: [0, 5.5], size: [9, 3], tone: ink }
+    - { id: api, label: Apps · syncers, sub: "space.* · memberspace.*", at: [0, 5.5], size: [9, 3], tone: ink }
     - { id: fwd, label: Any node, sub: routes the call, at: [12, 5.5], size: [9, 3], tone: accent }
     - { id: as, label: Author's shard, sub: "sH · sR · sO · sP · sb · sc · sL", at: [25, 1], size: [11, 3], tone: accent }
     - { id: hs, label: Authority's shard, sub: "sS · sM · sW · sQ · sN · sL", at: [25, 10], size: [11, 3], tone: accent }
@@ -161,6 +161,29 @@ see `RepoNotFound` for those spaces until then, and a syncer that missed the gap
 short, and `/migrate` does that. Its switch-over signs in with OAuth on both hosts and imports each
 space repo before it deactivates the old account ([Spaces](../migration.md#spaces) in the migration
 page).
+
+## Moving a space in
+
+An account that governs spaces brings them with it (the October 29 alpha's account migration). On
+the old host, `com.atproto.space.exportSpaceMeta` serves each space as a space meta archive: a STAR
+file with the `atproto-space-meta` profile holding the policy, the member list (a member space's
+only state) and the writer set, each writer at its spaceRev. Here, `com.atproto.space.importSpaceMeta`
+takes it before the account's own repo in that space, and replaces whatever this host held for the
+space: its policy, members and writers go in on the authority's repo worker in one entry, and a
+deleted space's tombstone is swept first, as `createSpace` sweeps it. The writers keep their
+spaceRevs, so a syncer's listRepos cursor from the old host still works here. Nothing is published
+(the policy and member records arrive in the authority's repo), and notification registrations,
+credential revocations and tombstones don't move. The archive is read whole, within
+`--max-import-mb`; a key out of order, an unknown policy (`UnsupportedPolicy`) or any policy state
+the policy doesn't define refuses all of it.
+
+Then `com.atproto.space.importRepo` takes each repo, as `vlpds.space.importRepo` does below, with
+the standard method's differences: the space is the archive's (no `space` parameter), the repo gets
+a new rev, newer than any it had here, over the archive's `data` (so a retry simply lands again), and
+the authority's own repo needs its space imported first (`SpaceNotFound`). Both standard imports take
+what the reference's `ACCESS_FULL` does: a password session, or OAuth with the grants they need
+(`manage=create` and `manage=update` for the space; `create` for every collection in a repo). App
+passwords can't. `exportSpaceMeta` is the owner's, with `read_self`, as `getSpace` is.
 
 ## Revocations
 

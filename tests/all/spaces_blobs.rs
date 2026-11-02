@@ -98,7 +98,7 @@ async fn space_blobs_are_served_only_through_their_space() {
     let other = owner.create_space(TYPE, "other").await;
     let r = owner
         .post(
-            "com.atproto.simplespace.putMember",
+            "com.atproto.memberspace.putMember",
             json!({"space": space, "did": member.did, "read": true, "write": false}),
         )
         .await;
@@ -236,7 +236,7 @@ async fn gc_counts_space_refs() {
     assert!(!object_exists(&s, &owner.did, &cid(&a)).await, "collected after the last space ref");
     // deleteSpace drops the space's refs
     assert_eq!(blob_rows(&s, &owner.did).await, 2);
-    owner.post("com.atproto.simplespace.deleteSpace", json!({"space": doomed})).await.ok();
+    owner.post("com.atproto.space.deleteSpace", json!({"space": doomed})).await.ok();
     assert_eq!(blob_rows(&s, &owner.did).await, 0);
     sweep(&s).await;
     assert!(!object_exists(&s, &owner.did, &cid(&b)).await);

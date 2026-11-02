@@ -70,9 +70,9 @@ async fn credential_requests_without_a_delegation_token() {
     ask(allowed, &Holder::new()).await.err(400, "AppNotAuthorized");
 
     // a deleted space answers SpaceDeleted, with a token or without
-    alice.post("com.atproto.simplespace.deleteSpace", json!({"space": public_space})).await.ok();
+    alice.post("com.atproto.space.deleteSpace", json!({"space": public_space})).await.ok();
     ask(public_space.clone(), &Holder::new()).await.err(400, "SpaceDeleted");
-    alice.post("com.atproto.simplespace.deleteSpace", json!({"space": members_only})).await.ok();
+    alice.post("com.atproto.space.deleteSpace", json!({"space": members_only})).await.ok();
     ask(members_only.clone(), &Holder::new()).await.err(400, "SpaceDeleted");
     let token = delegation_token(&bob, &members_only).await;
     net.mint_credential(&members_only, &token, None).await.0.err(400, "SpaceDeleted");
@@ -102,7 +102,7 @@ async fn space_deletion_is_retried_until_delivered() {
     let syncer = MockService::syncer().await;
     let (alice, space) = registered(&net, &syncer, "retry").await;
     syncer.respond(503, json!({"error": "Unavailable"}));
-    alice.post("com.atproto.simplespace.deleteSpace", json!({"space": space})).await.ok();
+    alice.post("com.atproto.space.deleteSpace", json!({"space": space})).await.ok();
     syncer.await_calls(NOTIFY_DELETED, 1, Duration::from_secs(10)).await.expect("the first send");
     tokio::time::sleep(Duration::from_millis(500)).await;
     let app = &net.pds[0].app;
@@ -127,7 +127,7 @@ async fn space_deletion_stops_on_a_permanent_error() {
     let syncer = MockService::syncer().await;
     let (alice, space) = registered(&net, &syncer, "refused").await;
     syncer.respond(400, json!({"error": "InvalidRequest"}));
-    alice.post("com.atproto.simplespace.deleteSpace", json!({"space": space})).await.ok();
+    alice.post("com.atproto.space.deleteSpace", json!({"space": space})).await.ok();
     syncer.await_calls(NOTIFY_DELETED, 1, Duration::from_secs(10)).await.expect("the send");
     // the immediate send settles (a sweep now would race it), dropping the row
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -143,15 +143,15 @@ async fn space_deletion_is_cancelled_by_recreating_the_space() {
     let syncer = MockService::syncer().await;
     let (alice, space) = registered(&net, &syncer, "again").await;
     syncer.respond(503, json!({"error": "Unavailable"}));
-    alice.post("com.atproto.simplespace.deleteSpace", json!({"space": space})).await.ok();
+    alice.post("com.atproto.space.deleteSpace", json!({"space": space})).await.ok();
     syncer.await_calls(NOTIFY_DELETED, 1, Duration::from_secs(10)).await.expect("the first send");
     // made again (a new createdAt) before the retry
     tokio::time::sleep(Duration::from_millis(5)).await;
     let skey = last_segment(&space).to_string();
     let r = alice
         .post(
-            "com.atproto.simplespace.createSpace",
-            json!({"spaceType": TEST_SPACE_TYPE, "skey": skey, "readPolicy": member_list(), "writePolicy": member_list(), "appAccess": open()}),
+            "com.atproto.space.createSpace",
+            json!({"spaceType": TEST_SPACE_TYPE, "skey": skey, "policy": {"$type": "com.atproto.memberspace.policy"}}),
         )
         .await;
     assert_eq!(r.ok()["uri"], json!(space));

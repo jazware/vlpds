@@ -11,7 +11,7 @@ use super::admin::require_admin;
 use super::moderation::{audit, ClientIp, SubjectRef, Who};
 use super::space::{space_takedown_name, takedown_name, Space};
 use super::*;
-use crate::space::rows::{AppAccess, HeadRow, MemberRow, Policy, SeqRow, SpaceRow, WriterRow};
+use crate::space::rows::{HeadRow, MemberRow, SeqRow, SpacePolicy, SpaceRow, WriterRow};
 use std::collections::HashMap;
 use vlatproto::tid::Tid;
 
@@ -69,18 +69,35 @@ fn tid_json(t: Tid) -> J {
     }
 }
 
-fn policy_text(p: &Policy) -> String {
+/// The policy in a few words: its kind, who reads and writes, and what
+/// it publishes.
+fn policy_text(p: &SpacePolicy) -> String {
+    let published = |policy: bool, members: bool| match (policy, members) {
+        (false, false) => "",
+        (true, false) => ", policy published",
+        (false, true) => ", members published",
+        (true, true) => ", policy and members published",
+    };
     match p {
-        Policy::Public => "public".into(),
-        Policy::MemberList => "member-list".into(),
-        Policy::ManagingApp { managing_app } => format!("managing-app {managing_app}"),
+        SpacePolicy::Personal => "personal".into(),
+        SpacePolicy::Member { public_read, public_write, publish_policy, publish_members, .. } => format!(
+            "members (read: {}, write: {}{})",
+            if *public_read { "anyone" } else { "members" },
+            if *public_write { "anyone" } else { "members" },
+            published(*publish_policy, *publish_members)
+        ),
+        SpacePolicy::Managed { managing_app, publish_policy } => {
+            format!("managed by {managing_app}{}", published(*publish_policy, false))
+        }
     }
 }
 
-fn app_access_text(a: &AppAccess) -> String {
-    match a {
-        AppAccess::Open => "open".into(),
-        AppAccess::AllowList { allowed } => format!("allow-list ({})", allowed.len()),
+/// Which apps may read.
+fn app_access_text(p: &SpacePolicy) -> String {
+    match p {
+        SpacePolicy::Member { allowed_apps: Some(a), .. } => format!("allow-list ({})", a.len()),
+        SpacePolicy::Managed { .. } => "the managing app decides".into(),
+        _ => "any".into(),
     }
 }
 
@@ -126,8 +143,7 @@ struct SpaceSummary {
     handle: Option<String>,
     space_type: String,
     skey: String,
-    read_policy: String,
-    write_policy: String,
+    policy: String,
     app_access: String,
     created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -155,9 +171,8 @@ async fn summarize(app: &App, p: &Partition, row: SpaceRow) -> XResult<Option<Sp
     let takendown = super::server::ctl(app, &space.authority).await?.has_takedown(&space_takedown_name(&space.sid));
     Ok(Some(SpaceSummary {
         handle: local_handle(app, &space.authority).await,
-        read_policy: policy_text(&row.read_policy),
-        write_policy: policy_text(&row.write_policy),
-        app_access: app_access_text(&row.app_access),
+        policy: policy_text(&row.policy),
+        app_access: app_access_text(&row.policy),
         created_at: row.created_at,
         deleted_at: row.deleted_at,
         takendown,
@@ -426,9 +441,9 @@ async fn get_space_info(State(app): AppState, Auth(creds): Auth, Query(q): Query
             "handle": local_handle(&app, &space.authority).await,
             "spaceType": space.space_type,
             "skey": space.skey,
-            "readPolicy": policy_text(&row.read_policy),
-            "writePolicy": policy_text(&row.write_policy),
-            "appAccess": app_access_text(&row.app_access),
+            "policy": policy_text(&row.policy),
+            "policyObject": row.policy.to_json(),
+            "appAccess": app_access_text(&row.policy),
             "createdAt": row.created_at,
             "deletedAt": row.deleted_at,
             "takendown": ctl.has_takedown(&space_takedown_name(&space.sid)),

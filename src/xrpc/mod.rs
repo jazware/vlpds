@@ -39,11 +39,12 @@ mod repo;
 pub mod scheduled_deletion;
 mod server;
 mod signin;
-mod simplespace;
 pub mod space;
 mod space_admin;
 mod space_import;
+mod space_migrate;
 mod space_ops;
+mod space_policy;
 pub mod staged_import;
 mod sync;
 mod webui;
@@ -305,9 +306,10 @@ pub fn router(app: Arc<App>) -> Router {
                 .merge(space_ops::routes())
                 .merge(match app.config.spaces {
                     true => space::routes()
-                        .merge(simplespace::routes())
+                        .merge(space_policy::routes())
                         .merge(space_admin::routes())
                         .merge(space_import::routes())
+                        .merge(space_migrate::routes())
                         .merge(admin_tools::space_routes()),
                     false => Router::new(),
                 }),

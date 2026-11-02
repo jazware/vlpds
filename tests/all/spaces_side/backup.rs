@@ -207,8 +207,8 @@ async fn backup_restores_on_a_new_host() {
     let own = format!("at://{}/space/{TEST_SPACE_TYPE}/{}", h.bob.did, unique_name("own"));
     h.bob
         .post(
-            "com.atproto.simplespace.createSpace",
-            json!({"spaceType": TEST_SPACE_TYPE, "skey": last_segment(&own), "readPolicy": member_list(), "writePolicy": member_list(), "appAccess": open()}),
+            "com.atproto.space.createSpace",
+            json!({"spaceType": TEST_SPACE_TYPE, "skey": last_segment(&own), "policy": {"$type": "com.atproto.memberspace.policy"}}),
         )
         .await
         .ok();

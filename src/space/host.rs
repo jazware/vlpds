@@ -101,7 +101,7 @@ pub async fn check_user_access(
     access: &str,
     client_id: Option<&str>,
 ) -> bool {
-    let lxm = "com.atproto.simplespace.checkUserAccess";
+    let lxm = "com.atproto.managedspace.checkUserAccess";
     let Some(endpoint) = resolve_service_endpoint(app, managing_app).await else {
         tracing::info!(space = %crate::state::space_log_id(space), managing_app, "could not resolve managing app");
         return false;
