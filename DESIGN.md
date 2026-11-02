@@ -1973,13 +1973,15 @@ No node ever compares its wall clock with another node's.
   lease's ETag (or `renewals`) change. A lease seen for the first time gets a
   full TTL from first sight. A peer is presumed dead once its lease has gone
   unchanged for **TTL + skew** of the observer's time, judged as of before
-  the LIST (a slow LIST can't age a lease). Each lease publishes its
-  holder's TTL, skew and renew interval (`ttl_ms`, `skew_ms`, `renew_ms`),
-  and the observer uses the longer of its own and the holder's TTL + skew
-  (and renew interval, for the suspect probe below): during a rolling
-  change of `--lease-ttl-ms`, a short-TTL node never takes over a live
-  long-TTL one. A lease without them (an older build) is judged by the
-  observer's own. It is also dead once the observer
+  the LIST (a slow LIST can't age a lease). From feature level 2 each lease
+  publishes its holder's TTL, skew and renew interval (`ttl_ms`, `skew_ms`,
+  `renew_ms`; `cluster::LEASE_TIMING_LEVEL`), and the observer uses the
+  longer of its own and the holder's TTL + skew (and renew interval, for
+  the suspect probe below): during a rolling change of `--lease-ttl-ms`, a
+  short-TTL node never takes over a live long-TTL one. They are level-gated
+  because peers act on them. A lease without them (level 1, or an older
+  build) is judged by the observer's own, so below level 2 every node of a
+  cluster must run the same TTL and skew. It is also dead once the observer
   has fenced its log: a renewal it sent before lapsing that lands late can't
   resurrect it.
 - **Self.** A node's own validity is `send time of its last successful
@@ -5155,7 +5157,7 @@ effect at the next segment). Not built yet: everything under "Later".
 | Private `p/` rows | sessions, app passwords, tokens, TOTP (`totp.rs`), OAuth (`oauth/store.rs`), `sec/` revocations/takedowns, `deleting` (`xrpc/server.rs`) | none; mostly JSON | per type; mostly serde-default |
 | Shard meta | `meta/applied2` (`nodelog::encode_marker`), `meta/recent` | key-name suffix (`applied2`): the only precedent | **(built)** `decode_marker` of anything but exactly its bytes is an error (the shard doesn't open, `format="applied_marker"`), never "no marker" |
 | SlateDB SSTs + manifest | `state/{id}/` | slatedb's own (pinned fork rev, `Cargo.toml`); SST compression from flags | slatedb error at open |
-| Node lease | `nodes/{id}`, `cluster::NodeLease` | none; serde ignores unknown fields | **(built)** level 1 has `rev`, `min_level`, `max_level`, `seen_level`; a later level's new fields default |
+| Node lease | `nodes/{id}`, `cluster::NodeLease` | none; serde ignores unknown fields | **(built)** level 1 has `rev`, `min_level`, `max_level`, `seen_level`; level 2 adds `ttl_ms`, `skew_ms`, `renew_ms` (written only at a seen level of 2 or more); a later level's new fields default |
 | Assignment | `assign/{id:010}`, `cluster::Assignment` | none; CAS read-modify-write by *every* node | **(built)** `#[serde(default)]` + `flatten extra`: an old node's CAS (acquire, release, handoff) keeps fields it doesn't know. `Span` (history entries) is closed: a new span field needs a new object |
 | Layout | `assign/layout`, `slots::Layout` | `version` = routing generation, not format | **(built)** `flatten extra` on `Layout` and its `op` (`Reshard`); every layout write derives from the one read. `ShardRange` is closed |
 | Writer claim | `writers/{w:03}` | none | n/a |

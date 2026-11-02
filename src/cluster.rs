@@ -59,11 +59,12 @@ pub struct NodeLease {
     /// a slow log without comparing clocks. Absent unless the host says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_age_ms: Option<u64>,
-    /// This node's lease TTL, skew and renew interval. A peer waits out
-    /// the longer of its own TTL + skew and this one's before presuming
-    /// this node dead, so a node with a longer TTL than its peers' is never
-    /// taken over while its validity may still run. Absent from a build
-    /// that predates them: the peer's own config stands in.
+    /// This node's lease TTL, skew and renew interval, published from
+    /// [`LEASE_TIMING_LEVEL`] on. A peer waits out the longer of its own
+    /// TTL + skew and this one's before presuming this node dead, so a node
+    /// with a longer TTL than its peers' is never taken over while its
+    /// validity may still run. Absent (a lower level, or an older build):
+    /// the peer's own config stands in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttl_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -71,6 +72,12 @@ pub struct NodeLease {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub renew_ms: Option<u64>,
 }
+
+/// Leases carry `ttl_ms`, `skew_ms` and `renew_ms` from this level on.
+/// Peers honor them, so they are level-gated like any semantic field:
+/// below it a node writes the lease a level-1 build writes. Level 2 was
+/// not yet released when they were added.
+pub const LEASE_TIMING_LEVEL: u32 = version::FEDERATED_SIGN_IN_LEVEL;
 
 impl NodeLease {
     /// How long a peer's lease may go unchanged before we presume it dead:
@@ -653,9 +660,9 @@ impl Cluster {
                 max_level: cfg.levels.max,
                 seen_level: 0,
                 pending_age_ms: None,
-                ttl_ms: Some(cfg.ttl.as_millis() as u64),
-                skew_ms: Some(cfg.skew.as_millis() as u64),
-                renew_ms: Some(cfg.renew_every.as_millis() as u64),
+                ttl_ms: None,
+                skew_ms: None,
+                renew_ms: None,
             }),
             expires_local_ms: AtomicU64::new(0),
             valid_until: RwLock::new(Instant::now()),
@@ -1428,6 +1435,8 @@ impl Cluster {
         let mut l = self.lease.read().clone();
         l.expires_ms = self.wall_ms() + self.cfg.ttl.as_millis() as u64;
         l.renewals += 1;
+        let timing = |d: Duration| (l.seen_level >= LEASE_TIMING_LEVEL).then_some(d.as_millis() as u64);
+        (l.ttl_ms, l.skew_ms, l.renew_ms) = (timing(self.cfg.ttl), timing(self.cfg.skew), timing(self.cfg.renew_every));
         // our watermark cap once this lands (published as `wm_cap`): from
         // the send time, so the cap never exceeds what peers read
         let expires_local_ms = now_ms() + self.cfg.ttl.as_millis() as u64;
@@ -4942,6 +4951,33 @@ mod tests {
     /// `cfg(id)` posing as a build running levels `min..=max`.
     fn levels(id: &str, min: u32, max: u32) -> ClusterConfig {
         ClusterConfig { levels: version::Window { min, max }, ..cfg(id) }
+    }
+
+    /// A build that can run level 2 publishes its lease timing only once
+    /// the cluster runs it: below, its lease is what a level-1 build writes.
+    #[tokio::test]
+    async fn lease_timing_is_published_from_its_level_on() {
+        let stored = |c: Arc<Cluster>| async move {
+            let (l, _) =
+                c.get_json::<serde_json::Value>(&c.path(&format!("nodes/{}", c.cfg.node_id))).await.unwrap().unwrap();
+            (l.get("ttl_ms").cloned(), l.get("skew_ms").cloned(), l.get("renew_ms").cloned())
+        };
+        let (_h, hd) = host();
+        let store = Store::memory(None);
+        put_version(&store, 1, None).await;
+        let low = join(levels("lt-low", 1, LEASE_TIMING_LEVEL), store.clone()).await.unwrap();
+        tokio::time::sleep(low.cfg.renew_every).await; // past the lease-write gap
+        low.renew(&hd).await;
+        assert_eq!(low.own_lease().seen_level, 1);
+        assert_eq!(stored(low).await, (None, None, None), "level 1 writes no timing");
+
+        let store = Store::memory(None);
+        put_version(&store, LEASE_TIMING_LEVEL, None).await;
+        let high = join(levels("lt-high", 1, LEASE_TIMING_LEVEL), store.clone()).await.unwrap();
+        tokio::time::sleep(high.cfg.renew_every).await;
+        high.renew(&hd).await;
+        assert_eq!(stored(high).await, (Some(600.into()), Some(100.into()), Some(100.into())));
+        version::set_active(1);
     }
 
     async fn put_version(store: &Store, active: u32, target: Option<u32>) {
