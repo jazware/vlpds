@@ -13,10 +13,13 @@
 #   targets and to every `sum(...)` / `count(...)` below (`by (cluster)`).
 # - The lease alerts scale with each node's configured --lease-ttl-ms, which
 #   it exports as vlpds_lease_ttl_seconds (with vlpds_lease_renew_interval_
-#   seconds and vlpds_lease_skew_seconds, both TTL / 5) and through the
-#   vlpds_lease_renew_ttl_ratio histogram (renewal round trip / TTL). At the
-#   default 10 s TTL: renew every 2 s, validity TTL - skew = 8 s, renewal
-#   ceiling 4 s; at 60 s (the tiny profile): every 12 s, 48 s, 24 s.
+#   seconds and vlpds_lease_skew_seconds, TTL / 5 unless --lease-renew-ms /
+#   --lease-skew-ms say) and through the vlpds_lease_renew_ttl_ratio
+#   histogram (renewal round trip / TTL). At the default 10 s TTL: renew
+#   every 2 s, validity TTL - skew = 8 s, renewal ceiling (TTL - skew) / 2 =
+#   4 s; at 120 s / 12 s / 12 s (the tiny profile): every 12 s, 108 s, 54 s.
+#   The node keeps skew <= TTL / 5, so the ceiling is never under the
+#   0.4 x TTL the ratio alerts below use.
 #   Nodes built before these metrics existed export neither, and the
 #   TTL-relative lease alerts stay silent for them.
 # - Not every scraper writes staleness markers (a collector that only

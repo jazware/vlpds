@@ -75,8 +75,7 @@ list on the bucket, and no `s3:DeleteObjectVersion`, bucket-policy or lifecycle 
 
 The report's notes say what the latency means for the node. An acked write waits for at least one
 `put_create_64kib`, so its p50 and p99 are the floor of write latency from that host. The lease CAS's
-max should stay well under the renewal interval (TTL/5, which is 12 s on the tiny profile and 2 s on
-standard).
+max should stay well under the renewal interval (12 s on the tiny profile and 2 s on standard).
 
 ## Bucket layout
 

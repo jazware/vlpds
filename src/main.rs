@@ -771,13 +771,24 @@ struct Args {
     /// port>, a host its peer certificate names. Only with --peer-listen.
     #[arg(long, env = "VLPDS_ADVERTISE_URL", requires = "peer_listen")]
     advertise_url: Option<String>,
-    /// Node lease TTL. Renewal and skew margin are TTL/5 each. A node's
-    /// renewal (one CAS PUT) must complete within (TTL - skew)/2 = 0.4 x TTL
-    /// (4 s at the default) or its validity gaps and it fail-stops; a
-    /// cluster-wide S3 brownout beyond that stops every node. Keep >= 10 s in
-    /// production; takeover after a crash is about TTL + skew + replay.
+    /// Node lease TTL. Validity runs TTL - skew from a renewal's send, so
+    /// a store stall longer than TTL - skew - renew (6 s at the defaults)
+    /// lapses the lease and the node fail-stops, and back-to-back renewals
+    /// slower than (TTL - skew) / 2 do too; a cluster-wide brownout beyond
+    /// that stops every node. Keep >= 10 s in production. A hung or
+    /// partitioned node's shards are taken over after TTL + skew (+
+    /// replay); a crashed one's at once (its port refuses).
     #[arg(long, env = "VLPDS_LEASE_TTL_MS", default_value_t = 10_000)]
     lease_ttl_ms: u64,
+    /// Node lease renew interval (one CAS PUT each). Default TTL / 5.
+    /// renew + skew must be at most TTL / 2.
+    #[arg(long, env = "VLPDS_LEASE_RENEW_MS")]
+    lease_renew_ms: Option<u64>,
+    /// Node lease clock-skew margin: validity ends this early on our
+    /// clock and peers wait this much past the TTL on theirs. Default
+    /// TTL / 5; TTL / 20 ..= TTL / 5.
+    #[arg(long, env = "VLPDS_LEASE_SKEW_MS")]
+    lease_skew_ms: Option<u64>,
     /// Disable the reference rate limits (benchmarks / load tests).
     #[arg(long, env = "VLPDS_NO_RATE_LIMITS")]
     no_rate_limits: bool,
@@ -1488,6 +1499,8 @@ async fn run(args: Args) -> anyhow::Result<()> {
     };
     let node_id = args.node_id.clone().unwrap_or_else(|| "single".into());
     let advertise_url = args.advertise_url.clone().unwrap_or_else(|| args.public_url.clone());
+    let (ttl, renew_every, skew) =
+        vlpds::cluster::lease_timing(args.lease_ttl_ms, args.lease_renew_ms, args.lease_skew_ms)?;
     let peer_tls = peer_tls(&args, &node_id, &advertise_url)?;
     let metrics_addr = metrics_listen(&args);
     let reshard_gc = Some(vlpds::reshard_gc::Config {
@@ -1644,9 +1657,9 @@ async fn run(args: Args) -> anyhow::Result<()> {
             node_id,
             addr: advertise_url,
             shards: args.shards,
-            ttl: Duration::from_millis(args.lease_ttl_ms),
-            renew_every: Duration::from_millis(args.lease_ttl_ms / 5),
-            skew: Duration::from_millis(args.lease_ttl_ms / 5),
+            ttl,
+            renew_every,
+            skew,
             clock_offset_ms: 0,
             levels: vlsync_store::version::Window::BUILD,
             lease_plane: None,
@@ -1683,7 +1696,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
     if args.lease_ttl_ms < 10_000 && !args.dev_mode {
         tracing::warn!(
             lease_ttl_ms = args.lease_ttl_ms,
-            "lease TTL below 10 s: a renewal slower than 0.4 x TTL fail-stops the node (see --lease-ttl-ms)"
+            "lease TTL below 10 s: a store stall past TTL - skew - renew fail-stops the node (see --lease-ttl-ms)"
         );
     }
     let listener = bind(&args.listen, args.listen_backlog).await?;

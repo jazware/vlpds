@@ -122,6 +122,9 @@ pub fn ghost_lease(id: &str, addr: String) -> vlpds::cluster::NodeLease {
         max_level: 1,
         seen_level: 1,
         pending_age_ms: None,
+        ttl_ms: None,
+        skew_ms: None,
+        renew_ms: None,
     }
 }
 

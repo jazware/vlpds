@@ -162,13 +162,13 @@ impl LeaseRenewHistogram {
 
 pub static LEASE_RENEW_SECONDS: LazyLock<LeaseRenewHistogram> = LazyLock::new(|| {
     LeaseRenewHistogram {
-    secs: register_histogram!("vlpds_lease_renew_seconds", "Node lease renewal round trip (the CAS PUT of nodes/{node_id}), answered or failed. Validity ends TTL - skew after a renewal's send time, so round trips over 0.4 x TTL (4 s at the default TTL) open a gap and the node fail-stops", exponential_buckets(0.001, 2.0, 14).unwrap()).unwrap(),
-    ttl_ratio: register_histogram!("vlpds_lease_renew_ttl_ratio", "Node lease renewal round trip as a fraction of the lease TTL (vlpds_lease_renew_seconds / vlpds_lease_ttl_seconds). Over 0.4 the node's validity gaps and it fail-stops", vec![0.01, 0.025, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0]).unwrap(),
+    secs: register_histogram!("vlpds_lease_renew_seconds", "Node lease renewal round trip (the CAS PUT of nodes/{node_id}), answered or failed. Validity ends TTL - skew after a renewal's send time, so one round trip over TTL - skew - renew, or back-to-back ones over (TTL - skew) / 2 (0.4 x TTL, 4 s, at the defaults), open a gap and the node fail-stops", exponential_buckets(0.001, 2.0, 14).unwrap()).unwrap(),
+    ttl_ratio: register_histogram!("vlpds_lease_renew_ttl_ratio", "Node lease renewal round trip as a fraction of the lease TTL (vlpds_lease_renew_seconds / vlpds_lease_ttl_seconds). Back-to-back ones over (1 - skew / TTL) / 2 (0.4 at the default skew, never less) gap the node's validity and it fail-stops", vec![0.01, 0.025, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0]).unwrap(),
 }
 });
-lazy!(LEASE_TTL: Gauge = register_gauge!("vlpds_lease_ttl_seconds", "Configured node lease TTL (--lease-ttl-ms). Renewal ceiling = 0.4 x TTL; a crashed node's shards are taken over after about TTL + skew"));
-lazy!(LEASE_RENEW_INTERVAL: Gauge = register_gauge!("vlpds_lease_renew_interval_seconds", "Configured node lease renewal interval (TTL / 5)"));
-lazy!(LEASE_SKEW: Gauge = register_gauge!("vlpds_lease_skew_seconds", "Configured clock-skew margin of the node lease (TTL / 5): validity ends TTL - skew after a renewal's send time"));
+lazy!(LEASE_TTL: Gauge = register_gauge!("vlpds_lease_ttl_seconds", "Configured node lease TTL (--lease-ttl-ms). Renewal ceiling = (TTL - skew) / 2; a hung node's shards are taken over after about TTL + skew"));
+lazy!(LEASE_RENEW_INTERVAL: Gauge = register_gauge!("vlpds_lease_renew_interval_seconds", "Configured node lease renewal interval (--lease-renew-ms, default TTL / 5)"));
+lazy!(LEASE_SKEW: Gauge = register_gauge!("vlpds_lease_skew_seconds", "Configured clock-skew margin of the node lease (--lease-skew-ms, default TTL / 5): validity ends TTL - skew after a renewal's send time"));
 lazy!(LEASE_RENEW_ERRORS: IntCounterVec = register_int_counter_vec!("vlpds_lease_renew_errors_total", "Failed node lease renewals by kind: timeout / error (retried next interval), conflict (someone rewrote our lease: fail-stop), lapsed (validity ended before the renewal: fail-stop)", &["kind"]));
 lazy!(LEASE_VALIDITY: GaugeVec = register_gauge_vec!("vlpds_lease_validity_seconds", "Seconds until this node's own lease validity ends (TTL - skew after the send time of its last successful renewal), computed at scrape. Normally between TTL - skew - one renew interval and TTL - skew; negative = lapsed", &["node_id"]));
 lazy!(PEER_TAKEOVERS: IntCounterVec = register_int_counter_vec!("vlpds_peer_takeovers_total", "Log incarnations this node fenced because they ended without fencing themselves (crash, kill, fail-stop, partition): peer = a dead peer's log, before taking its shards; restart = our own previous incarnation's, at startup. A graceful stop fences its own log and is not counted", &["reason"]));

@@ -764,10 +764,12 @@ ts("Revocations held, blocks, digest mismatches",
 # ============================================================== cluster: leases and ownership
 row("Cluster: leases, ownership, failover")
 ts("Lease renewal round trip by node (p99)", [node_quantile(0.99, "vlpds_lease_renew_seconds"),
-                                              t(f"0.4 * min(vlpds_lease_ttl_seconds{{{I}}})", "fail-stop ceiling (0.4 x TTL)")], "s",
-   overrides=[dashed("fail-stop ceiling (0.4 x TTL)")],
-   desc="One CAS PUT of nodes/{node_id} every TTL/5. A round trip over 0.4 x TTL (4 s at the default 10 s TTL) lapses the lease and the "
-        f"node fail-stops (exit 5). p99 over 500 ms for 10 min: {rb('VlpdsLeaseRenewalSlow')}.")
+                                              t(f"min(vlpds_lease_ttl_seconds{{{I}}} - vlpds_lease_skew_seconds{{{I}}}) / 2",
+                                                "fail-stop ceiling ((TTL - skew) / 2)")], "s",
+   overrides=[dashed("fail-stop ceiling ((TTL - skew) / 2)")],
+   desc="One CAS PUT of nodes/{node_id} every renew interval (TTL/5 by default). Round trips over (TTL - skew) / 2 (4 s at the default "
+        "10 s TTL, 54 s at 120 s with a 12 s skew) lapse the lease and the node fail-stops (exit 5); so does one stall past "
+        f"TTL - skew - renew. p99 over 500 ms for 10 min: {rb('VlpdsLeaseRenewalSlow')}.")
 ts("Lease validity left by node", [t(f"min by (node_id) (vlpds_lease_validity_seconds{{{I}}})", "{{node_id}}"),
                                    t(f"0.4 * min(vlpds_lease_ttl_seconds{{{I}}})", "low (0.4 x TTL)")], "s",
    overrides=[dashed("low (0.4 x TTL)", "orange")],

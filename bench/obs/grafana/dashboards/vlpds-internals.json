@@ -9327,7 +9327,7 @@
      "type": "timeseries",
      "id": 114,
      "title": "Lease renewal round trip by node (p99)",
-     "description": "One CAS PUT of nodes/{node_id} every TTL/5. A round trip over 0.4 x TTL (4 s at the default 10 s TTL) lapses the lease and the node fail-stops (exit 5). p99 over 500 ms for 10 min: [VlpdsLeaseRenewalSlow](https://github.com/jazware/vlpds/blob/main/ops/RUNBOOK.md#vlpdsleaserenewalslow).",
+     "description": "One CAS PUT of nodes/{node_id} every renew interval (TTL/5 by default). Round trips over (TTL - skew) / 2 (4 s at the default 10 s TTL, 54 s at 120 s with a 12 s skew) lapse the lease and the node fail-stops (exit 5); so does one stall past TTL - skew - renew. p99 over 500 ms for 10 min: [VlpdsLeaseRenewalSlow](https://github.com/jazware/vlpds/blob/main/ops/RUNBOOK.md#vlpdsleaserenewalslow).",
      "datasource": {
       "type": "prometheus",
       "uid": "${ds_prometheus}"
@@ -9354,8 +9354,8 @@
         "type": "prometheus",
         "uid": "${ds_prometheus}"
        },
-       "expr": "0.4 * min(vlpds_lease_ttl_seconds{cluster=~\"$cluster\", instance=~\"$instance\"})",
-       "legendFormat": "fail-stop ceiling (0.4 x TTL)",
+       "expr": "min(vlpds_lease_ttl_seconds{cluster=~\"$cluster\", instance=~\"$instance\"} - vlpds_lease_skew_seconds{cluster=~\"$cluster\", instance=~\"$instance\"}) / 2",
+       "legendFormat": "fail-stop ceiling ((TTL - skew) / 2)",
        "range": true,
        "refId": "B"
       }
@@ -9383,7 +9383,7 @@
        {
         "matcher": {
          "id": "byName",
-         "options": "fail-stop ceiling (0.4 x TTL)"
+         "options": "fail-stop ceiling ((TTL - skew) / 2)"
         },
         "properties": [
          {

@@ -123,10 +123,17 @@ edges:
   cluster. Go to [Slow or failing object store](#slow-or-failing-object-store).
 - Don't lower `--lease-ttl-ms` to recover faster. It shrinks the ceiling and causes more
   fail-stops. Never below 10 s in production.
+- Store stalls that answer nothing for longer than the margin, TTL − skew − renew, fail-stop the
+  node (36 s at 60 s with TTL/5 renew and skew). A lone node gives nothing up with a longer TTL
+  except crash-restart time, so raise it with the renew interval held:
+  `--lease-ttl-ms 120000 --lease-renew-ms 12000 --lease-skew-ms 12000` gives a 96 s margin at the
+  same write rate. In a cluster a longer TTL also delays takeover of a hung or partitioned node to
+  TTL + skew (132 s there). Roll the new build out first and the longer TTL after it: a node on an
+  older build judges every peer by its own TTL + skew.
 
 Signals: `vlpds_lease_renew_ttl_ratio`, `vlpds_lease_renew_seconds`, `vlpds_lease_validity_seconds`
-(sampled at scrape time), `vlpds_lease_renew_errors_total{kind}`. Four failed renewals in a row lapse
-a lease. Alerts: `VlpdsLeaseRenewalSlow`, `…NearCeiling`, `…AtCeiling`, `VlpdsLeaseRenewErrors`,
+(sampled at scrape time), `vlpds_lease_renew_errors_total{kind}`. (TTL − skew) / renew failed
+renewals in a row lapse a lease: four at the defaults, nine at 120 s / 12 s / 12 s. Alerts: `VlpdsLeaseRenewalSlow`, `…NearCeiling`, `…AtCeiling`, `VlpdsLeaseRenewErrors`,
 `VlpdsLeaseValidityLow`. RUNBOOK
 [VlpdsLeaseRenewalNearCeiling](https://github.com/jazware/vlpds/blob/main/ops/RUNBOOK.md#vlpdsleaserenewalnearceiling).
 Background: [Architecture](../architecture.md#leases).
@@ -248,7 +255,7 @@ one cache's `--cache-entries`. Budget details: [Configuration](configuration.md#
   `state/` or `cluster/`. A missing segment is a hole that replay stops at. Fences are what make a
   zombie fail-stop. `assign/` holds what successors replay. `cluster/version` only changes through
   `cluster finalize` / `cluster lower`. Retention and GC delete safely, so let them.
-- Never run `--lease-ttl-ms` below 10 s in production. The renewal ceiling is 0.4 × TTL.
+- Never run `--lease-ttl-ms` below 10 s in production. The renewal ceiling is (TTL − skew)/2, 0.4 × TTL at the default skew.
 - Don't SIGKILL for routine restarts. SIGTERM and wait (60 s or more).
 - Don't suspend or snapshot-pause a running node's VM. When it wakes, it believes its lease is
   still valid and serves stale reads until its next PUT hits the fence. A pause longer than

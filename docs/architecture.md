@@ -32,7 +32,7 @@ diagram:
     - { from: http.b, to: peer.r, via: [[14, 8.7]], label: forward · mTLS }
     - { from: cp.r, to: ctl.l, label: CAS every 2 s, dash: true }
 facts:
-  - { value: "10 s", label: node lease TTL, note: "renewed by CAS every 2 s; 60 s on the tiny profile (`--lease-ttl-ms`)" }
+  - { value: "10 s", label: node lease TTL, note: "renewed by CAS every 2 s; 120 s renewed every 12 s on the tiny profile (`--lease-ttl-ms`)" }
   - { value: "~12 s", label: to take over a crashed node, note: "1.2 × TTL; 3–5 s when its port refuses connections", tone: violet }
   - { value: "~0.2 s", label: per planned shard move, note: "graceful stop or rebalance; caches warmed first", tone: blue }
   - { value: "0", label: acked writes lost on takeover, note: "fencing and CAS decide who writes; clocks only decide when", tone: amber }
@@ -186,19 +186,24 @@ edges:
 ```
 
 A node holds one lease, `nodes/{node_id}`, for all its shards. The lease carries the node's log
-id, address, writer id and a renewal counter, and the node renews it by CAS every TTL/5 (2 s). Every
-renewal changes the object, and that change is all peers look at:
+id, address, writer id, a renewal counter and its TTL, skew and renew interval, and the node renews it
+by CAS every renew interval (TTL/5, 2 s, unless `--lease-renew-ms` says). Every renewal changes the
+object, and that change is all peers look at:
 
 - Peers. Each peer notes, on its own monotonic clock, when it last saw each lease change. A lease
-  that's unchanged for TTL + skew (1.2 × TTL, 12 s) is presumed dead. Once a node has missed a
+  that's unchanged for TTL + skew (1.2 × TTL, 12 s) is presumed dead, the longer of the peer's own
+  and the one the lease publishes, so a node with a longer TTL isn't taken over early. Once a node has missed a
   renewal, peers also try a TCP connect to its advertised address each step. If the connection is
   refused, the process is gone and it's presumed dead at once (3–5 s after the crash).
 - The node itself. A node is valid until the send time of its last successful renewal plus
   TTL − skew (0.8 × TTL, 8 s). Past that it stops PUTting segments and acking, and it never renews a
   lapsed lease. A watchdog fail-stops it (exit 5) at about the time peers can first presume it dead.
-- The renewal ceiling. Renewals are sequential, so a slow one delays the next send. Round trips
-  longer than 0.4 × TTL (4 s) leave a gap in validity and the node fail-stops. A cluster-wide object-store brownout past that point
-  stops every node, so keep the TTL at 10 s or more (`--lease-ttl-ms` warns below it).
+- The margin and the ceiling. One stall longer than TTL − skew − renew (6 s) lapses the lease, and
+  since renewals are sequential, back-to-back round trips longer than (TTL − skew)/2 (0.4 × TTL,
+  4 s) leave a gap in validity too. Either way the node fail-stops. A cluster-wide object-store
+  brownout past that point stops every node, so keep the TTL at 10 s or more (`--lease-ttl-ms` warns
+  below it). The tiny profile runs 120 s / 12 s / 12 s for a 96 s margin against R2's 40–90 s
+  stalls. See [Configuration](operations/configuration.md#shards-and-lease-ttl) for the trade-off.
 
 No node compares its wall clock with another's. The metrics are `vlpds_lease_renew_ttl_ratio` and
 `vlpds_lease_ttl_seconds`, and the alerts are `VlpdsLeaseRenewalNearCeiling` and

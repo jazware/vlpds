@@ -64,10 +64,11 @@ edges:
 | Ownership | `sum(vlpds_owned_partitions)` vs `vlpds_shard_layout_shards` | equal | short for 2 min page |
 | Errors | 5xx share of `vlpds_http_requests_total` (AppView-proxied calls excluded) | under 1% | 5% page |
 
-The lease ratio is the one to understand. A node renews its lease every TTL/5 and stays valid for
-0.8 × TTL after a renewal's send time. So if a renewal round trip takes over 0.4 × TTL, it opens a
-gap and the node fail-stops. That's 4 s at the default 10 s TTL, or 24 s on the `tiny` profile's
-60 s. A slow object store shows up here before anywhere else. See
+The lease ratio is the one to understand. A node renews its lease every renew interval (TTL/5 by
+default) and stays valid for TTL − skew (0.8 × TTL by default) after a renewal's send time. So if
+renewal round trips take over (TTL − skew)/2, they open a gap and the node fail-stops. That's 4 s at
+the default 10 s TTL, or 54 s on the `tiny` profile's 120 s with a 12 s skew. The ratio alerts use
+0.4 × TTL, which the node never lets the ceiling go under. A slow object store shows up here before anywhere else. See
 [Architecture](../architecture.md#leases) for why.
 
 Some signals don't have a metric. Per-log firehose watermark lag and clock offset between nodes only

@@ -108,7 +108,7 @@ the caches size themselves from the memory budget (see
 |---|---|---|
 | For | a personal or small community PDS on a small VM | the production sizing (6–8 cores / 32 GB / NVMe) |
 | `--shards` | 1 | 64 |
-| `--lease-ttl-ms` | 60,000 (renew every 12 s) | 10,000 (renew every 2 s) |
+| `--lease-ttl-ms` | 120,000 (renew and skew 12 s) | 10,000 (renew and skew 2 s) |
 | `--slatedb-manifest-poll` | 60 s | 10 s |
 | Container memory limit | 2.5 GiB (the example: 3 GiB) | 85% of RAM |
 | Firehose ring / merge queue / backfill cache | 64 / 32 / 32 MiB | 512 / 256 / 256 MiB |
@@ -118,7 +118,8 @@ the caches size themselves from the memory budget (see
 
 The tiny profile's lease is the trade-off to know about. A lone node has no peer that could take
 over faster, so a longer lease just saves requests. But after a crash (SIGKILL, OOM, power loss), the
-restarted node can't write for about one TTL (53 s measured at 60 s). A graceful restart takes ~1 s
+restarted node can't write for about one TTL (53 s measured at 60 s, so ~113 s at 120 s). In return a
+store stall of up to ~90 s doesn't stop it. A graceful restart takes ~1 s
 at any TTL. Details: [Configuration](configuration.md#shards-and-lease-ttl).
 
 ## First deploy
@@ -192,7 +193,8 @@ docker run -d --name vlpds --restart unless-stopped --stop-timeout 90 \
   -e VLPDS_INTERNAL_TOKEN_FILE=/run/vlpds/internal-token \
   -e VLPDS_KEK_FILE=/run/vlpds/kek \
   -e VLPDS_PLC_ROTATION_KEY_FILE=/run/vlpds/plc-rotation.key \
-  -e VLPDS_NODE_ID=single -e VLPDS_SHARDS=1 -e VLPDS_LEASE_TTL_MS=60000 \
+  -e VLPDS_NODE_ID=single -e VLPDS_SHARDS=1 -e VLPDS_LEASE_TTL_MS=120000 \
+  -e VLPDS_LEASE_RENEW_MS=12000 -e VLPDS_LEASE_SKEW_MS=12000 \
   -e VLPDS_SLATEDB_MANIFEST_POLL=60s \
   -e VLPDS_CACHE_DIR=/var/lib/vlpds/cache -e VLPDS_DISK_CACHE_MB=4096 \
   -e VLPDS_METRICS_LISTEN=0.0.0.0:9583 -e VLPDS_LOG_FORMAT=json \

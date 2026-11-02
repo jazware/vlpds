@@ -139,8 +139,9 @@ To add a node, starting from one running node:
 
 A prefix made with the `tiny` profile has one shard. One node owns it and the others forward to it,
 which is enough for failover. Split it (below) to spread writes out. Takeover after a crash waits
-about one lease TTL (60 s on `tiny`). A lower `vlpds_lease_ttl_ms` shortens that in exchange for more
-object-store requests.
+about one lease TTL plus the skew (132 s on `tiny`) unless the dead node's port refuses connections.
+A lower `vlpds_lease_ttl_ms` shortens that in exchange for more object-store requests and a shorter
+stall margin.
 
 To remove a node, move DNS away from it first. Then stop it with `docker compose down` in
 `/opt/vlpds` and take it out of the inventory. The stop sends SIGTERM with the 90 s grace period, so

@@ -130,29 +130,47 @@ capacity, used) and `vlpds_meta_cache_shortfall_bytes`. Details:
 ## Shards and lease TTL
 
 ```diagram
-caption: "One lease, four numbers. The node renews by CAS every TTL/5; its own validity ends 0.8 × TTL after the last renewal was sent; a renewal slower than 0.4 × TTL fail-stops it; peers take over after 1.2 × TTL without a change."
+caption: "One lease, four numbers. The node renews by CAS every renew interval (TTL/5 by default); its own validity ends TTL − skew after the last renewal was sent; a stall longer than TTL − skew − renew fail-stops it; peers take over after TTL + skew without a change."
 nodes:
   - { id: r, label: renew, sub: every TTL/5, at: [0, 0], size: [8, 3], tone: accent }
-  - { id: c, label: ceiling, sub: "0.4 × TTL round trip", at: [11, 0], size: [9, 3], tone: rust }
-  - { id: v, label: valid until, sub: "0.8 × TTL after send", at: [23, 0], size: [9, 3], tone: violet }
-  - { id: t, label: takeover, sub: "1.2 × TTL unchanged", at: [35, 0], size: [9, 3], tone: danger }
+  - { id: c, label: margin, sub: "TTL − skew − renew", at: [11, 0], size: [9, 3], tone: rust }
+  - { id: v, label: valid until, sub: "TTL − skew after send", at: [23, 0], size: [9, 3], tone: violet }
+  - { id: t, label: takeover, sub: "TTL + skew unchanged", at: [35, 0], size: [9, 3], tone: danger }
 edges:
   - r -> c
   - c -> v
   - v -> t
 ```
 
-| `--lease-ttl-ms` | Renew every | Renewal ceiling | Peer takeover after a crash | Lone node's crash restart, first write | Idle control-plane cost |
-|---|---|---|---|---|---|
-| 10,000 (default, standard) | 2 s | 4 s | ~12 s, or 3–5 s if the port refuses | ~11 s (measured) | 3 Class A per 2 s |
-| 60,000 (tiny) | 12 s | 24 s | ~72 s | ~53 s (measured) | ~0.3 M Class A/mo in all |
-| 300,000 | 60 s | 120 s | ~6 min | ~281 s (measured) | saves pennies more |
+`--lease-renew-ms` and `--lease-skew-ms` default to TTL/5 each. The node refuses to start if renew +
+skew is over TTL/2 or the skew is outside TTL/20 to TTL/5. The margin is the longest store stall a
+renewal can ride out, so it stays at least half the TTL. The skew bounds the clock-rate drift the
+liveness rule tolerates (skew/TTL), and at most TTL/5 keeps the sustained renewal ceiling,
+(TTL − skew)/2, at 0.4 × TTL or more, where the TTL-relative alerts put it.
 
-A graceful restart (SIGTERM) can write again in about a second at any TTL, because the node fences its
-own log and deletes its lease on the way out. Only a crash waits, since the new process can't write
-until its clock passes the last renewal's send time plus a TTL. Keep the TTL at 10 s or more in
-production. Below that, a brief store hiccup over the ceiling stops the node. Safety never depends on
-the TTL, which only decides when a takeover happens. See [Architecture](../architecture.md#leases).
+| Lease (TTL / renew / skew) | Stall margin | Renewal ceiling | Peer takeover (hung node or dead host; crashed process) | Lone node's crash restart, first write | Idle control-plane cost |
+|---|---|---|---|---|---|
+| 10 s / 2 s / 2 s (default, standard) | 6 s | 4 s | ~12 s; 3–5 s | ~11 s (measured) | 3 Class A per 2 s |
+| 60 s / 12 s / 12 s | 36 s | 24 s | ~72 s | ~53 s (measured) | ~0.3 M Class A/mo in all |
+| 120 s / 12 s / 12 s (tiny) | 96 s | 54 s | ~132 s; 18–30 s | ~113 s (estimated) | the same as 60 s |
+| 300 s / 60 s / 60 s | 180 s | 120 s | ~6 min | ~281 s (measured) | saves pennies more |
+
+The tiny profile runs 120 s with a 12 s renew and skew because R2 sometimes answers nothing for
+40–90 s. At 60 s its 36 s margin turned each such stall into a fail-stop and ~50 s of downtime. The
+96 s margin rides them out (less the few seconds from the stall's end to the next lease-write
+attempt) at the same write rate. A graceful restart (SIGTERM) can write again in about a second at
+any TTL, because the node fences its own log and deletes its lease on the way out. Only a crash
+waits, since the new process can't write until its clock passes the last renewal's send time plus a
+TTL.
+
+In a cluster the TTL is a failover choice, made per deployment. A node that hangs or is partitioned
+(not crashed: a refused connect presumes a crashed node dead at once) keeps its shards for TTL +
+skew after its last renewal, and the merged firehose waits on its log until then. Peers wait the
+longer of their own TTL + skew and the one the node's lease publishes, so mixed settings during a
+rolling change never take over a live node early (an older build that doesn't publish its timing
+is judged by the observer's own). Keep the TTL at 10 s or more in production. Below that, a brief
+store hiccup stops the node. Safety never depends on the TTL, which only decides when a takeover
+happens. See [Architecture](../architecture.md#leases).
 
 The keyspace is 65,536 hash slots grouped into shards. `--shards` (default 64, at most 65,536) only
 sets the initial layout of a new prefix. After that, shards split and merge online

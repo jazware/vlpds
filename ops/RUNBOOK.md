@@ -34,19 +34,23 @@ the alert name (the `runbook_url` anchors point here). Everything here comes fro
   and every earlier one are durable, and only while the node's lease is valid.
   Segments are `If-None-Match` PUTs, up to `--log-inflight` 4 in flight, finalized
   in order.
-- A node CAS-renews its lease `nodes/{node_id}` every TTL/5. That's 2 s at the
-  default `--lease-ttl-ms 10000` and 12 s at the tiny profile's 60 s. The node's
-  own validity ends `TTL - skew` = 0.8 x TTL (8 s / 48 s) after the send time of
-  its last successful renewal. Renewals are sequential, so once a round trip takes
-  longer than the renew interval the next one goes out only when it returns. With
-  round trips over `0.4 x TTL` (4 s / 24 s), two in a row outlast the 0.8 x TTL of
-  validity, and the node fail-stops. If the whole object store browns
+- A node CAS-renews its lease `nodes/{node_id}` every renew interval
+  (`--lease-renew-ms`, default TTL/5). That's 2 s at the default
+  `--lease-ttl-ms 10000` and 12 s at the tiny profile's 120 s. The node's own
+  validity ends `TTL - skew` (`--lease-skew-ms`, default TTL/5: 8 s at the
+  default, 108 s on tiny) after the send time of its last successful renewal. A
+  stall that answers nothing for longer than `TTL - skew - renew` (6 s / 96 s)
+  lapses it. Renewals are sequential, so once a round trip takes longer than the
+  renew interval the next one goes out only when it returns. With round trips
+  over `(TTL - skew) / 2` (0.4 x TTL at the default skew, never less: 4 s /
+  54 s), two in a row outlast the validity, and the node fail-stops. If the whole object store browns
   out past that ceiling, every node stops. Each node exports its settings
   (`vlpds_lease_ttl_seconds`, `vlpds_lease_renew_interval_seconds`,
   `vlpds_lease_skew_seconds`) and its renewals as a fraction of the TTL
   (`vlpds_lease_renew_ttl_ratio`), and the lease alerts are relative to them.
 - Peers presume a node dead once its lease hasn't changed for `TTL + skew` =
-  1.2 x TTL of their own monotonic time (12 s at the default, 72 s at 60 s). If
+  1.2 x TTL of their own monotonic time (12 s at the default, 132 s on tiny;
+  the longer of their own and the one the node's lease publishes). If
   its advertised port refuses TCP connections (the process is gone), they presume
   it dead within ~1.5-2.5 renew intervals (3-5 s at the default). The new owner
   fences the dead log (a conditional create at the end of its durable prefix),
