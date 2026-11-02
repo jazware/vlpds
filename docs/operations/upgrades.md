@@ -37,7 +37,14 @@ until you finalize. The few exceptions are listed under [Compatibility contract]
 > third-party sign-in ([OAuth and 2FA](../oauth-2fa.md#third-party-sign-in)): below it, providers can
 > be saved but none is offered and nothing of it is written. A new prefix starts at level 2. An
 > existing cluster gets it with `vlpds admin cluster finalize --level 2` once every node runs a build
-> that has it, and after that older builds exit 7. The test-only level is 3.
+> that has it, and after that older builds exit 7.
+>
+> Level 3 (`lease-timing`) is persistent and adds each node lease's TTL, skew and renew interval,
+> which peers wait out before taking a node over ([Configuration](configuration.md#shards-and-lease-ttl)).
+> Below it, keep `--lease-ttl-ms`, `--lease-renew-ms` and `--lease-skew-ms` the same on every node.
+> A new prefix starts at level 3. An existing cluster gets it with
+> `vlpds admin cluster finalize --level 3`, and after that builds before it exit 7. The test-only
+> level is 4.
 
 ## Rolling deploy
 

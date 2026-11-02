@@ -128,10 +128,11 @@ edges:
   except crash-restart time, so raise it with the renew interval held:
   `--lease-ttl-ms 120000 --lease-renew-ms 12000 --lease-skew-ms 12000` gives a 96 s margin at the
   same write rate. In a cluster a longer TTL also delays takeover of a hung or partitioned node to
-  TTL + skew (132 s there). Leases publish their timing only from feature level 2, and a peer
-  judges a lease without it by its own TTL + skew. So in a cluster, keep the same TTL and skew on
-  every node until level 2 is finalized and every node runs a build that publishes it, then change
-  them node by node. A lone node can change them at any time.
+  TTL + skew (132 s there). Leases publish their timing only once feature level 3
+  (`lease-timing`) is active, and until then peers judge every node by their own TTL + skew. So
+  in a cluster, keep the same TTL and skew on every node until level 3 is finalized
+  (`vlpds admin cluster finalize --level 3`, once every node runs a build that has it), then change
+  them node by node. A lone node can change them at any time: its margin is its own.
 
 Signals: `vlpds_lease_renew_ttl_ratio`, `vlpds_lease_renew_seconds`, `vlpds_lease_validity_seconds`
 (sampled at scrape time), `vlpds_lease_renew_errors_total{kind}`. (TTL − skew) / renew failed

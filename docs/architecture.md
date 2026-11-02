@@ -192,7 +192,7 @@ object, and that change is all peers look at:
 
 - Peers. Each peer notes, on its own monotonic clock, when it last saw each lease change. A lease
   that's unchanged for TTL + skew (1.2 × TTL, 12 s) is presumed dead, the longer of the peer's own
-  and the one the lease publishes (from feature level 2), so a node with a longer TTL isn't taken over early. Once a node has missed a
+  and the one the lease publishes (from feature level 3), so a node with a longer TTL isn't taken over early. Once a node has missed a
   renewal, peers also try a TCP connect to its advertised address each step. If the connection is
   refused, the process is gone and it's presumed dead at once (3–5 s after the crash).
 - The node itself. A node is valid until the send time of its last successful renewal plus

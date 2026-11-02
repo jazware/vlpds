@@ -1,0 +1,17 @@
+[
+  {
+    "name": "signin/prefs",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"oauthOnly\":true,\"blockAppPasswords\":true,\"mutePasswordAlerts\":true,\"muteAppPasswordAlerts\":true}"
+  },
+  {
+    "name": "signin/log",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"entries\":[{\"id\":\"0011223344556677\",\"at\":1790000000,\"method\":\"oauth\",\"appPassword\":\"phone\",\"clientId\":\"https://app.example/client-metadata.json\",\"device\":\"b:00112233445566778899aabbccddeeff\",\"userAgent\":\"Mozilla/5.0\",\"ip\":\"203.0.113.7\",\"factor\":\"totp\",\"newDevice\":true,\"alerted\":true}],\"known\":[{\"device\":\"b:00112233445566778899aabbccddeeff\",\"last\":1790000000}],\"alertDay\":20717,\"alerts\":1}"
+  },
+  {
+    "name": "trust/00112233445566778899aabbccddeeff",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"createdAt\":1790000000,\"lastUsedAt\":1790000100,\"expiresAt\":1792592000,\"epoch\":\"00ff\",\"factors\":\"aabb\",\"userAgent\":\"Mozilla/5.0\",\"ip\":\"203.0.113.7\"}"
+  }
+]

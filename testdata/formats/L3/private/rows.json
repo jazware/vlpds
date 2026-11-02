@@ -1,0 +1,117 @@
+[
+  {
+    "name": "sess/00112233445566778899aabbccddeeff0011223344556600",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"family\":\"0006439b2a1c0000aabbccddeeff0011\",\"exp\":1797776000,\"app_password\":{\"name\":\"ci\",\"privileged\":true},\"created_at\":1790000000,\"next_id\":\"00112233445566778899aabbccddeeff0011223344556677\"}"
+  },
+  {
+    "name": "apppass/ci",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"createdAt\":\"2026-10-01T00:00:00.000Z\",\"hash\":\"4f1c0de04f1c0de04f1c0de04f1c0de04f1c0de04f1c0de04f1c0de04f1c0de0\",\"name\":\"ci\",\"privileged\":true}"
+  },
+  {
+    "name": "apphash/4f1c0de04f1c0de04f1c0de04f1c0de04f1c0de04f1c0de04f1c0de04f1c0de0",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "ci"
+  },
+  {
+    "name": "etok/update_email",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"token_hash\":\"abababababababababababababababababababababababababababababababab\",\"requested_at\":1790000000000}"
+  },
+  {
+    "name": "sec/rvk/d/00065bfeda25e000",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"before\":1790000000000000,\"exp\":1790007200}"
+  },
+  {
+    "name": "sec/rvk/f/0006439b2a1c0000aabbccddeeff0011",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"exp\":1790007200}"
+  },
+  {
+    "name": "sec/td/rec/app.bsky.feed.post/3l3qo2vutsw2b",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"cid\":\"bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm\",\"did\":\"did:plc:fixture0000000000000000\",\"ref\":\"mod-1\",\"uri\":\"at://did:plc:fixture0000000000000000/app.bsky.feed.post/3l3qo2vutsw2b\"}"
+  },
+  {
+    "name": "sec/td/blob/bafkreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"cid\":\"bafkreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm\",\"did\":\"did:plc:fixture0000000000000000\",\"ref\":null}"
+  },
+  {
+    "name": "t",
+    "routing": "_reset:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+    "value": "did:plc:fixture0000000000000000"
+  },
+  {
+    "name": "k",
+    "routing": "_reserved:did:key:zQ3shfixture",
+    "value": "{\"createdAt\":\"2026-10-01T00:00:00.000Z\",\"did\":\"did:plc:fixture0000000000000000\",\"key\":\"vw1.kid.cmVzZXJ2ZWQ\"}"
+  },
+  {
+    "name": "k",
+    "routing": "_reserved:did:plc:fixture0000000000000000",
+    "value": "{\"createdAt\":\"2026-10-01T00:00:00.000Z\",\"signingKey\":\"did:key:zQ3shfixture\"}"
+  },
+  {
+    "name": "c",
+    "routing": "_invite:pds-test-abcde-fghij",
+    "value": "{\"code\":\"pds-test-abcde-fghij\",\"available\":2,\"disabled\":false,\"forAccount\":\"did:plc:fixture0000000000000000\",\"createdBy\":\"admin\",\"createdAt\":\"2026-10-01T00:00:00.000Z\",\"uses\":[{\"usedBy\":\"did:plc:invitee000000000000000\",\"usedAt\":\"2026-10-01T00:01:00.000Z\"}]}"
+  },
+  {
+    "name": "invite/pds-test-abcde-fghij",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": ""
+  },
+  {
+    "name": "eotp_lock",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"failures\":3,\"locked_until\":1790000300}"
+  },
+  {
+    "name": "prefs:app.bsky",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "[{\"$type\":\"app.bsky.actor.defs#adultContentPref\",\"enabled\":false},{\"$type\":\"app.bsky.actor.defs#savedFeedsPrefV2\",\"items\":[{\"id\":\"3l3qo2vutsw2b\",\"pinned\":true,\"type\":\"timeline\",\"value\":\"following\"}]},{\"$type\":\"app.bsky.actor.defs#personalDetailsPref\",\"birthDate\":\"1990-01-01T00:00:00.000Z\"}]"
+  },
+  {
+    "name": "totp",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"secret\":\"vw1.kid.dG90cC1zZWNyZXQ\",\"pending\":null,\"last_step\":59666666,\"enabled_at\":\"2026-10-01T00:00:00.000Z\"}"
+  },
+  {
+    "name": "oauth/req",
+    "routing": "oauth:req:req-fixture",
+    "value": "{\"client_id\":\"https://app.example/client-metadata.json\",\"client_auth\":{\"method\":\"none\"},\"params\":{\"client_id\":\"https://app.example/client-metadata.json\",\"response_type\":\"code\",\"redirect_uri\":\"https://app.example/cb\",\"scope\":\"atproto transition:generic\",\"state\":\"st\",\"code_challenge\":\"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM\",\"code_challenge_method\":\"S256\",\"response_mode\":null,\"prompt\":\"consent\",\"login_hint\":\"fixture.test\",\"dpop_jkt\":\"jkt\",\"display\":null,\"ui_locales\":null},\"created_at\":1790000000,\"expires_at\":1790000300,\"device_id\":\"dev-fixture\",\"did\":\"did:plc:fixture0000000000000000\",\"code_hash\":\"aGFzaA\",\"consumed\":[\"ses-fixture\",\"tok-1\"]}"
+  },
+  {
+    "name": "oauth/ses/ses-fixture",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"id\":\"ses-fixture\",\"did\":\"did:plc:fixture0000000000000000\",\"client_id\":\"https://app.example/client-metadata.json\",\"client_auth\":{\"method\":\"private_key_jwt\",\"alg\":\"ES256\",\"kid\":\"k1\",\"jkt\":\"cjkt\"},\"dpop_jkt\":\"jkt\",\"scope\":\"atproto include:app.example.perms\",\"token_scope\":\"atproto repo:app.example.post\",\"created_at\":1790000000,\"updated_at\":1790000100,\"expires_at\":1790003700,\"token_id\":\"tok-1\",\"refresh_gen\":2,\"refresh_salt\":\"salt\",\"device_id\":\"dev-fixture\",\"request_id\":\"req-fixture\"}"
+  },
+  {
+    "name": "oauth/dev",
+    "routing": "oauth:dev:dev-fixture",
+    "value": "{\"id\":\"dev-fixture\",\"created_at\":1790000000,\"last_seen_at\":1790000100,\"user_agent\":\"Mozilla/5.0\",\"accounts\":[{\"did\":\"did:plc:fixture0000000000000000\",\"authenticated_at\":1790000050}],\"pending_2fa\":[\"did:plc:fixture0000000000000000\",1790000060],\"pending_2fa_failures\":1}"
+  },
+  {
+    "name": "oauth/authz/aGFzaA",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"client_id\":\"https://app.example/client-metadata.json\",\"scopes\":[\"atproto\"],\"updated_at\":1790000000}"
+  },
+  {
+    "name": "oauth/lex",
+    "routing": "oauth:lex:app.example.perms",
+    "value": "{\"uri\":\"at://did:plc:lex/com.atproto.lexicon.schema/app.example.perms\",\"doc\":{\"id\":\"app.example.perms\",\"lexicon\":1},\"updated_at\":1790000000}"
+  },
+  {
+    "name": "oauth/cc",
+    "routing": "oauth:cc:aGFzaA",
+    "value": "1790000000"
+  },
+  {
+    "name": "oauth/replay/aGFzaA",
+    "routing": "oauth:par:aGFzaA",
+    "value": "1790000300"
+  }
+]

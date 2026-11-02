@@ -51,7 +51,7 @@ the alert name (the `runbook_url` anchors point here). Everything here comes fro
 - Peers presume a node dead once its lease hasn't changed for `TTL + skew` =
   1.2 x TTL of their own monotonic time (12 s at the default, 132 s on tiny;
   the longer of their own and the one the node's lease publishes, which it
-  does from feature level 2; below it, keep the TTL the same on every node). If
+  does from feature level 3; below it, keep the TTL the same on every node). If
   its advertised port refuses TCP connections (the process is gone), they presume
   it dead within ~1.5-2.5 renew intervals (3-5 s at the default). The new owner
   fences the dead log (a conditional create at the end of its durable prefix),

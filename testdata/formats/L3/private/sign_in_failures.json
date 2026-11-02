@@ -1,0 +1,7 @@
+[
+  {
+    "name": "signin/failed",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"entries\":[{\"at\":1790000000,\"lastAt\":1790000060,\"count\":3,\"method\":\"password\",\"reason\":\"wrong_password\",\"ip\":\"203.0.113.7\",\"userAgent\":\"Mozilla/5.0\"}]}"
+  }
+]

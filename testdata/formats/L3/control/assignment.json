@@ -1,0 +1,1 @@
+{"owner":"node-a","log_id":"node-a.1790000000000000","addr":"http://10.0.0.1:2583","epoch":3,"seq_floor":256000,"history":[{"log_id":"node-b.1","epoch":2,"start":0,"end":9},{"log_id":"node-a.1790000000000000","epoch":3,"start":6,"end":null}]}

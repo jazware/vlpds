@@ -1,0 +1,12 @@
+[
+  {
+    "name": "bq/use",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"bytes\":1234567,\"day\":20729,\"uploads\":3,\"over\":false}"
+  },
+  {
+    "name": "bq/limit",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"bytes\":50000000000,\"uploadsPerDay\":1000}"
+  }
+]

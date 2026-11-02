@@ -167,9 +167,10 @@ In a cluster the TTL is a failover choice, made per deployment. A node that hang
 (not crashed: a refused connect presumes a crashed node dead at once) keeps its shards for TTL +
 skew after its last renewal, and the merged firehose waits on its log until then. Peers wait the
 longer of their own TTL + skew and the one the node's lease publishes, so mixed settings during a
-rolling change never take over a live node early. Leases publish their timing only once the
-cluster's feature level is 2 or more, and a lease without it (a lower level, or an older build) is
-judged by the observer's own. Until then, give every node of a cluster the same TTL and skew. Keep the TTL at 10 s or more in production. Below that, a brief
+rolling change never take over a live node early. Leases publish their timing only once feature
+level 3 (`lease-timing`) is active, and a lease without it (a lower level, or an older build) is
+judged by the observer's own TTL + skew. Until level 3 is finalized, give every node of a cluster
+the same TTL and skew. A lone node keeps its own margin either way. Keep the TTL at 10 s or more in production. Below that, a brief
 store hiccup stops the node. Safety never depends on the TTL, which only decides when a takeover
 happens. See [Architecture](../architecture.md#leases).
 

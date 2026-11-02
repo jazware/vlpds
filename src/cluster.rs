@@ -75,9 +75,8 @@ pub struct NodeLease {
 
 /// Leases carry `ttl_ms`, `skew_ms` and `renew_ms` from this level on.
 /// Peers honor them, so they are level-gated like any semantic field:
-/// below it a node writes the lease a level-1 build writes. Level 2 was
-/// not yet released when they were added.
-pub const LEASE_TIMING_LEVEL: u32 = version::FEDERATED_SIGN_IN_LEVEL;
+/// below it a node writes the lease a level-2 build writes.
+pub const LEASE_TIMING_LEVEL: u32 = version::LEASE_TIMING_LEVEL;
 
 impl NodeLease {
     /// How long a peer's lease may go unchanged before we presume it dead:
@@ -4953,8 +4952,9 @@ mod tests {
         ClusterConfig { levels: version::Window { min, max }, ..cfg(id) }
     }
 
-    /// A build that can run level 2 publishes its lease timing only once
-    /// the cluster runs it: below, its lease is what a level-1 build writes.
+    /// A build that can run the timing level publishes its lease timing
+    /// only once the cluster runs it: below, it writes what a build
+    /// without the level writes.
     #[tokio::test]
     async fn lease_timing_is_published_from_its_level_on() {
         let stored = |c: Arc<Cluster>| async move {
@@ -4964,12 +4964,12 @@ mod tests {
         };
         let (_h, hd) = host();
         let store = Store::memory(None);
-        put_version(&store, 1, None).await;
+        put_version(&store, LEASE_TIMING_LEVEL - 1, None).await;
         let low = join(levels("lt-low", 1, LEASE_TIMING_LEVEL), store.clone()).await.unwrap();
         tokio::time::sleep(low.cfg.renew_every).await; // past the lease-write gap
         low.renew(&hd).await;
-        assert_eq!(low.own_lease().seen_level, 1);
-        assert_eq!(stored(low).await, (None, None, None), "level 1 writes no timing");
+        assert_eq!(low.own_lease().seen_level, LEASE_TIMING_LEVEL - 1);
+        assert_eq!(stored(low).await, (None, None, None), "the level below writes no timing");
 
         let store = Store::memory(None);
         put_version(&store, LEASE_TIMING_LEVEL, None).await;

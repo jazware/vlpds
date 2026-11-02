@@ -1,0 +1,52 @@
+[
+  {
+    "name": "fedid",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"identities\":[{\"iss\":\"https://accounts.example.com\",\"sub\":\"110248495921238986420\",\"provider\":\"example\",\"display\":\"alice@example.com\",\"addedAt\":1790000000,\"lastUsedAt\":1790000500},{\"iss\":\"https://siwe.example.org\",\"sub\":\"eip155:1:0x0000000000000000000000000000000000000001\",\"provider\":\"wallet\",\"addedAt\":1790000100}]}"
+  },
+  {
+    "name": "oauth/fed",
+    "routing": "oauth:fed:st0aaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "value": "{\"provider\":\"example\",\"purpose\":\"sign_in\",\"requestId\":\"req-fixture\",\"deviceId\":\"dev-fixture\",\"createdAt\":1790000000,\"expiresAt\":1790000600}"
+  },
+  {
+    "name": "oauth/fed",
+    "routing": "oauth:fed:st1aaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "value": "{\"provider\":\"example\",\"purpose\":\"sign_in\",\"requestId\":\"req-fixture\",\"deviceId\":\"dev-fixture\",\"createdAt\":1790000000,\"expiresAt\":1790000600,\"handoff\":{\"idHash\":\"n4bQgYhMfWWaL-qgxVrQFaO_TxsrC4Is0V1sFbDwCgg\",\"code\":\"provider-code\",\"iss\":\"https://accounts.example.com\"}}"
+  },
+  {
+    "name": "oauth/fed",
+    "routing": "oauth:fed:st2aaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "value": "{\"provider\":\"wallet\",\"purpose\":\"link\",\"did\":\"did:plc:fixture0000000000000000\",\"deviceId\":\"dev-fixture\",\"createdAt\":1790000000,\"expiresAt\":1790000600}"
+  },
+  {
+    "name": "oauth/fed",
+    "routing": "oauth:fed:st3aaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "value": "{\"provider\":\"example\",\"purpose\":\"signup\",\"deviceId\":\"dev-fixture\",\"createdAt\":1790000000,\"expiresAt\":1790000900,\"app\":true,\"identity\":{\"iss\":\"https://accounts.example.com\",\"sub\":\"110248495921238986421\",\"email\":\"new@example.com\",\"emailVerified\":true,\"display\":\"new@example.com\"}}"
+  },
+  {
+    "name": "fedsignup/n",
+    "routing": "fedsignup:example:20717",
+    "value": "3"
+  },
+  {
+    "name": "signin/log",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"entries\":[{\"id\":\"8899aabbccddeeff\",\"at\":1790000600,\"method\":\"federated\",\"provider\":\"Example\",\"clientId\":\"https://app.example/client-metadata.json\",\"device\":\"b:00112233445566778899aabbccddeeff\",\"userAgent\":\"Mozilla/5.0\",\"ip\":\"203.0.113.7\",\"factor\":\"passkey\"}],\"known\":[{\"device\":\"b:00112233445566778899aabbccddeeff\",\"last\":1790000600}],\"alertDay\":20717,\"alerts\":0}"
+  },
+  {
+    "name": "sess/00112233445566778899aabbccddeeff0011223344556622",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"family\":\"0006439b2a1c0000aabbccddeeff0033\",\"exp\":1797776000,\"app_password\":null,\"created_at\":1790000000,\"next_id\":null,\"auth_cred\":\"fed:9d88d0f92b33084707e5577c pk:6688ea8f2669ad284d82b62e\"}"
+  },
+  {
+    "name": "oauth/ses/ses-federated",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"id\":\"ses-federated\",\"did\":\"did:plc:fixture0000000000000000\",\"client_id\":\"https://app.example/client-metadata.json\",\"client_auth\":{\"method\":\"none\"},\"dpop_jkt\":\"jkt\",\"scope\":\"atproto\",\"token_scope\":\"atproto\",\"created_at\":1790000000,\"updated_at\":1790000100,\"expires_at\":1790003700,\"token_id\":\"tok-3\",\"refresh_gen\":0,\"refresh_salt\":\"salt\",\"device_id\":\"dev-federated\",\"request_id\":\"req-federated\",\"auth_cred\":\"fed:9d88d0f92b33084707e5577c\"}"
+  },
+  {
+    "name": "oauth/dev",
+    "routing": "oauth:dev:dev-federated",
+    "value": "{\"id\":\"dev-federated\",\"created_at\":1790000000,\"last_seen_at\":1790000100,\"user_agent\":null,\"accounts\":[{\"did\":\"did:plc:fixture0000000000000000\",\"authenticated_at\":1790000050,\"auth_epoch\":\"00ff\",\"auth_cred\":\"fed:9d88d0f92b33084707e5577c pk:6688ea8f2669ad284d82b62e\",\"app_handoff_until\":1790000170}],\"pending_2fa\":[\"did:plc:fixture0000000000000000\",1790000090],\"pending_2fa_failures\":1,\"pending_2fa_epoch\":\"00ff\",\"pending_2fa_first\":{\"cred\":\"fed:9d88d0f92b33084707e5577c\",\"provider\":\"Example\",\"app\":true}}"
+  }
+]

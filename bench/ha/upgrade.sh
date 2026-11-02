@@ -7,7 +7,7 @@
 #                 (built once per rev and kept: prev/REV records which)
 #   new/vlpds     this tree
 #   new-tl/vlpds  this tree with --features test-level (the test-only feature
-#                 level 3: segment magic VLSEGT1 + a retain/ report field), so
+#                 level 4: segment magic VLSEGT1 + a retain/ report field), so
 #                 finalize changes formats between the two builds
 # plus loadgen and the Go tools, then runs the scenarios named (default: all
 # upgrade-*).

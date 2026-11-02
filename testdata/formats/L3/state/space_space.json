@@ -1,0 +1,1 @@
+{"uri":"at://did:plc:fixture0000000000000000/space/com.example.group/main","readPolicy":{"type":"member-list"},"writePolicy":{"type":"member-list"},"appAccess":{"type":"open"},"createdAt":"2026-10-01T00:00:00.000Z"}

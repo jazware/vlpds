@@ -1,0 +1,99 @@
+{
+  "providers": [
+    {
+      "id": "example",
+      "name": "Example",
+      "icon": "data:image/png;base64,iVBORw0KGgo",
+      "issuer": "https://accounts.example.com",
+      "clientId": "client-1",
+      "clientAuth": {
+        "method": "client_secret_basic",
+        "secret": {
+          "wrapped": "vw1.Labcdef0123456789.c2VjcmV0"
+        }
+      },
+      "scopes": [
+        "openid",
+        "email"
+      ],
+      "responseMode": "query",
+      "signup": "off",
+      "signupsPerDay": 25,
+      "trustEmail": true,
+      "requiredClaims": {
+        "hd": "example.com"
+      },
+      "idTokenAlgs": [
+        "RS256"
+      ],
+      "updatedAt": "2026-10-01T00:00:00.000Z",
+      "updatedBy": "admin"
+    },
+    {
+      "id": "signed",
+      "name": "Example",
+      "icon": "data:image/png;base64,iVBORw0KGgo",
+      "issuer": "https://signed.example.com",
+      "clientId": "client-1",
+      "clientAuth": {
+        "method": "client_secret_post",
+        "key": {
+          "wrapped": "vw1.Labcdef0123456789.cDg"
+        },
+        "keyId": "ABC123",
+        "signedSecret": {
+          "issuer": "TEAM",
+          "lifetimeSecs": 3600
+        }
+      },
+      "scopes": [
+        "openid",
+        "email"
+      ],
+      "responseMode": "query",
+      "signup": "off",
+      "signupsPerDay": 25,
+      "trustEmail": true,
+      "requiredClaims": {
+        "hd": "example.com"
+      },
+      "idTokenAlgs": [
+        "RS256"
+      ],
+      "updatedAt": "2026-10-01T00:00:00.000Z",
+      "updatedBy": "admin"
+    },
+    {
+      "id": "keyed",
+      "name": "Example",
+      "icon": "data:image/png;base64,iVBORw0KGgo",
+      "issuer": "https://keyed.example.com",
+      "clientId": "client-1",
+      "clientAuth": {
+        "method": "private_key_jwt",
+        "key": {
+          "wrapped": "vw1.Labcdef0123456789.a2V5"
+        },
+        "keyId": "k1"
+      },
+      "scopes": [
+        "openid",
+        "email"
+      ],
+      "responseMode": "query",
+      "signup": "off",
+      "signupsPerDay": 25,
+      "trustEmail": true,
+      "requiredClaims": {
+        "hd": "example.com"
+      },
+      "idTokenAlgs": [
+        "RS256"
+      ],
+      "updatedAt": "2026-10-01T00:00:00.000Z",
+      "updatedBy": "admin"
+    }
+  ],
+  "version": 3,
+  "updatedAt": "2026-10-01T00:00:00.000Z"
+}

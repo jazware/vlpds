@@ -1,0 +1,27 @@
+[
+  {
+    "name": "passkeys",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"creds\":[{\"id\":\"9y1xA8Tmg1FEmT-c7_fvWZ_uoTuoih3OvR45_oAK-cwHWhAbXrl2q62iLVTjiyEZ7O7n-CROOY494k7Q3xrs_w\",\"publicKey\":\"pQECAyYgASFYIEhW1CRfuNlIN6XTPKw0RbvzeaIlRMrDwwep-uq_-3WQIlgg1FZwd_RZRsqS_qgKCDvcVh7ScoKNo3w5h5fv3ihUSww\",\"alg\":-7,\"signCount\":23,\"backupEligible\":true,\"backedUp\":true,\"discoverable\":true,\"uv\":true,\"transports\":[\"internal\",\"hybrid\"],\"aaguid\":\"00000000000000000000000000000000\",\"name\":\"iPhone\",\"createdAt\":1790000000,\"lastUsedAt\":1790000100},{\"id\":\"AAEC\",\"publicKey\":\"pAEBAycgBiFYIMz6_SUFLiDid2Yhlq0YboyJ-CDrIrNpkPUGmJp4D3Dp\",\"alg\":-8,\"signCount\":7,\"aaguid\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"name\":\"YubiKey\",\"createdAt\":1790000200,\"suspectAt\":1790000300}]}"
+  },
+  {
+    "name": "mfa",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"recovery\":[\"0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\",\"1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e\"],\"issuedAt\":1790000000,\"failures\":2,\"lockedUntil\":1790000300}"
+  },
+  {
+    "name": "sess/00112233445566778899aabbccddeeff0011223344556622",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"family\":\"0006439b2a1c0000aabbccddeeff0033\",\"exp\":1797776000,\"app_password\":null,\"created_at\":1790000000,\"next_id\":null,\"auth_cred\":\"pk:6688ea8f2669ad284d82b62e\"}"
+  },
+  {
+    "name": "oauth/ses/ses-passkey",
+    "routing": "did:plc:fixture0000000000000000",
+    "value": "{\"id\":\"ses-passkey\",\"did\":\"did:plc:fixture0000000000000000\",\"client_id\":\"https://app.example/client-metadata.json\",\"client_auth\":{\"method\":\"none\"},\"dpop_jkt\":\"jkt\",\"scope\":\"atproto\",\"token_scope\":\"atproto\",\"created_at\":1790000000,\"updated_at\":1790000100,\"expires_at\":1790003700,\"token_id\":\"tok-2\",\"refresh_gen\":0,\"refresh_salt\":\"salt\",\"device_id\":\"dev-passkey\",\"request_id\":\"req-passkey\",\"auth_cred\":\"pk:6688ea8f2669ad284d82b62e\"}"
+  },
+  {
+    "name": "oauth/dev",
+    "routing": "oauth:dev:dev-passkey",
+    "value": "{\"id\":\"dev-passkey\",\"created_at\":1790000000,\"last_seen_at\":1790000100,\"user_agent\":null,\"accounts\":[{\"did\":\"did:plc:fixture0000000000000000\",\"authenticated_at\":1790000050,\"auth_epoch\":\"00ff\",\"auth_cred\":\"pk:6688ea8f2669ad284d82b62e\"}],\"pending_2fa\":null,\"pending_2fa_failures\":0}"
+  }
+]

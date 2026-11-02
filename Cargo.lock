@@ -4116,7 +4116,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slate-metrics"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=146a426de27dd9d22764da10c3f850615cd5f068#146a426de27dd9d22764da10c3f850615cd5f068"
+source = "git+https://github.com/jazware/vlsync?rev=8661151bb559e0a9ddf736773d7608bf35a6a092#8661151bb559e0a9ddf736773d7608bf35a6a092"
 dependencies = [
  "parking_lot",
  "prometheus",
@@ -5089,7 +5089,7 @@ dependencies = [
 [[package]]
 name = "vlsync-firehose"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=146a426de27dd9d22764da10c3f850615cd5f068#146a426de27dd9d22764da10c3f850615cd5f068"
+source = "git+https://github.com/jazware/vlsync?rev=8661151bb559e0a9ddf736773d7608bf35a6a092#8661151bb559e0a9ddf736773d7608bf35a6a092"
 dependencies = [
  "anyhow",
  "axum",
@@ -5113,7 +5113,7 @@ dependencies = [
 [[package]]
 name = "vlsync-heapprof"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=146a426de27dd9d22764da10c3f850615cd5f068#146a426de27dd9d22764da10c3f850615cd5f068"
+source = "git+https://github.com/jazware/vlsync?rev=8661151bb559e0a9ddf736773d7608bf35a6a092#8661151bb559e0a9ddf736773d7608bf35a6a092"
 dependencies = [
  "axum",
  "backtrace",
@@ -5129,7 +5129,7 @@ dependencies = [
 [[package]]
 name = "vlsync-slatedb"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=146a426de27dd9d22764da10c3f850615cd5f068#146a426de27dd9d22764da10c3f850615cd5f068"
+source = "git+https://github.com/jazware/vlsync?rev=8661151bb559e0a9ddf736773d7608bf35a6a092#8661151bb559e0a9ddf736773d7608bf35a6a092"
 dependencies = [
  "slatedb",
  "slatedb-common",
@@ -5138,7 +5138,7 @@ dependencies = [
 [[package]]
 name = "vlsync-store"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=146a426de27dd9d22764da10c3f850615cd5f068#146a426de27dd9d22764da10c3f850615cd5f068"
+source = "git+https://github.com/jazware/vlsync?rev=8661151bb559e0a9ddf736773d7608bf35a6a092#8661151bb559e0a9ddf736773d7608bf35a6a092"
 dependencies = [
  "anyhow",
  "async-trait",
