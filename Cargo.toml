@@ -1,6 +1,6 @@
 [package]
 name = "vlpds"
-version = "1.2.4"
+version = "1.3.0"
 edition = "2021"
 description = "An atproto Personal Data Server whose only durable storage is an object store, clustered across any number of nodes"
 license = "MIT"
