@@ -720,11 +720,18 @@ fn redirect_source(redirect_uri: &str) -> Option<String> {
     }
 }
 
+/// The theme the pages render with (crate::theme). A page and its CSP each
+/// read it: a save landing between the two only leaves that one response
+/// unthemed (its stylesheet's hash isn't the CSP's).
+fn brand(app: &App) -> ui::Brand {
+    app.theme.current().brand.clone()
+}
+
 fn html(app: &App, status: StatusCode, body: String, form_action: &[String], set_cookie: Option<&Device>) -> Response {
     let mut r = (status, body).into_response();
     let h = r.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html; charset=utf-8"));
-    h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_str(&ui::csp(form_action)).unwrap());
+    h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_str(&ui::csp(&brand(app), form_action)).unwrap());
     h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
@@ -737,7 +744,7 @@ fn html(app: &App, status: StatusCode, body: String, form_action: &[String], set
 }
 
 pub(super) fn error_page(app: &App, status: StatusCode, title: &str, msg: &str) -> Response {
-    html(app, status, ui::error(title, msg), &[], None)
+    html(app, status, ui::error(&brand(app), title, msg), &[], None)
 }
 
 fn server_error_page(app: &App, title: &str, msg: &str) -> Response {
@@ -760,9 +767,13 @@ fn client_redirect(app: &App, params: &AuthParams, mut pairs: Vec<(String, Strin
     pairs.push(("iss".into(), issuer(app)));
     if params.response_mode.as_deref() == Some("form_post") {
         let form_action: Vec<String> = redirect_source(&params.redirect_uri).into_iter().collect();
-        let mut r = html(app, StatusCode::OK, ui::form_post(&params.redirect_uri, &pairs), &form_action, None);
+        let mut r =
+            html(app, StatusCode::OK, ui::form_post(&brand(app), &params.redirect_uri, &pairs), &form_action, None);
         let h = r.headers_mut();
-        h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_str(&ui::csp_form_post(&form_action)).unwrap());
+        h.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_str(&ui::csp_form_post(&brand(app), &form_action)).unwrap(),
+        );
         // out of the back/forward cache, so going "back" never re-posts the
         // response (as the reference does)
         h.append(header::SET_COOKIE, HeaderValue::from_static("bfCacheBypass=1; Path=/; Max-Age=1; SameSite=Lax"));
@@ -942,6 +953,7 @@ fn login_page(app: &App, flow: &Flow, identifier: &str, error: Option<&str>, sta
     let name = server_name(app);
     let pk = passwordless_ui(app, &passkey_binding(&flow.device.id, &flow.id, None));
     let body = ui::login(
+        &brand(app),
         Some(&flow.ctx(&csrf, &name)),
         &ui::LoginForm {
             action: "/oauth/authorize/sign-in",
@@ -955,7 +967,7 @@ fn login_page(app: &App, flow: &Flow, identifier: &str, error: Option<&str>, sta
         "",
     );
     let mut r = flow.page(app, body);
-    set_passkey_csp(&mut r, &flow.form_action());
+    set_passkey_csp(app, &mut r, &flow.form_action());
     *r.status_mut() = status;
     r
 }
@@ -999,7 +1011,7 @@ async fn consent_step(app: &App, mut flow: Flow, did: &str) -> Response {
     let rows = ui::describe_scopes(&flow.req.params.scope, &sets, names.as_ref());
     let csrf = flow.csrf(app);
     let name = server_name(app);
-    let body = ui::consent(&flow.ctx(&csrf, &name), did, &acct.handle, &flow.req.params.scope, &rows);
+    let body = ui::consent(&brand(app), &flow.ctx(&csrf, &name), did, &acct.handle, &flow.req.params.scope, &rows);
     flow.page(app, body)
 }
 
@@ -1165,7 +1177,7 @@ async fn authorize(State(app): AppState, headers: HeaderMap, Query(q): Query<Has
 fn chooser_page(app: &App, flow: &Flow, accounts: &[(String, String)]) -> Response {
     let csrf = flow.csrf(app);
     let name = server_name(app);
-    flow.page(app, ui::chooser(&flow.ctx(&csrf, &name), accounts))
+    flow.page(app, ui::chooser(&brand(app), &flow.ctx(&csrf, &name), accounts))
 }
 
 fn form_fields(body: &[u8]) -> HashMap<String, String> {
@@ -1699,6 +1711,7 @@ fn code_page(app: &App, flow: &Flow, p: &Pending, error: Option<LoginError>) -> 
     });
     let pk = passkey_ui(app, &passkey_binding(&flow.device.id, &flow.id, Some(&p.did)), &p.passkeys);
     let body = ui::login(
+        &brand(app),
         Some(&flow.ctx(&csrf, &name)),
         &ui::LoginForm {
             action: "/oauth/authorize/sign-in",
@@ -1712,7 +1725,7 @@ fn code_page(app: &App, flow: &Flow, p: &Pending, error: Option<LoginError>) -> 
         "",
     );
     let mut r = flow.page(app, body);
-    set_passkey_csp(&mut r, &flow.form_action());
+    set_passkey_csp(app, &mut r, &flow.form_action());
     if error.is_some() {
         *r.status_mut() = StatusCode::UNAUTHORIZED;
     }
@@ -1720,9 +1733,11 @@ fn code_page(app: &App, flow: &Flow, p: &Pending, error: Option<LoginError>) -> 
 }
 
 /// The sign-in pages run one fixed script, allowed by its hash.
-fn set_passkey_csp(r: &mut Response, form_action: &[String]) {
-    r.headers_mut()
-        .insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_str(&ui::csp_passkey(form_action)).unwrap());
+fn set_passkey_csp(app: &App, r: &mut Response, form_action: &[String]) {
+    r.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_str(&ui::csp_passkey(&brand(app), form_action)).unwrap(),
+    );
 }
 
 async fn authorize_sign_in(
@@ -1776,6 +1791,7 @@ fn signup_page(app: &App, flow: &Flow, v: &SignupValues, error: Option<&str>, st
     let domains = app.handle_domains.names();
     let domain = domains.iter().find(|d| **d == v.domain).unwrap_or(&domains[0]);
     let body = ui::signup(
+        &brand(app),
         &flow.ctx(&csrf, &name),
         &ui::SignupForm {
             handle: &v.handle,
@@ -2451,6 +2467,7 @@ async fn account_page(State(app): AppState, headers: HeaderMap, Query(q): Query<
         };
         let handle = pending.as_ref().map(|p| p.handle.as_str()).or(hint.as_ref().map(|h| h.handle.as_str()));
         let body = ui::login(
+            &brand(&app),
             None,
             &ui::LoginForm {
                 action: "/oauth/account/sign-in",
@@ -2464,7 +2481,7 @@ async fn account_page(State(app): AppState, headers: HeaderMap, Query(q): Query<
             &csrf,
         );
         let mut r = html(&app, StatusCode::OK, body, &[], cookie);
-        set_passkey_csp(&mut r, &[]);
+        set_passkey_csp(&app, &mut r, &[]);
         return r;
     }
     let mut rows = Vec::new();
@@ -2485,7 +2502,7 @@ async fn account_page(State(app): AppState, headers: HeaderMap, Query(q): Query<
         rows.push(ui::AccountRow { did, handle, sessions: list, methods });
     }
     let notice = q.get("notice").and_then(|c| AccountNotice::from_code(c)).map(|n| (n.message(), n.is_error()));
-    html(&app, StatusCode::OK, ui::account_page(&csrf, &rows, notice, hinted.as_deref()), &[], cookie)
+    html(&app, StatusCode::OK, ui::account_page(&brand(&app), &csrf, &rows, notice, hinted.as_deref()), &[], cookie)
 }
 
 /// `/oauth/account?login_hint=`: the DID of an active account here, shown by
@@ -2554,6 +2571,7 @@ pub(super) async fn federated_signup_page(
     let render = |device_id: &str, ctx: Option<&ui::Ctx>| {
         let csrf = csrf_token(app, device_id, &format!("fedsignup\0{ticket}"));
         ui::federated_signup(
+            &brand(app),
             ctx,
             &ui::FederatedSignup {
                 ticket,

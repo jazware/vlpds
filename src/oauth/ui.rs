@@ -6,6 +6,7 @@
 
 use super::scopes::{IncludeScope, Permission, SpacePermission};
 use super::util::{html_escape as e, sha256};
+pub use crate::theme::Brand;
 use base64::Engine;
 use serde_json::Value as J;
 use std::sync::LazyLock;
@@ -17,15 +18,16 @@ const STYLE: &str = r#"
 :root{--paper:#edefea;--sheet:#f8f9f6;--ink:#18222d;--ink2:#4d5966;--rule:#c9cfc8;--accent:#17705f;--accent-ink:#fff;--amber:#b9770e;--danger:#a93a24;--focus:#3561c9;color-scheme:light}
 @media (prefers-color-scheme:dark){:root{--paper:#121820;--sheet:#19212b;--ink:#dce4e3;--ink2:#93a0a8;--rule:#2a3542;--accent:#4fbf9f;--accent-ink:#0c1a16;--amber:#e3a43a;--danger:#f0806a;--focus:#8fb0ff;color-scheme:dark}}
 *{box-sizing:border-box}
-body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.55 "Schibsted Grotesk",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.55 var(--sans,"Schibsted Grotesk",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif);-webkit-font-smoothing:antialiased}
 main{max-width:480px;margin:6vh auto 8vh;padding:0 16px}
 .brand{display:flex;align-items:center;gap:10px;margin:0 0 18px;font-weight:800;font-size:17px;letter-spacing:-.01em}
 .brand svg{display:block}
+.brand img{display:block;height:28px;width:auto;max-width:180px;object-fit:contain}
 .brand span{color:var(--ink2);font-weight:500;font-size:14px}
 .gh{margin-left:auto;display:flex;padding:6px;border-radius:6px;color:var(--ink2)}
 .gh:hover{color:var(--ink);background:var(--sheet)}
 .card{background:var(--sheet);border:1px solid var(--rule);border-radius:8px;padding:26px 24px 22px;box-shadow:0 1px 0 var(--rule)}
-.strata{height:5px;margin:-26px -24px 22px;border-radius:7px 7px 0 0;background:linear-gradient(var(--accent) 0 2px,transparent 2px 3px,var(--amber) 3px 4px,transparent 4px)}
+.strata{height:5px;margin:-26px -24px 22px;border-radius:7px 7px 0 0;background:linear-gradient(var(--accent) 0 2px,transparent 2px 3px,var(--brand2,var(--amber)) 3px 4px,transparent 4px)}
 h1{font-size:24px;line-height:1.2;letter-spacing:-.015em;margin:0 0 6px;font-weight:750}
 p{margin:8px 0}
 b{font-weight:650}
@@ -114,6 +116,8 @@ a.fedbtn:hover{border-color:var(--ink2)}
 a.fedbtn img{width:18px;height:18px}
 .note{margin:12px 0;padding:8px 11px;border:1px solid var(--accent);border-radius:5px;font-size:14px}
 h2{font-size:15px;margin:16px 0 4px}
+nav.links{margin-top:14px;text-align:center;font-size:13px}
+nav.links a{color:var(--ink2);margin:0 7px}
 "#;
 
 static STYLE_HASH: LazyLock<String> = LazyLock::new(|| base64::engine::general_purpose::STANDARD.encode(sha256(STYLE)));
@@ -121,14 +125,19 @@ static STYLE_HASH: LazyLock<String> = LazyLock::new(|| base64::engine::general_p
 /// `form_action`: extra sources. Browsers apply form-action to the redirect
 /// that follows a form post, so the consent page must allow the client's
 /// redirect_uri origin/scheme.
-pub fn csp(form_action: &[String]) -> String {
+/// `brand`'s stylesheet, when it has one, is allowed by its hash too.
+pub fn csp(brand: &Brand, form_action: &[String]) -> String {
     let mut fa = String::from("'self'");
     for s in form_action {
         fa.push(' ');
         fa.push_str(s);
     }
+    let theme = match &brand.style {
+        Some((_, hash)) => format!(" 'sha256-{hash}'"),
+        None => String::new(),
+    };
     format!(
-        "default-src 'none'; style-src 'sha256-{}'; font-src 'self'; img-src 'self' data:; form-action {fa}; frame-ancestors 'none'; base-uri 'none'",
+        "default-src 'none'; style-src 'sha256-{}'{theme}; font-src 'self'; img-src 'self' data:; form-action {fa}; frame-ancestors 'none'; base-uri 'none'",
         *STYLE_HASH
     )
 }
@@ -141,12 +150,12 @@ setTimeout(function(){if(!done){done=true;f.submit()}},1);";
 static AUTO_SUBMIT_HASH: LazyLock<String> =
     LazyLock::new(|| base64::engine::general_purpose::STANDARD.encode(sha256(AUTO_SUBMIT)));
 
-pub fn csp_form_post(form_action: &[String]) -> String {
-    format!("{}; script-src 'sha256-{}'", csp(form_action), *AUTO_SUBMIT_HASH)
+pub fn csp_form_post(brand: &Brand, form_action: &[String]) -> String {
+    format!("{}; script-src 'sha256-{}'", csp(brand, form_action), *AUTO_SUBMIT_HASH)
 }
 
 /// `response_mode=form_post`. The button is the no-script fallback.
-pub fn form_post(redirect_uri: &str, params: &[(String, String)]) -> String {
+pub fn form_post(b: &Brand, redirect_uri: &str, params: &[(String, String)]) -> String {
     let mut fields = String::new();
     for (k, v) in params {
         fields.push_str(&format!("<input type=\"hidden\" name=\"{}\" value=\"{}\">", e(k), e(v)));
@@ -156,7 +165,7 @@ pub fn form_post(redirect_uri: &str, params: &[(String, String)]) -> String {
 <button type=\"submit\" class=\"primary\">Continue</button></div></form>",
         e(redirect_uri)
     );
-    page_with_script("Returning to the app", &body, AUTO_SUBMIT)
+    page_with_script(b, "Returning to the app", &body, AUTO_SUBMIT)
 }
 
 /// Three strata: log segments settling into state.
@@ -169,18 +178,46 @@ const MARK: &str = "<svg width=\"22\" height=\"18\" viewBox=\"0 0 22 18\" aria-h
 const SOURCE_LINK: &str = "<a class=\"gh\" href=\"https://github.com/jazware/vlpds\" aria-label=\"Source on GitHub\" title=\"Source on GitHub\">\
 <svg width=\"18\" height=\"18\" viewBox=\"0 0 16 16\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z\"/></svg></a>";
 
-pub fn page(title: &str, body: &str) -> String {
-    page_with_script(title, body, "")
+pub fn page(b: &Brand, title: &str, body: &str) -> String {
+    page_with_script(b, title, body, "")
 }
 
-fn page_with_script(title: &str, body: &str, script: &str) -> String {
+/// The header's mark and name: vlpds's, or the operator's (crate::theme).
+fn brand_html(b: &Brand) -> String {
+    let name = e(b.display_name());
+    match &b.logo {
+        None => format!("{MARK}{name}"),
+        Some(src) if b.wordmark => format!("<img src=\"{}\" alt=\"{name}\">", e(src)),
+        Some(src) => format!("<img src=\"{}\" alt=\"\">{name}", e(src)),
+    }
+}
+
+fn page_with_script(b: &Brand, title: &str, body: &str, script: &str) -> String {
     let script = if script.is_empty() { String::new() } else { format!("<script>{script}</script>") };
+    let mut head = String::new();
+    if let Some((css, _)) = &b.style {
+        head.push_str(&format!("<style>{css}</style>"));
+    }
+    if let Some(icon) = &b.favicon {
+        head.push_str(&format!("<link rel=\"icon\" href=\"{}\">", e(icon)));
+    }
+    let title = match &b.name {
+        Some(n) => format!("{title} · {n}"),
+        None => title.to_string(),
+    };
+    let links = if b.links.is_empty() {
+        String::new()
+    } else {
+        let a: Vec<String> = b.links.iter().map(|(label, url)| format!("<a href=\"{}\">{label}</a>", e(url))).collect();
+        format!("<nav class=\"links\" aria-label=\"{}\">{}</nav>", e(b.display_name()), a.join(""))
+    };
     format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-<meta name=\"referrer\" content=\"no-referrer\"><title>{}</title><style>{STYLE}</style></head><body><main>\
-<div class=\"brand\">{MARK}vlpds<span>account security</span>{SOURCE_LINK}</div>\
-<div class=\"card\"><div class=\"strata\"></div>{body}</div></main>{script}</body></html>",
-        e(title)
+<meta name=\"referrer\" content=\"no-referrer\"><title>{}</title><style>{STYLE}</style>{head}</head><body><main>\
+<div class=\"brand\">{}<span>account security</span>{SOURCE_LINK}</div>\
+<div class=\"card\"><div class=\"strata\"></div>{body}</div>{links}</main>{script}</body></html>",
+        e(&title),
+        brand_html(b)
     )
 }
 
@@ -309,8 +346,8 @@ static PASSKEY_JS_HASH: LazyLock<String> =
     LazyLock::new(|| base64::engine::general_purpose::STANDARD.encode(sha256(PASSKEY_JS)));
 
 /// [`csp`] plus the passkey script, on the sign-in and second-factor pages.
-pub fn csp_passkey(form_action: &[String]) -> String {
-    format!("{}; script-src 'sha256-{}'", csp(form_action), *PASSKEY_JS_HASH)
+pub fn csp_passkey(brand: &Brand, form_action: &[String]) -> String {
+    format!("{}; script-src 'sha256-{}'", csp(brand, form_action), *PASSKEY_JS_HASH)
 }
 
 /// The second-factor step's "trust this browser" choice, whatever the factor.
@@ -354,7 +391,7 @@ fn passkey_form(hidden: &str, action: &str, pk: &PasskeyUi, second: bool) -> Str
     )
 }
 
-pub fn login(ctx: Option<&Ctx>, f: &LoginForm, csrf_only: &str) -> String {
+pub fn login(br: &Brand, ctx: Option<&Ctx>, f: &LoginForm, csrf_only: &str) -> String {
     let mut b = String::new();
     match ctx {
         Some(c) => {
@@ -484,7 +521,7 @@ This browser hasn't signed in here yet, or it was more than 10 minutes ago.</p>"
             e(&screen_url(c, "sign-up"))
         ));
     }
-    page_with_script("Sign in", &b, if script { PASSKEY_JS } else { "" })
+    page_with_script(br, "Sign in", &b, if script { PASSKEY_JS } else { "" })
 }
 
 fn screen_url(c: &Ctx, screen: &str) -> String {
@@ -520,7 +557,7 @@ fn domain_affix(f: &SignupForm) -> String {
     s
 }
 
-pub fn signup(ctx: &Ctx, f: &SignupForm) -> String {
+pub fn signup(br: &Brand, ctx: &Ctx, f: &SignupForm) -> String {
     let mut b = format!(
         "<h1>Create an account on {}</h1><p class=\"muted\">to continue to</p>{}",
         e(ctx.server_name),
@@ -558,7 +595,7 @@ pub fn signup(ctx: &Ctx, f: &SignupForm) -> String {
         "<p class=\"alt\">Already have an account? <a href=\"{}\">Sign in</a></p>",
         e(&screen_url(ctx, "sign-in"))
     ));
-    page("Create an account", &b)
+    page(br, "Create an account", &b)
 }
 
 /// Account creation with a sign-in provider's identity: no password.
@@ -571,7 +608,7 @@ pub struct FederatedSignup<'a> {
     pub email_verified: bool,
 }
 
-pub fn federated_signup(ctx: Option<&Ctx>, f: &FederatedSignup) -> String {
+pub fn federated_signup(br: &Brand, ctx: Option<&Ctx>, f: &FederatedSignup) -> String {
     let s = &f.form;
     let mut b = match ctx {
         Some(c) => format!(
@@ -619,10 +656,10 @@ pub fn federated_signup(ctx: Option<&Ctx>, f: &FederatedSignup) -> String {
         "<div class=\"row\"><button type=\"submit\" class=\"primary\" name=\"action\" value=\"sign-up\">Create account</button>\
 <button type=\"submit\" class=\"back\" name=\"action\" value=\"deny\" formnovalidate>Cancel</button></div></form>",
     );
-    page("Create an account", &b)
+    page(br, "Create an account", &b)
 }
 
-pub fn chooser(ctx: &Ctx, accounts: &[(String, String)]) -> String {
+pub fn chooser(br: &Brand, ctx: &Ctx, accounts: &[(String, String)]) -> String {
     let mut b = format!("<h1>Choose an account</h1><p class=\"muted\">to continue to</p>{}", client_block(ctx));
     for (did, handle) in accounts {
         b.push_str(&format!(
@@ -640,7 +677,7 @@ pub fn chooser(ctx: &Ctx, accounts: &[(String, String)]) -> String {
         hidden(ctx),
         hidden(ctx)
     ));
-    page("Choose an account", &b)
+    page(br, "Choose an account", &b)
 }
 
 /// Where a permission sits on the consent screen.
@@ -1367,7 +1404,7 @@ fn decapitalize(s: &str) -> String {
 /// field carries each required scope. Scopes are grouped by NSID authority
 /// in native `<details>`, so a checkbox can sit in a closed group.
 /// `scope`: as requested, shown raw at the bottom.
-pub fn consent(ctx: &Ctx, did: &str, handle: &str, scope: &str, rows: &[ScopeRow]) -> String {
+pub fn consent(br: &Brand, ctx: &Ctx, did: &str, handle: &str, scope: &str, rows: &[ScopeRow]) -> String {
     let mut b = format!(
         "<h1>Authorize access</h1><p class=\"muted\">Signed in as <b>@{}</b></p><p>This app wants access to your account:</p>{}\
 <form method=\"post\" action=\"/oauth/authorize/consent\">{}<input type=\"hidden\" name=\"did\" value=\"{}\">\
@@ -1403,11 +1440,11 @@ pub fn consent(ctx: &Ctx, did: &str, handle: &str, scope: &str, rows: &[ScopeRow
         "</ul></details><p class=\"muted\">You can revoke this access at any time under <b>Connected apps</b> in your account settings on this server.</p>\
 <div class=\"row\"><button type=\"submit\" name=\"action\" value=\"deny\">Deny</button><button type=\"submit\" class=\"primary\" name=\"action\" value=\"allow\" autofocus>Allow</button></div></form>",
     );
-    page("Authorize access", &b)
+    page(br, "Authorize access", &b)
 }
 
-pub fn error(title: &str, msg: &str) -> String {
-    page(title, &format!("<h1>{}</h1><p>{}</p>", e(title), e(msg)))
+pub fn error(b: &Brand, title: &str, msg: &str) -> String {
+    page(b, title, &format!("<h1>{}</h1><p>{}</p>", e(title), e(msg)))
 }
 
 pub struct SessionRow {
@@ -1487,7 +1524,7 @@ fn methods_block(csrf: &str, did: &str, m: &Methods, anchor: bool) -> String {
 
 /// `notice`: (message, an error). `anchor`: the account whose sign-in
 /// methods a step-up sign-in lands on (else the first shown).
-pub fn account_page(csrf: &str, accounts: &[AccountRow], notice: Option<(&str, bool)>, anchor: Option<&str>) -> String {
+pub fn account_page(br: &Brand, csrf: &str, accounts: &[AccountRow], notice: Option<(&str, bool)>, anchor: Option<&str>) -> String {
     let anchor = anchor.or_else(|| accounts.iter().find(|a| a.methods.is_some()).map(|a| a.did.as_str()));
     let mut b = String::from("<h1>Connected apps</h1><p class=\"muted\">Apps you have authorized with OAuth. Revoking access signs the app out immediately.</p>");
     if let Some((m, error)) = notice {
@@ -1527,7 +1564,7 @@ pub fn account_page(csrf: &str, accounts: &[AccountRow], notice: Option<(&str, b
         }
     }
     b.push_str("<div class=\"row\"><a href=\"/oauth/account?add=1\">Add another account</a></div><footer class=\"muted\"><a href=\"/account\">Open account settings</a></footer>");
-    page("Connected apps", &b)
+    page(br, "Connected apps", &b)
 }
 
 #[cfg(test)]
@@ -1599,7 +1636,7 @@ mod tests {
             loopback: false,
             server_name: "vlpds",
         };
-        consent(&ctx, "did:plc:abc", "alice.test", scope, &describe_scopes(scope, sets, names))
+        consent(&Brand::default(), &ctx, "did:plc:abc", "alice.test", scope, &describe_scopes(scope, sets, names))
     }
 
     fn summary_of<'a>(html: &'a str, head: &str) -> &'a str {
@@ -1757,7 +1794,7 @@ mod tests {
         };
         let two = [row("repo:\"><zb>x"), row("y")];
         let ctx = Ctx { request_uri: "r", csrf: "c", client_id: "x", loopback: true, server_name: "s" };
-        let html = consent(&ctx, "d", "h", "repo:\"><zb>x y", &two);
+        let html = consent(&Brand::default(), &ctx, "d", "h", "repo:\"><zb>x y", &two);
         for bad in ["<zb>", "<zi>", "<zu>", "<zs>", "<zp>d"] {
             assert!(!html.contains(bad), "{bad}: {html}");
         }
@@ -1778,6 +1815,44 @@ mod tests {
     }
 
     #[test]
+    fn the_theme_brands_the_page_and_its_csp() {
+        let d = Brand::default();
+        let html = error(&d, "Oops", "msg");
+        assert!(html.contains(&format!("{MARK}vlpds<span>account security</span>")), "{html}");
+        assert!(html.contains("<title>Oops</title>"));
+        assert_eq!(html.matches("<style>").count(), 1);
+        assert!(!html.contains("<nav") && !html.contains("rel=\"icon\"") && !html.contains("<img"));
+        assert_eq!(csp(&d, &[]).matches("'sha256-").count(), 1);
+
+        let mut t = crate::theme::Theme { name: Some("Acme <b>".into()), ..Default::default() };
+        t.colors.light.primary = Some("#0f766e".into());
+        t.links.terms = Some("https://acme.example/terms?a=1&b=2".into());
+        t.logo = Some(crate::theme::image_from_bytes(b"\x89PNG\r\n\x1a\nxx", crate::theme::ImageKind::Logo).unwrap());
+        t.logo_is_wordmark = true;
+        let b = crate::theme::compile(crate::theme::Doc { theme: t, ..Default::default() }).brand;
+        let html = consent(
+            &b,
+            &Ctx { request_uri: "r", csrf: "c", client_id: "x", loopback: true, server_name: "s" },
+            "d",
+            "h",
+            "atproto",
+            &[],
+        );
+        assert!(html.contains("<title>Authorize access · Acme &lt;b&gt;</title>"), "{html}");
+        assert!(html.contains("<img src=\"/theme/logo?v="), "{html}");
+        assert!(
+            html.contains("alt=\"Acme &lt;b&gt;\"><span>account security</span>"),
+            "a wordmark logo stands alone: {html}"
+        );
+        assert!(html.contains("<a href=\"https://acme.example/terms?a=1&amp;b=2\">Terms</a>"), "{html}");
+        let (css, hash) = b.style.clone().unwrap();
+        assert!(html.contains(&format!("</style><style>{css}</style>")), "{html}");
+        let c = csp(&b, &[]);
+        assert!(c.contains(&format!("style-src 'sha256-{}' 'sha256-{hash}';", *STYLE_HASH)), "{c}");
+        assert!(csp_passkey(&b, &[]).contains(&format!("'sha256-{hash}'")));
+    }
+
+    #[test]
     fn signup_offers_a_domain_select_only_with_several() {
         let ctx = Ctx { request_uri: "r", csrf: "c", client_id: "x", loopback: true, server_name: "s" };
         let one = ["pds.test".to_string()];
@@ -1790,10 +1865,10 @@ mod tests {
             invite_required: false,
             error: None,
         };
-        let html = signup(&ctx, &f("pds.test", &one));
+        let html = signup(&Brand::default(), &ctx, &f("pds.test", &one));
         assert!(html.contains("<span>.pds.test</span>") && !html.contains("<select"), "{html}");
         let two = ["pds.test".to_string(), "group-a.test".to_string()];
-        let html = signup(&ctx, &f("group-a.test", &two));
+        let html = signup(&Brand::default(), &ctx, &f("group-a.test", &two));
         assert!(html.contains("<select name=\"domain\""), "{html}");
         assert!(html.contains("<option value=\"group-a.test\" selected>.group-a.test</option>"), "{html}");
         assert!(html.contains("<option value=\"pds.test\">.pds.test</option>"), "{html}");

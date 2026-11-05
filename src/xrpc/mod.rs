@@ -46,6 +46,7 @@ mod space_import;
 mod space_ops;
 pub mod staged_import;
 mod sync;
+mod theme;
 mod webui;
 pub use account_stats::{export_account_totals, scan_totals, totals, totals_loading};
 pub use blobs::spawn_blob_gc;
@@ -117,6 +118,8 @@ pub struct App {
     pub handle_domains: Arc<crate::handle_domains::HandleDomains>,
     /// Third-party sign-in: the providers and the OIDC caches.
     pub federated: Arc<crate::federated::Federated>,
+    /// The operator's theme (`crate::theme`), refreshed from the bucket.
+    pub theme: Arc<crate::theme::Themes>,
     /// Writes beyond this many in flight get a fast 503. A write's permit
     /// travels with its queued message, so it is held until its worker takes
     /// it, even if the handler is gone.
@@ -302,6 +305,7 @@ pub fn router(app: Arc<App>) -> Router {
                 .merge(crawlers::routes())
                 .merge(handle_domains::routes())
                 .merge(federated::xrpc_routes())
+                .merge(theme::xrpc_routes())
                 .merge(space_ops::routes())
                 .merge(match app.config.spaces {
                     true => space::routes()
@@ -315,6 +319,7 @@ pub fn router(app: Arc<App>) -> Router {
         .merge(proxy::routes())
         .merge(oauth::routes())
         .merge(federated::routes())
+        .merge(theme::routes())
         .merge(internal::routes())
         .merge(space_ops::internal_routes())
         .merge(match app.config.spaces {
@@ -343,6 +348,7 @@ pub fn router(app: Arc<App>) -> Router {
     crawlers::start(&app);
     handle_domains::start(&app);
     federated::start(&app);
+    theme::start(&app);
     let r = oauth::with_dpop_layer(r, &app);
     let r = if app.config.rate_limits_enabled {
         let limiter = app.ratelimit.clone();

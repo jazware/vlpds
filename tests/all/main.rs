@@ -171,6 +171,7 @@ mod sync;
 mod sync11_property;
 mod sync_list;
 mod takedown_routes;
+mod theme;
 mod totp;
 mod untrusted_repo_data;
 mod user_service_auth;

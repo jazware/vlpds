@@ -41,6 +41,7 @@ export const K = {
   crawlers: ['crawlers'] as const,
   domains: ['domains'] as const,
   signInProviders: ['signInProviders'] as const,
+  theme: ['theme'] as const,
   invites: ['invites'] as const,
 
   // system

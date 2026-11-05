@@ -67,6 +67,10 @@ pub enum Cmd {
     /// Third-party sign-in providers (OpenID Connect), for the whole cluster.
     #[command(subcommand)]
     SigninProvider(SigninProviderCmd),
+    /// The name, logo, colors and links users see on this server's pages
+    /// and in its email, for the whole cluster (docs/operations/theming.md).
+    #[command(subcommand)]
+    Theme(ThemeCmd),
     /// Ask relays to crawl this PDS (pdsadmin request-crawl). Relays:
     /// hostnames or URLs, comma-separated (default: the node's --crawlers).
     RequestCrawl {
@@ -222,6 +226,92 @@ pub enum SigninProviderCmd {
         #[arg(long)]
         if_version: Option<u64>,
     },
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum ThemeCmd {
+    /// The theme, its contrast warnings and its images' URLs.
+    Show,
+    /// Change the settings given, keeping the rest. An empty value
+    /// (`--terms ""`) clears that setting back to vlpds's.
+    Set(Box<ThemeSet>),
+    /// Replace the whole theme from a JSON file (`-` for stdin) shaped as
+    /// putTheme's `theme`. Images left out are kept; `null` removes one.
+    Put {
+        file: String,
+        /// Refuse if the theme changed since this version.
+        #[arg(long)]
+        if_version: Option<u64>,
+    },
+    /// Back to vlpds's own look: every setting and both images.
+    Reset {
+        #[arg(long)]
+        if_version: Option<u64>,
+        #[arg(long, short)]
+        yes: bool,
+    },
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ThemeSet {
+    /// Replaces "vlpds" in the pages' headers and titles, and the service
+    /// name in email.
+    #[arg(long)]
+    pub name: Option<String>,
+    /// A PNG, JPEG or WebP file (at most 256 KiB).
+    #[arg(long, conflicts_with = "no_logo")]
+    pub logo: Option<PathBuf>,
+    #[arg(long)]
+    pub no_logo: bool,
+    /// A PNG or ICO file (at most 64 KiB).
+    #[arg(long, conflicts_with = "no_favicon")]
+    pub favicon: Option<PathBuf>,
+    #[arg(long)]
+    pub no_favicon: bool,
+    /// The logo already spells the name: show it alone.
+    #[arg(long)]
+    pub wordmark: Option<bool>,
+    /// default, system, serif, rounded or mono.
+    #[arg(long)]
+    pub font: Option<String>,
+    /// Light mode: buttons and links (#rrggbb).
+    #[arg(long)]
+    pub primary: Option<String>,
+    /// Light mode: text on primary buttons (default: white or near black, whichever reads better).
+    #[arg(long)]
+    pub primary_text: Option<String>,
+    /// Light mode: the second band under the header.
+    #[arg(long)]
+    pub secondary: Option<String>,
+    /// Light mode: focus rings.
+    #[arg(long)]
+    pub accent: Option<String>,
+    #[arg(long)]
+    pub primary_dark: Option<String>,
+    #[arg(long)]
+    pub primary_text_dark: Option<String>,
+    #[arg(long)]
+    pub secondary_dark: Option<String>,
+    #[arg(long)]
+    pub accent_dark: Option<String>,
+    #[arg(long)]
+    pub home: Option<String>,
+    /// Also describeServer's termsOfService.
+    #[arg(long)]
+    pub terms: Option<String>,
+    /// Also describeServer's privacyPolicy.
+    #[arg(long)]
+    pub privacy: Option<String>,
+    /// An https: or mailto: link.
+    #[arg(long)]
+    pub support: Option<String>,
+    /// Refuse if the theme changed since this version (default: the
+    /// version this command read).
+    #[arg(long)]
+    pub if_version: Option<u64>,
+    /// Kept in the audit log.
+    #[arg(long)]
+    pub note: Option<String>,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -416,6 +506,155 @@ async fn signin_provider(c: &Client, cmd: SigninProviderCmd, opts: &Opts, out: &
     Ok(())
 }
 
+fn image_uri(path: &PathBuf) -> Result<String> {
+    use base64::Engine;
+    let bytes = std::fs::read(path).with_context(|| path.display().to_string())?;
+    let mime = crate::theme::sniff(&bytes).unwrap_or("application/octet-stream");
+    Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+}
+
+/// getTheme's `theme` as putTheme takes it: the images (shown by hash) are
+/// left out, so the stored ones are kept.
+fn theme_body(view: &J) -> J {
+    let mut t = view["theme"].clone();
+    if let Some(o) = t.as_object_mut() {
+        o.remove("logo");
+        o.remove("favicon");
+    }
+    t
+}
+
+fn set_field(t: &mut J, path: &[&str], v: &Option<String>) {
+    let Some(v) = v else { return };
+    let mut at = t;
+    for k in &path[..path.len() - 1] {
+        if !at[*k].is_object() {
+            at[*k] = json!({});
+        }
+        at = &mut at[*k];
+    }
+    at[path[path.len() - 1]] = if v.is_empty() { J::Null } else { json!(v) };
+}
+
+async fn theme(c: &Client, cmd: ThemeCmd, opts: &Opts, out: &mut dyn Write) -> Result<()> {
+    let r = match cmd {
+        ThemeCmd::Show => c.get("vlpds.admin.getTheme", &[]).await?,
+        ThemeCmd::Set(a) => {
+            let view = c.get("vlpds.admin.getTheme", &[]).await?;
+            let mut t = theme_body(&view);
+            set_field(&mut t, &["name"], &a.name);
+            if let Some(f) = &a.font {
+                t["font"] = json!(if f.is_empty() { "default" } else { f.as_str() });
+            }
+            for (k, v) in [
+                ("primary", &a.primary),
+                ("primaryText", &a.primary_text),
+                ("secondary", &a.secondary),
+                ("accent", &a.accent),
+            ] {
+                set_field(&mut t, &["colors", "light", k], v);
+            }
+            for (k, v) in [
+                ("primary", &a.primary_dark),
+                ("primaryText", &a.primary_text_dark),
+                ("secondary", &a.secondary_dark),
+                ("accent", &a.accent_dark),
+            ] {
+                set_field(&mut t, &["colors", "dark", k], v);
+            }
+            for (k, v) in [("home", &a.home), ("terms", &a.terms), ("privacy", &a.privacy), ("support", &a.support)] {
+                set_field(&mut t, &["links", k], v);
+            }
+            if let Some(w) = a.wordmark {
+                t["logoIsWordmark"] = json!(w);
+            }
+            if let Some(p) = &a.logo {
+                t["logo"] = json!(image_uri(p)?);
+            } else if a.no_logo {
+                t["logo"] = J::Null;
+            }
+            if let Some(p) = &a.favicon {
+                t["favicon"] = json!(image_uri(p)?);
+            } else if a.no_favicon {
+                t["favicon"] = J::Null;
+            }
+            let v = a.if_version.map(|v| json!(v)).unwrap_or_else(|| view["version"].clone());
+            c.post("vlpds.admin.putTheme", &json!({"theme": t, "ifVersion": v, "note": a.note})).await?
+        }
+        ThemeCmd::Put { file, if_version } => {
+            let text = match file.as_str() {
+                "-" => std::io::read_to_string(std::io::stdin())?,
+                f => std::fs::read_to_string(f)?,
+            };
+            let t: J = serde_json::from_str(&text)?;
+            let mut body = json!({"theme": t});
+            if let Some(v) = if_version {
+                body["ifVersion"] = json!(v);
+            }
+            c.post("vlpds.admin.putTheme", &body).await?
+        }
+        ThemeCmd::Reset { if_version, yes } => {
+            if !yes && !confirm("Reset the theme to vlpds's own look (name, logo, favicon, colors, links)?")? {
+                bail!("not confirmed");
+            }
+            let mut body = json!({"theme": {"logo": null, "favicon": null}});
+            if let Some(v) = if_version {
+                body["ifVersion"] = json!(v);
+            }
+            c.post("vlpds.admin.putTheme", &body).await?
+        }
+    };
+    if opts.json {
+        return pretty(out, &r);
+    }
+    write_theme(out, &r)
+}
+
+fn write_theme(out: &mut dyn Write, r: &J) -> Result<()> {
+    let t = &r["theme"];
+    let or = |v: &J, d: &str| if v.is_null() { d.to_string() } else { s(v) };
+    let mut rows = vec![vec!["SETTING".to_string(), "VALUE".into()]];
+    rows.push(vec!["name".into(), or(&t["name"], "(vlpds)")]);
+    for k in ["logo", "favicon"] {
+        let i = &t[k];
+        let v = if i.is_null() {
+            "(none)".into()
+        } else {
+            format!("{} {} bytes  {}", s(&i["mime"]), s(&i["bytes"]), s(&i["url"]))
+        };
+        rows.push(vec![k.into(), v]);
+    }
+    if t["logoIsWordmark"] == json!(true) {
+        rows.push(vec!["logoIsWordmark".into(), "yes".into()]);
+    }
+    rows.push(vec!["font".into(), s(&t["font"])]);
+    for mode in ["light", "dark"] {
+        for k in ["primary", "primaryText", "secondary", "accent"] {
+            let set = &t["colors"][mode][k];
+            let v = if set.is_null() { format!("{}  (vlpds)", s(&r["resolved"][mode][k])) } else { s(set) };
+            rows.push(vec![format!("{mode}.{k}"), v]);
+        }
+    }
+    for k in ["home", "terms", "privacy", "support"] {
+        rows.push(vec![format!("links.{k}"), or(&t["links"][k], "-")]);
+    }
+    write!(out, "{}", table(&rows))?;
+    writeln!(
+        out,
+        "version {}{}",
+        s(&r["version"]),
+        r["updatedBy"].as_str().map(|b| format!(" by {b}")).unwrap_or_default()
+    )?;
+    if let Some(ch) = r["changes"].as_array() {
+        let ch: Vec<String> = ch.iter().map(s).collect();
+        writeln!(out, "changed: {}", if ch.is_empty() { "nothing".into() } else { ch.join(", ") })?;
+    }
+    for w in r["warnings"].as_array().into_iter().flatten() {
+        writeln!(out, "warning: {}", s(&w["message"]))?;
+    }
+    Ok(())
+}
+
 /// Like pdsadmin's.
 fn generate_password() -> String {
     use rand::Rng;
@@ -526,6 +765,7 @@ pub async fn run(cmd: Cmd, opts: &Opts, out: &mut dyn Write) -> Result<()> {
         }
         Cmd::HandleDomain(h) => handle_domain(&c, h, opts, out).await,
         Cmd::SigninProvider(p) => signin_provider(&c, p, opts, out).await,
+        Cmd::Theme(t) => theme(&c, t, opts, out).await,
         Cmd::RequestCrawl { relays } => {
             let r = c.post("vlpds.admin.requestCrawl", &json!({"relays": relays})).await?;
             let results = r["results"].as_array().cloned().unwrap_or_default();

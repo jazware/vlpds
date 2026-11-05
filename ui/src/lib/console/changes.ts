@@ -35,7 +35,9 @@ const RULES: Record<string, Rule> = {
             ? [K.crawlers]
             : id === 'signin-providers'
               ? [K.signInProviders]
-              : [K.cluster, K.config],
+              : id === 'theme'
+                ? [K.theme]
+                : [K.cluster, K.config],
   },
   ratelimits: { entity: () => [K.ratelimits] },
   'appview-override': { entity: () => [K.appviewOverride] },
