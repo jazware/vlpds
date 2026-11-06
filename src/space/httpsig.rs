@@ -1,25 +1,24 @@
 //! The RFC 9421 HTTP Message Signatures subset Spaces uses
-//! (@atproto/space `http-signature.ts`). One signature, labelled
-//! `atproto-space`, by a P-256 did:key, covering exactly:
-//!
-//! - `("authorization")` with a `keyid` parameter naming the key: a
-//!   delegation token exchange (getSpaceCredential), the key the issued
-//!   credential gets bound to;
-//! - `("authorization" "atproto-space-audience")`: a request with a space
-//!   credential, whose `cnf.kid` is the key (an optional `keyid` must
-//!   match it).
+//! (@atproto/space `http-signature.ts`): a request authorized by a space
+//! credential carries one signature, labelled `atproto-space-credential`,
+//! by the P-256 did:key the credential is bound to (`cnf.kid`; an optional
+//! `keyid` must match it), covering exactly
+//! `("authorization" "atproto-space-audience")` with
+//! `tag="atproto-space-credential"`.
 //!
 //! No method, target or time is covered, so a signature may be replayed
 //! with the same headers: the credential's expiry bounds that, and the
 //! audience header pins it to one repo. The optional `alg` must be
 //! `ecdsa-p256-sha256`. Signatures are raw r‖s (64 bytes); high-S is
-//! accepted, DER is not.
+//! accepted, DER is not. Parameters other than these are signed as they
+//! were serialized.
 
 use super::sfv::{self, Bare, Member};
 use axum::http::HeaderMap;
 use base64::Engine;
 
-pub const LABEL: &str = "atproto-space";
+pub const LABEL: &str = "atproto-space-credential";
+pub const TAG: &str = "atproto-space-credential";
 pub const ALG: &str = "ecdsa-p256-sha256";
 pub const AUDIENCE_HEADER: &str = "atproto-space-audience";
 
@@ -42,41 +41,56 @@ impl std::fmt::Display for SigError {
 const MAX_FIELD: usize = 8 << 10;
 
 const INVALID: SigError = SigError("invalid HTTP message signature");
-const MALFORMED: SigError = SigError("missing or malformed atproto-space signature");
+const MALFORMED: SigError = SigError("missing or malformed atproto-space-credential signature");
+const COVERS: &str = "(\"authorization\" \"atproto-space-audience\")";
 
 /// What a request's signature covers, joined into lines.
-pub fn signature_base(authorization: &str, signature_params: &str, audience: Option<&str>) -> Vec<u8> {
-    let mut lines = vec![format!("\"authorization\": {}", authorization.trim())];
-    if let Some(a) = audience {
-        lines.push(format!("\"{AUDIENCE_HEADER}\": {}", a.trim()));
-    }
-    lines.push(format!("\"@signature-params\": {signature_params}"));
-    lines.join("\n").into_bytes()
+pub fn signature_base(authorization: &str, audience: &str, signature_params: &str) -> Vec<u8> {
+    format!(
+        "\"authorization\": {}\n\"{AUDIENCE_HEADER}\": {}\n\"@signature-params\": {signature_params}",
+        authorization.trim(),
+        audience.trim()
+    )
+    .into_bytes()
 }
 
-/// The `Signature-Input` member the reference's client writes (`keyid`
-/// only without an audience: with one, the credential names the key).
-pub fn signature_input(audience: bool, key_did: &str) -> String {
-    if audience {
-        format!("(\"authorization\" \"{AUDIENCE_HEADER}\")")
-    } else {
-        format!("(\"authorization\");keyid=\"{key_did}\"")
-    }
+/// The `Signature-Input` member the reference's client writes.
+pub fn signature_input() -> String {
+    format!("{COVERS};tag=\"{TAG}\"")
 }
 
-/// Verifies a request's `atproto-space` signature, returning the key's
-/// did:key. `credential_key`: the credential's `cnf.kid`, for a request
-/// with a credential (the audience header is then covered and required);
-/// None for a delegation exchange, whose `keyid` names the key.
-pub fn verify(headers: &HeaderMap, credential_key: Option<&str>) -> Result<String, SigError> {
+/// The four headers a request with `credential` sends to `audience`,
+/// signed by `sign` (the key `cnf.kid` names): the reference's
+/// `createSpaceSigHeaders`, its signature as padded base64.
+pub fn sign_headers(
+    credential: &str,
+    audience: &str,
+    sign: impl FnOnce(&[u8]) -> [u8; 64],
+) -> [(&'static str, String); 4] {
+    let authorization = format!("Atproto-Space-Credential {credential}");
+    let input = signature_input();
+    let sig = sign(&signature_base(&authorization, audience, &input));
+    [
+        ("authorization", authorization),
+        (AUDIENCE_HEADER, audience.to_string()),
+        ("signature-input", format!("{LABEL}={input}")),
+        ("signature", format!("{LABEL}=:{}:", base64::engine::general_purpose::STANDARD.encode(sig))),
+    ]
+}
+
+/// Verifies a request's `atproto-space-credential` signature by
+/// `credential_key` (the credential's `cnf.kid`). The Authorization value
+/// is signed exactly as received.
+pub fn verify(headers: &HeaderMap, credential_key: &str) -> Result<(), SigError> {
     let input_header = joined(headers, "signature-input").ok_or(SigError("missing or malformed signature headers"))?;
     let sig_header = joined(headers, "signature").ok_or(SigError("missing or malformed signature headers"))?;
     // the parser's duplicate-key handling is a linear scan per key
     if input_header.len() > MAX_FIELD || sig_header.len() > MAX_FIELD {
         return Err(INVALID);
     }
-    let inputs = sfv::parse_dictionary(&input_header).map_err(|_| INVALID)?;
-    let sigs = sfv::parse_dictionary(&sig_header).map_err(|_| INVALID)?;
+    let inputs =
+        sfv::parse_dictionary(&input_header).map_err(|_| SigError("missing or malformed signature headers"))?;
+    let sigs = sfv::parse_dictionary(&sig_header).map_err(|_| SigError("missing or malformed signature headers"))?;
     let (Some(Member::InnerList(components, params)), Some(Member::Item(Bare::Bytes(sig_b64), sig_params))) =
         (sfv::get(&inputs, LABEL), sfv::get(&sigs, LABEL))
     else {
@@ -86,48 +100,31 @@ pub fn verify(headers: &HeaderMap, credential_key: Option<&str>) -> Result<Strin
         return Err(MALFORMED);
     }
     let covered: Vec<String> = components.iter().map(|(b, p)| sfv::serialize_item(b, p)).collect();
-    let expected: &[&str] = match credential_key {
-        None => &["\"authorization\""],
-        Some(_) => &["\"authorization\"", "\"atproto-space-audience\""],
-    };
-    if covered != expected {
-        return Err(match credential_key {
-            None => SigError("signature must cover exactly \"authorization\", in order"),
-            Some(_) => SigError("signature must cover exactly \"authorization\", \"atproto-space-audience\", in order"),
-        });
+    if covered != ["\"authorization\"", "\"atproto-space-audience\""] {
+        return Err(SigError("signature must cover exactly (\"authorization\" \"atproto-space-audience\"), in order"));
+    }
+    if sfv::get(params, "tag") != Some(&Bare::String(TAG.into())) {
+        return Err(SigError("signature tag must be \"atproto-space-credential\""));
     }
     if sfv::get(params, "alg").is_some_and(|a| *a != Bare::String(ALG.into())) {
         return Err(SigError("signature algorithm must be ecdsa-p256-sha256"));
     }
-    let keyid = sfv::get(params, "keyid");
-    let key = match (credential_key, keyid) {
-        (Some(k), _) => k.to_string(),
-        (None, Some(Bare::String(k))) => k.clone(),
-        (None, _) => return Err(SigError("signature key must be a P-256 did:key")),
-    };
-    match super::did_key_alg(&key) {
-        Some("ES256") => {}
-        Some(_) => return Err(SigError("signature key must be a P-256 did:key")),
-        None => return Err(INVALID),
-    }
-    if credential_key.is_some() && keyid.is_some_and(|k| *k != Bare::String(key.clone())) {
+    if sfv::get(params, "keyid").is_some_and(|k| *k != Bare::String(credential_key.into())) {
         return Err(SigError("signature keyid does not match the credential key"));
+    }
+    if super::did_key_alg(credential_key) != Some("ES256") {
+        return Err(SigError("signature key must be a P-256 did:key"));
     }
     let authorization = single(headers, "authorization")
         .filter(|a| !a.is_empty())
-        .ok_or(SigError("request requires exactly one \"authorization\" field"))?;
-    let audience = match credential_key {
-        None => None,
-        Some(_) => Some(
-            single(headers, AUDIENCE_HEADER)
-                .filter(|a| !a.is_empty())
-                .ok_or(SigError("request requires exactly one \"atproto-space-audience\" field"))?,
-        ),
-    };
-    let base = signature_base(authorization, &sfv::serialize_inner_list(components, params), audience);
+        .ok_or(SigError("missing or malformed \"authorization\" field"))?;
+    let audience = single(headers, AUDIENCE_HEADER)
+        .filter(|a| !a.is_empty())
+        .ok_or(SigError("missing or malformed \"atproto-space-audience\" field"))?;
+    let base = signature_base(authorization, audience, &sfv::serialize_inner_list(components, params));
     let sig = B64.decode(sig_b64).map_err(|_| INVALID)?;
-    match super::verify_did_key(&key, &base, &sig, true) {
-        Ok(true) => Ok(key),
+    match super::verify_did_key(credential_key, &base, &sig, true) {
+        Ok(true) => Ok(()),
         _ => Err(INVALID),
     }
 }
@@ -161,7 +158,7 @@ mod tests {
     use crate::space::vectors::VECTORS;
     use p256::ecdsa::signature::Signer;
 
-    const AUTHORIZATION: &str = "Atproto-Space credential";
+    const CREDENTIAL: &str = "credential";
     const AUDIENCE: &str = "did:example:repo";
 
     fn key() -> (p256::ecdsa::SigningKey, String) {
@@ -185,21 +182,14 @@ mod tests {
     }
 
     /// The reference client's headers (`createSpaceSigHeaders`).
-    fn signed(
-        sk: &p256::ecdsa::SigningKey,
-        did: &str,
-        authorization: &str,
-        audience: Option<&str>,
-    ) -> Vec<(String, String)> {
-        let input = signature_input(audience.is_some(), did);
-        let sig = sign(sk, &signature_base(authorization, &input, audience));
-        let mut h = vec![("authorization".to_string(), authorization.to_string())];
-        if let Some(a) = audience {
-            h.push((AUDIENCE_HEADER.into(), a.into()));
-        }
-        h.push(("signature-input".into(), format!("{LABEL}={input}")));
-        h.push(("signature".into(), format!("{LABEL}=:{sig}:")));
-        h
+    fn signed(sk: &p256::ecdsa::SigningKey, credential: &str, audience: &str) -> Vec<(String, String)> {
+        sign_headers(credential, audience, |b| {
+            let sig: p256::ecdsa::Signature = sk.sign(b);
+            sig.to_bytes().into()
+        })
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect()
     }
 
     fn to_map(h: &[(String, String)]) -> HeaderMap {
@@ -211,11 +201,11 @@ mod tests {
     }
 
     /// testdata/spaces-alpha/vectors.json `httpsig`: headers the reference
-    /// signed, with and without an audience.
+    /// signed (`createSpaceSigHeaders`), byte for byte what this writes.
     #[test]
     fn generated_vectors() {
         let cases = VECTORS["httpsig"].as_array().unwrap();
-        assert_eq!(cases.len(), 3);
+        assert_eq!(cases.len(), 2);
         for c in cases {
             let pairs: Vec<(String, String)> = c["headers"]
                 .as_object()
@@ -223,190 +213,203 @@ mod tests {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
                 .collect();
-            let cred = c["credentialKey"].as_str();
-            assert_eq!(verify(&to_map(&pairs), cred).as_deref(), Ok(c["keyDid"].as_str().unwrap()), "{c}");
-            // and the same headers fail as the other kind of request
-            let other = match cred {
-                Some(_) => None,
-                None => c["keyDid"].as_str(),
-            };
-            assert!(verify(&to_map(&pairs), other).is_err());
+            let key = c["keyDid"].as_str().unwrap();
+            assert_eq!(verify(&to_map(&pairs), key), Ok(()), "{c}");
+            let auth = c["headers"]["authorization"].as_str().unwrap();
+            let base = signature_base(auth, c["headers"][AUDIENCE_HEADER].as_str().unwrap(), &signature_input());
+            assert_eq!(String::from_utf8(base).unwrap(), c["base"].as_str().unwrap());
+            assert_eq!(c["headers"]["signature-input"].as_str().unwrap(), format!("{LABEL}={}", signature_input()));
+            // padded base64, as RFC 9651 writes a byte sequence
+            assert!(c["headers"]["signature"].as_str().unwrap().ends_with("=:"));
+            let (_, other) = key_pair_other();
+            assert!(verify(&to_map(&pairs), &other).is_err());
         }
     }
 
-    // The cases below are the reference's src/http-signature.test.ts.
+    fn key_pair_other() -> (p256::ecdsa::SigningKey, String) {
+        key()
+    }
+
+    // The cases below follow the reference's src/http-signature.test.ts.
 
     #[test]
     fn signs_and_verifies() {
         let (sk, did) = key();
-        let h = signed(&sk, &did, AUTHORIZATION, Some(AUDIENCE));
-        assert_eq!(h[2].1, "atproto-space=(\"authorization\" \"atproto-space-audience\")");
+        let h = signed(&sk, CREDENTIAL, AUDIENCE);
+        assert_eq!(h[0].1, "Atproto-Space-Credential credential");
+        assert_eq!(
+            h[2].1,
+            "atproto-space-credential=(\"authorization\" \"atproto-space-audience\");tag=\"atproto-space-credential\""
+        );
         let base = format!(
-            "\"authorization\": {AUTHORIZATION}\n\"atproto-space-audience\": {AUDIENCE}\n\"@signature-params\": (\"authorization\" \"atproto-space-audience\")"
+            "\"authorization\": Atproto-Space-Credential {CREDENTIAL}\n\"atproto-space-audience\": {AUDIENCE}\n\"@signature-params\": (\"authorization\" \"atproto-space-audience\");tag=\"atproto-space-credential\""
         );
         assert_eq!(
-            signature_base(AUTHORIZATION, "(\"authorization\" \"atproto-space-audience\")", Some(AUDIENCE)),
+            signature_base(&format!("Atproto-Space-Credential {CREDENTIAL}"), AUDIENCE, &signature_input()),
             base.as_bytes()
         );
-        assert_eq!(verify(&to_map(&h), Some(&did)), Ok(did.clone()));
+        assert_eq!(verify(&to_map(&h), &did), Ok(()));
+    }
 
-        let d = signed(&sk, &did, "Bearer delegation", None);
-        assert_eq!(d[1].1, format!("atproto-space=(\"authorization\");keyid=\"{did}\""));
-        assert_eq!(verify(&to_map(&d), None), Ok(did.clone()));
-        assert!(verify(&to_map(&d), Some(&did)).unwrap_err().0.contains("cover exactly"));
-        // credential signatures don't pass on the delegation exchange
-        assert!(verify(&to_map(&h), None).unwrap_err().0.contains("must cover exactly"));
+    /// The scheme is matched case-insensitively by the receiver, but the
+    /// base covers the value as sent.
+    #[test]
+    fn authorization_signed_as_sent() {
+        let (sk, did) = key();
+        let authorization = format!("atproto-space-credential {CREDENTIAL}");
+        let input = signature_input();
+        let sig = sign(&sk, &signature_base(&authorization, AUDIENCE, &input));
+        let mut h = vec![
+            ("authorization".to_string(), authorization),
+            (AUDIENCE_HEADER.to_string(), AUDIENCE.to_string()),
+            ("signature-input".to_string(), format!("{LABEL}={input}")),
+            ("signature".to_string(), format!("{LABEL}=:{sig}:")),
+        ];
+        assert_eq!(verify(&to_map(&h), &did), Ok(()));
+        set(&mut h, "authorization", format!("Atproto-Space-Credential {CREDENTIAL}"));
+        assert_eq!(verify(&to_map(&h), &did), Err(INVALID));
+    }
+
+    #[test]
+    fn tags() {
+        let (sk, did) = key();
+        for params in ["", ";tag=\"atproto-space\"", ";tag=atproto-space-credential", ";tag", ";tag=\"\""] {
+            let input = format!("{COVERS}{params}");
+            let base = signature_base(&format!("Atproto-Space-Credential {CREDENTIAL}"), AUDIENCE, &input);
+            let mut h = signed(&sk, CREDENTIAL, AUDIENCE);
+            set(&mut h, "signature-input", format!("{LABEL}={input}"));
+            set(&mut h, "signature", format!("{LABEL}=:{}:", sign(&sk, &base)));
+            assert!(verify(&to_map(&h), &did).unwrap_err().0.contains("tag"), "{params}");
+        }
+        // the old label isn't this one
+        let mut h = signed(&sk, CREDENTIAL, AUDIENCE);
+        let input = h[2].1.replace(LABEL, "atproto-space");
+        let sig = h[3].1.replace(LABEL, "atproto-space");
+        set(&mut h, "signature-input", input);
+        set(&mut h, "signature", sig);
+        assert_eq!(verify(&to_map(&h), &did), Err(MALFORMED));
     }
 
     #[test]
     fn high_s_accepted_der_refused() {
         let (sk, did) = key();
-        let mut h = signed(&sk, &did, AUTHORIZATION, Some(AUDIENCE));
-        let b64 = h[3].1.trim_start_matches("atproto-space=:").trim_end_matches(':').to_string();
+        let mut h = signed(&sk, CREDENTIAL, AUDIENCE);
+        let prefix = format!("{LABEL}=:");
+        let b64 = h[3].1.trim_start_matches(&prefix).trim_end_matches(':').to_string();
         let sig = base64::engine::general_purpose::STANDARD.decode(&b64).unwrap();
         let n = hex::decode("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551").unwrap();
         let mut high = sig[..32].to_vec();
         high.extend(crate::space::commit::tests::sub_be(&n, &sig[32..]));
         let enc = base64::engine::general_purpose::STANDARD.encode(&high);
-        set(&mut h, "signature", format!("atproto-space=:{enc}:"));
-        assert_eq!(verify(&to_map(&h), Some(&did)), Ok(did.clone()));
+        set(&mut h, "signature", format!("{prefix}{enc}:"));
+        assert_eq!(verify(&to_map(&h), &did), Ok(()));
 
         let der = p256::ecdsa::Signature::from_slice(&sig).unwrap().to_der();
         set(
             &mut h,
             "signature",
-            format!("atproto-space=:{}:", base64::engine::general_purpose::STANDARD.encode(der.as_bytes())),
+            format!("{prefix}{}:", base64::engine::general_purpose::STANDARD.encode(der.as_bytes())),
         );
-        assert_eq!(verify(&to_map(&h), Some(&did)), Err(INVALID));
+        assert_eq!(verify(&to_map(&h), &did), Err(INVALID));
 
-        // unpadded base64, as the reference's client writes it
-        set(&mut h, "signature", format!("atproto-space=:{}:", b64.trim_end_matches('=')));
-        assert_eq!(verify(&to_map(&h), Some(&did)), Ok(did));
+        // unpadded base64 is tolerated
+        set(&mut h, "signature", format!("{prefix}{}:", b64.trim_end_matches('=')));
+        assert_eq!(verify(&to_map(&h), &did), Ok(()));
     }
 
     #[test]
     fn optional_parameters_and_other_labels() {
         let (sk, did) = key();
-        let input = format!("(\"authorization\");keyid=\"{did}\";alg=\"ecdsa-p256-sha256\"");
-        let sig = sign(&sk, format!("\"authorization\": Bearer delegation\n\"@signature-params\": {input}").as_bytes());
+        let authorization = format!("Atproto-Space-Credential {CREDENTIAL}");
+        let input = format!("{COVERS};alg=\"ecdsa-p256-sha256\";keyid=\"{did}\";tag=\"{TAG}\"");
+        let sig = sign(&sk, &signature_base(&authorization, AUDIENCE, &input));
         let h = hm(&[
-            ("authorization", "Bearer delegation"),
-            ("signature-input", &format!("atproto-space={input}")),
-            ("signature", &format!("atproto-space=:{sig}:")),
-        ]);
-        assert_eq!(verify(&h, None), Ok(did.clone()));
-
-        let input = format!("(\"authorization\" \"atproto-space-audience\");alg=\"ecdsa-p256-sha256\";keyid=\"{did}\"");
-        let base = format!("\"authorization\": {AUTHORIZATION}\n\"atproto-space-audience\": {AUDIENCE}\n\"@signature-params\": {input}");
-        let sig = sign(&sk, base.as_bytes());
-        let h = hm(&[
-            ("authorization", AUTHORIZATION),
+            ("authorization", &authorization),
             (AUDIENCE_HEADER, AUDIENCE),
-            ("signature-input", &format!("other=(\"authorization\");keyid=\"other\", atproto-space={input}")),
-            ("signature", &format!("other=:YWJj:, atproto-space=:{sig}:")),
+            ("signature-input", &format!("other=(\"authorization\");keyid=\"other\", {LABEL}={input}")),
+            ("signature", &format!("other=:YWJj:, {LABEL}=:{sig}:")),
         ]);
-        assert_eq!(verify(&h, Some(&did)), Ok(did.clone()));
+        assert_eq!(verify(&h, &did), Ok(()));
         // the same members split over two field lines
         let h = hm(&[
-            ("authorization", AUTHORIZATION),
+            ("authorization", &authorization),
             (AUDIENCE_HEADER, AUDIENCE),
             ("signature-input", "other=(\"authorization\");keyid=\"other\""),
-            ("signature-input", &format!("atproto-space={input}")),
+            ("signature-input", &format!("{LABEL}={input}")),
             ("signature", "other=:YWJj:"),
-            ("signature", &format!("atproto-space=:{sig}:")),
+            ("signature", &format!("{LABEL}=:{sig}:")),
         ]);
-        assert_eq!(verify(&h, Some(&did)), Ok(did));
+        assert_eq!(verify(&h, &did), Ok(()));
     }
 
     #[test]
     fn covered_fields_are_bound() {
         let (sk, did) = key();
         for name in ["authorization", AUDIENCE_HEADER] {
-            let mut h = signed(&sk, &did, AUTHORIZATION, Some(AUDIENCE));
+            let mut h = signed(&sk, CREDENTIAL, AUDIENCE);
             let v = h.iter().find(|(k, _)| k == name).unwrap().1.clone();
             set(&mut h, name, format!("{v}-changed"));
-            assert_eq!(verify(&to_map(&h), Some(&did)), Err(INVALID), "{name}");
+            assert_eq!(verify(&to_map(&h), &did), Err(INVALID), "{name}");
 
             // duplicate fields
-            let mut m = to_map(&signed(&sk, &did, AUTHORIZATION, Some(AUDIENCE)));
+            let mut m = to_map(&signed(&sk, CREDENTIAL, AUDIENCE));
             m.append(axum::http::HeaderName::from_static(name), v.parse().unwrap());
-            assert!(verify(&m, Some(&did)).unwrap_err().0.contains("exactly one"), "{name}");
+            assert!(verify(&m, &did).unwrap_err().0.contains("missing or malformed"), "{name}");
         }
         for name in ["authorization", AUDIENCE_HEADER, "signature-input", "signature"] {
-            let mut m = to_map(&signed(&sk, &did, AUTHORIZATION, Some(AUDIENCE)));
+            let mut m = to_map(&signed(&sk, CREDENTIAL, AUDIENCE));
             m.remove(name);
-            assert!(verify(&m, Some(&did)).is_err(), "{name}");
+            assert!(verify(&m, &did).is_err(), "{name}");
         }
         // whitespace around a covered value is not part of the base
-        let mut h = signed(&sk, &did, AUTHORIZATION, Some(AUDIENCE));
-        let mut m = to_map(&h);
-        m.insert("authorization", format!("{AUTHORIZATION} ").parse().unwrap());
-        assert_eq!(verify(&m, Some(&did)), Ok(did.clone()));
-        // an audience the signature doesn't cover
-        h = signed(&sk, &did, AUTHORIZATION, None);
-        h.push((AUDIENCE_HEADER.into(), AUDIENCE.into()));
-        assert!(verify(&to_map(&h), Some(&did)).unwrap_err().0.contains("must cover"));
+        let mut m = to_map(&signed(&sk, CREDENTIAL, AUDIENCE));
+        m.insert("authorization", format!("Atproto-Space-Credential {CREDENTIAL} ").parse().unwrap());
+        assert_eq!(verify(&m, &did), Ok(()));
     }
 
     #[test]
     fn keys() {
         let (sk, did) = key();
-        let (other_sk, other) = key();
-        let h = signed(&other_sk, &other, AUTHORIZATION, Some(AUDIENCE));
-        assert_eq!(verify(&to_map(&h), Some(&did)), Err(INVALID));
+        let (other_sk, _) = key();
+        let h = signed(&other_sk, CREDENTIAL, AUDIENCE);
+        assert_eq!(verify(&to_map(&h), &did), Err(INVALID));
 
-        let mut h = signed(&sk, &did, AUTHORIZATION, Some(AUDIENCE));
+        let mut h = signed(&sk, CREDENTIAL, AUDIENCE);
+        let (_, other) = key();
         let v = h[2].1.clone();
         set(&mut h, "signature-input", format!("{v};keyid=\"{other}\""));
-        assert!(verify(&to_map(&h), Some(&did)).unwrap_err().0.contains("keyid does not match"));
-
-        for params in ["", ";keyid", ";keyid=123", ";keyid=\"not-a-key\"", ";keyid=tok"] {
-            let mut h = signed(&sk, &did, "Bearer delegation", None);
-            set(&mut h, "signature-input", format!("atproto-space=(\"authorization\"){params}"));
-            assert!(verify(&to_map(&h), None).is_err(), "{params}");
-        }
+        assert!(verify(&to_map(&h), &did).unwrap_err().0.contains("keyid does not match"));
 
         let k256 = vlatproto::crypto::Keypair::generate().did_key();
-        assert!(verify(&to_map(&signed(&sk, &did, AUTHORIZATION, Some(AUDIENCE))), Some(&k256))
-            .unwrap_err()
-            .0
-            .contains("P-256"));
-        let mut h = signed(&sk, &did, "Bearer delegation", None);
-        set(&mut h, "signature-input", format!("atproto-space=(\"authorization\");keyid=\"{k256}\""));
-        assert!(verify(&to_map(&h), None).unwrap_err().0.contains("P-256"));
+        assert!(verify(&to_map(&signed(&sk, CREDENTIAL, AUDIENCE)), &k256).unwrap_err().0.contains("P-256"));
     }
 
     #[test]
     fn components_and_params() {
         let (sk, did) = key();
         for components in [
-            "(\"atproto-space-audience\")",
+            "(\"authorization\")",
             "(\"atproto-space-audience\" \"authorization\")",
             "(\"authorization\" \"atproto-space-audience\" \"content-type\")",
-            "(\"authorization\" \"authorization\" \"atproto-space-audience\")",
             "(\"authorization\";sf \"atproto-space-audience\")",
             "(authorization atproto-space-audience)",
             "not-a-list",
         ] {
-            let mut h = signed(&sk, &did, AUTHORIZATION, Some(AUDIENCE));
-            set(&mut h, "signature-input", format!("atproto-space={components}"));
-            let e = verify(&to_map(&h), Some(&did)).unwrap_err().0;
+            let mut h = signed(&sk, CREDENTIAL, AUDIENCE);
+            set(&mut h, "signature-input", format!("{LABEL}={components};tag=\"{TAG}\""));
+            let e = verify(&to_map(&h), &did).unwrap_err().0;
             assert!(e.contains("must cover exactly") || e.contains("missing or malformed"), "{components}: {e}");
         }
         // parameters are signed
-        let mut h = signed(&sk, &did, AUTHORIZATION, Some(AUDIENCE));
+        let mut h = signed(&sk, CREDENTIAL, AUDIENCE);
         let v = h[2].1.clone();
         set(&mut h, "signature-input", format!("{v};alg=\"ecdsa-p256-sha256\""));
-        assert_eq!(verify(&to_map(&h), Some(&did)), Err(INVALID));
-        // other algorithms, also as a token
+        assert_eq!(verify(&to_map(&h), &did), Err(INVALID));
         for alg in [";alg=\"ecdsa-p384-sha384\"", ";alg=ecdsa-p256-sha256", ";alg"] {
-            for audience in [None, Some(AUDIENCE)] {
-                let mut h = signed(&sk, &did, AUTHORIZATION, audience);
-                let i = h.iter().position(|(k, _)| k == "signature-input").unwrap();
-                h[i].1.push_str(alg);
-                let e = verify(&to_map(&h), audience.map(|_| did.as_str())).unwrap_err().0;
-                assert!(e.contains("algorithm"), "{alg}: {e}");
-            }
+            let mut h = signed(&sk, CREDENTIAL, AUDIENCE);
+            h[2].1.push_str(alg);
+            let e = verify(&to_map(&h), &did).unwrap_err().0;
+            assert!(e.contains("algorithm"), "{alg}: {e}");
         }
     }
 
@@ -414,24 +417,24 @@ mod tests {
     fn signature_values() {
         let (sk, did) = key();
         for signature in ["not-a-byte-sequence", ":YWJj:", ":!!!:", "(:YWJj:)"] {
-            let mut h = signed(&sk, &did, AUTHORIZATION, Some(AUDIENCE));
-            set(&mut h, "signature", format!("atproto-space={signature}"));
-            assert!(verify(&to_map(&h), Some(&did)).is_err(), "{signature}");
+            let mut h = signed(&sk, CREDENTIAL, AUDIENCE);
+            set(&mut h, "signature", format!("{LABEL}={signature}"));
+            assert!(verify(&to_map(&h), &did).is_err(), "{signature}");
         }
         // a parameter on the signature
-        let mut h = signed(&sk, &did, AUTHORIZATION, Some(AUDIENCE));
+        let mut h = signed(&sk, CREDENTIAL, AUDIENCE);
         let v = h[3].1.clone();
         set(&mut h, "signature", format!("{v};x=1"));
-        assert_eq!(verify(&to_map(&h), Some(&did)), Err(MALFORMED));
+        assert_eq!(verify(&to_map(&h), &did), Err(MALFORMED));
         // oversized fields are refused before parsing
-        let mut h = signed(&sk, &did, AUTHORIZATION, Some(AUDIENCE));
+        let mut h = signed(&sk, CREDENTIAL, AUDIENCE);
         let input = h[2].1.clone();
         let pad: String = (0..2000).map(|i| format!("k{i}=1, ")).collect();
         set(&mut h, "signature-input", format!("{pad}{input}"));
-        assert_eq!(verify(&to_map(&h), Some(&did)), Err(INVALID));
+        assert_eq!(verify(&to_map(&h), &did), Err(INVALID));
         // a later member with the same label replaces the first
-        let mut h = signed(&sk, &did, AUTHORIZATION, Some(AUDIENCE));
-        set(&mut h, "signature", format!("{v}, atproto-space=:YWJj:"));
-        assert_eq!(verify(&to_map(&h), Some(&did)), Err(INVALID));
+        let mut h = signed(&sk, CREDENTIAL, AUDIENCE);
+        set(&mut h, "signature", format!("{v}, {LABEL}=:YWJj:"));
+        assert_eq!(verify(&to_map(&h), &did), Err(INVALID));
     }
 }

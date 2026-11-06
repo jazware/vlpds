@@ -25,7 +25,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::BTreeMap;
 use std::time::Duration;
-use vlpds::space::commit::{self, CommitCtx, SignedCommit};
+use vlpds::space::commit::{self, Commit};
 use vlpds::space::lthash::LtHash;
 
 const ACCOUNTS: usize = 3;
@@ -306,15 +306,8 @@ pub(super) fn bytes_field(v: &J) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD_NO_PAD.decode(b.trim_end_matches('=')).expect("base64")
 }
 
-pub(super) fn signed_commit(j: &J) -> SignedCommit {
-    SignedCommit {
-        ver: j["ver"].as_i64().expect("ver"),
-        hash: bytes_field(&j["hash"]),
-        ikm: bytes_field(&j["ikm"]),
-        sig: bytes_field(&j["sig"]),
-        mac: bytes_field(&j["mac"]),
-        rev: j["rev"].as_str().expect("rev").to_string(),
-    }
+pub(super) fn signed_commit(j: &J) -> Commit {
+    crate::common::spaces::commit_of(j)
 }
 
 pub(super) fn fold(set: &mut LtHash, op: &J) {
@@ -376,46 +369,17 @@ async fn list_records(a: &Account, space: &str, ctx: &str) -> Records {
     }
 }
 
-/// getRepo's two-root CAR: the index folds to the commit's hash, matches
-/// `want`, and the record blocks follow in index order, each hashing to its
-/// CID (none with `excludeValues`).
+/// getRepo's STAR archive: its records fold to the commit's data and are
+/// `want`'s, in bytewise path order.
 async fn check_get_repo(a: &mut Account, space: &str, want: &Records, ctx: &str) {
-    for exclude in [false, true] {
-        let q: &[(&str, &str)] = if exclude { &[("excludeValues", "true")] } else { &[] };
-        let r = a.read("com.atproto.space.getRepo", space, q).await;
-        assert_eq!(r.status, 200, "{ctx}: getRepo: {}", r.text());
-        let (roots, blocks) = vlatproto::car::read_car(&r.body).expect("getRepo CAR");
-        assert_eq!(roots.len(), 2, "{ctx}: getRepo roots");
-        assert!(blocks.len() >= 2 && blocks[0].0 == roots[0] && blocks[1].0 == roots[1], "{ctx}: roots first");
-        for (c, b) in &blocks {
-            assert!(vlatproto::car::block_matches(c, b), "{ctx}: getRepo block {c} doesn't hash");
-        }
-        let commit = Value::decode(blocks[0].1).expect("commit block");
-        let bytes = |k: &str| match commit.get(k) {
-            Some(Value::Bytes(b)) => b.clone(),
-            other => panic!("{ctx}: commit {k}: {other:?}"),
-        };
-        let Some(Value::Map(index)) = Value::decode(blocks[1].1).ok() else { panic!("{ctx}: index isn't a map") };
-        let mut set = LtHash::default();
-        let mut got = BTreeMap::new();
-        for (path, link) in &index {
-            let Value::Link(cid) = link else { panic!("{ctx}: index {path} isn't a link") };
-            let (c, k) = path.split_once('/').expect("index path");
-            set.add(&commit::element(c, k, &cid.to_string()));
-            got.insert(path.clone(), cid.to_string());
-        }
-        assert_eq!(set.digest().to_vec(), bytes("hash"), "{ctx}: getRepo index doesn't fold to its commit");
-        let want: BTreeMap<String, String> = want.iter().map(|(p, (c, _))| (p.clone(), c.clone())).collect();
-        assert_eq!(got, want, "{ctx}: getRepo index");
-        match exclude {
-            true => assert_eq!(blocks.len(), 2, "{ctx}: excludeValues carries record blocks"),
-            false => {
-                let order: Vec<String> = blocks[2..].iter().map(|(c, _)| c.to_string()).collect();
-                let index_order: Vec<String> = index.iter().map(|(p, _)| got[p].clone()).collect();
-                assert_eq!(order, index_order, "{ctx}: record blocks out of index order");
-            }
-        }
-    }
+    let r = a.read("com.atproto.space.getRepo", space, &[]).await;
+    assert_eq!(r.status, 200, "{ctx}: getRepo: {}", r.text());
+    let p = vlpds::space::star::parse(&r.body).unwrap_or_else(|e| panic!("{ctx}: getRepo archive: {e}"));
+    assert_eq!((p.commit.space.as_str(), p.commit.repo.as_str()), (space, a.sc.did.as_str()), "{ctx}: getRepo commit");
+    let got: BTreeMap<String, String> =
+        p.records.iter().map(|(path, b)| (path.clone(), vlatproto::cid::Cid::dag_cbor(b).to_string())).collect();
+    let want: BTreeMap<String, String> = want.iter().map(|(p, (c, _))| (p.clone(), c.clone())).collect();
+    assert_eq!(got, want, "{ctx}: getRepo records");
 }
 
 async fn checkpoint(s: &TestServer, a: &mut Account, r: usize, checks: Checks, ctx: &str) {
@@ -441,10 +405,7 @@ async fn checkpoint(s: &TestServer, a: &mut Account, r: usize, checks: Checks, c
         fold(&mut set, op);
     }
     assert!(commit::matches(&set, &c), "{ctx}: {} op(s) fold to another hash than the commit's", ops.len());
-    let Ok(acct) = s.app.account(&did).await else { panic!("{ctx}: no account") };
-    let key = format!("did:key:{}", acct.signing_pubkey);
-    let cc = CommitCtx { space: &space, author: &did, rev: &c.rev };
-    assert!(commit::verify(&c, &cc, &key), "{ctx}: the commit doesn't verify");
+    assert_eq!((c.space.as_str(), c.repo.as_str()), (space.as_str(), did.as_str()), "{ctx}: the commit's repo");
     let mut revs: Vec<&str> = ops.iter().map(|o| o["rev"].as_str().unwrap()).collect();
     assert!(revs.is_sorted(), "{ctx}: ops out of rev order");
     revs.dedup();
@@ -463,10 +424,10 @@ async fn checkpoint(s: &TestServer, a: &mut Account, r: usize, checks: Checks, c
     let (none, nj) = pull(a, &space, Some(&c.rev), 100, &ctx).await;
     assert!(none.is_empty(), "{ctx}: ops after the head: {none:?}");
     assert_eq!(nj["rev"], json!(c.rev), "{ctx}: the no-op poll's commit");
-    assert_eq!(bytes_field(&nj["hash"]), c.hash, "{ctx}: the no-op poll's hash");
+    assert_eq!(bytes_field(&nj["data"]), c.data, "{ctx}: the no-op poll's data");
     let latest = a.read("com.atproto.space.getLatestCommit", &space, &[]).await;
     assert_eq!(latest.status, 200, "{ctx}: getLatestCommit: {}", latest.text());
-    assert_eq!(signed_commit(&latest.json["commit"]).hash, c.hash, "{ctx}: getLatestCommit's hash");
+    assert_eq!(signed_commit(&latest.json["commit"]).data, c.data, "{ctx}: getLatestCommit's data");
     a.repos[r].synced = Some((c.rev.clone(), set));
 
     let chk =

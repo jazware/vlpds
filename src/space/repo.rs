@@ -17,7 +17,7 @@
 use super::heads::DurableSpaceHead;
 use super::lthash::LtHash;
 use super::rows::{
-    AppAccess, HeadRow, MemberRow, NotifyRow, OpAction, OpRow, OutboxRow, Policy, SeqRow, SpaceRow, WriterRow,
+    HeadRow, MemberRow, NotifyRow, OpAction, OpRow, OutboxRow, SeqRow, SpacePolicy, SpaceRow, WriterRow,
 };
 use crate::state::{self, SpaceId, SpaceListed};
 use crate::worker::WriteError;
@@ -88,7 +88,7 @@ pub enum SpaceOp {
     },
     /// The space host records a writer's newer state (notifyWrite), the
     /// worker's account being the authority. `managing_app`: the managing
-    /// app's verdict, asked by the caller when the write policy names one.
+    /// app's verdict, asked by the caller when the policy is a managed one.
     RecordWriter {
         writer: String,
         repo_rev: Tid,
@@ -96,28 +96,63 @@ pub enum SpaceOp {
         managing_app: Option<bool>,
         same_rev: SameRev,
     },
-    /// simplespace.createSpace by the worker's account.
+    /// space.createSpace by the worker's account. Its policy record goes
+    /// in with it when the policy publishes it.
     CreateSpace {
         row: SpaceRow,
     },
-    /// simplespace.updateSpace: each policy given replaces the space's.
+    /// space.updateSpace: the policy replaced wholesale. `members`: the
+    /// member list as the caller read it, whose records are published or
+    /// withdrawn when `publishMembers` flips, and whose rows go when the
+    /// policy's `$type` changes (migrating back doesn't restore them).
     UpdateSpace {
-        read_policy: Option<Policy>,
-        write_policy: Option<Policy>,
-        app_access: Option<AppAccess>,
+        policy: SpacePolicy,
+        members: Vec<(String, MemberRow)>,
     },
+    /// memberspace.putMember: `write` false also drops the member from the
+    /// writer set.
     PutMember {
         member: String,
         access: MemberRow,
     },
+    /// memberspace.removeMember, which drops the member from the writer
+    /// set too.
     RemoveMember {
         member: String,
     },
-    /// simplespace.deleteSpace: the space becomes a tombstone and the
+    /// space.clearRecords of the worker's account's repo in the space: the
+    /// records at `paths` (as the caller scanned them, the kept collections
+    /// left out) go, in one entry at a new rev with no ops. With `last`,
+    /// so do any records the overlay holds that the scan missed, provided
+    /// their collection is among `collections` (those the caller's grants
+    /// were checked for); one outside them is refused for a rescan.
+    ClearRecords {
+        paths: Vec<String>,
+        collections: Vec<String>,
+        last: bool,
+    },
+    /// space.removeWriter: out of listRepos until it writes again with the
+    /// policy's leave.
+    RemoveWriter {
+        writer: String,
+    },
+    /// space.deleteSpace: the space becomes a tombstone and the
     /// authority's own repo in it goes from reads at once. Its other rows
     /// are swept by the caller after the ack (`delete_space_rows`).
     DeleteSpace {
         deleted_at: String,
+    },
+    /// space.importSpaceMeta: the space as its authority's old host held
+    /// it, replacing what this one holds. `drop_*`: the member list and
+    /// writer set (with each writer's spaceRev) the caller read here, gone
+    /// first. Nothing is published: the records come with the authority's
+    /// repo (importRepo).
+    ImportSpaceMeta {
+        row: SpaceRow,
+        members: Vec<(String, MemberRow)>,
+        writers: Vec<(String, WriterRow)>,
+        drop_members: Vec<String>,
+        drop_writers: Vec<(String, Tid)>,
     },
     RegisterNotify {
         service: String,
@@ -207,6 +242,8 @@ pub enum SpaceError {
     SpaceNotFound,
     SpaceDeleted,
     SpaceAlreadyExists,
+    /// A memberspace method on a space another policy governs.
+    PolicyMismatch,
     NotAuthorized(String),
     /// A notify at the repoRev held for the writer with another hash, under
     /// [`SameRev::Verify`]: nothing was written.
@@ -300,6 +337,7 @@ impl SpaceHead {
 }
 
 /// A space the worker's account governs.
+#[derive(Clone)]
 pub struct HostHead {
     pub uri: Arc<str>,
     pub space: Option<SpaceRow>,
@@ -432,8 +470,35 @@ impl SpaceNeed {
             }
             SpaceOp::CreateSpace { .. } => {
                 self.host(st, sid, uri);
+                self.publish(st, sid, uri, did, [super::policy::policy_path()]);
+            }
+            SpaceOp::UpdateSpace { members, .. } => {
+                self.host(st, sid, uri);
+                let paths = members.iter().map(|(m, _)| super::policy::member_path(m));
+                self.publish(st, sid, uri, did, std::iter::once(super::policy::policy_path()).chain(paths));
+            }
+            SpaceOp::PutMember { member, .. } | SpaceOp::RemoveMember { member } => {
+                self.host(st, sid, uri);
+                self.writer(st, sid, member);
+                self.publish(st, sid, uri, did, [super::policy::member_path(member)]);
+            }
+            SpaceOp::RemoveWriter { writer } => {
+                self.host(st, sid, uri);
+                self.writer(st, sid, writer);
+            }
+            SpaceOp::ClearRecords { paths, .. } => {
                 self.head(st, sid, uri);
-                self.writer(st, sid, did);
+                for p in paths {
+                    if !st.repos.get(&sid).is_some_and(|h| h.known(p).is_some())
+                        && !self.paths.contains(&(sid, p.clone()))
+                    {
+                        self.paths.push((sid, p.clone()));
+                    }
+                }
+                if authority(uri) == Some(did) {
+                    self.host(st, sid, uri);
+                    self.writer(st, sid, did);
+                }
             }
             SpaceOp::DeleteSpace { .. } => {
                 self.host(st, sid, uri);
@@ -451,11 +516,28 @@ impl SpaceNeed {
                 self.host(st, sid, uri);
                 self.registration(st, sid, service);
             }
-            SpaceOp::UpdateSpace { .. }
-            | SpaceOp::PutMember { .. }
-            | SpaceOp::RemoveMember { .. }
-            | SpaceOp::RegisterNotify { .. }
-            | SpaceOp::UnregisterNotify { .. } => self.host(st, sid, uri),
+            SpaceOp::RegisterNotify { .. } | SpaceOp::UnregisterNotify { .. } | SpaceOp::ImportSpaceMeta { .. } => {
+                self.host(st, sid, uri)
+            }
+        }
+    }
+
+    /// The authority's repo, its writer state and `paths` in it: for the
+    /// published records an op may write.
+    fn publish(
+        &mut self,
+        st: &SpaceStates,
+        sid: SpaceId,
+        uri: &Arc<str>,
+        did: &str,
+        paths: impl IntoIterator<Item = String>,
+    ) {
+        self.head(st, sid, uri);
+        self.writer(st, sid, did);
+        for p in paths {
+            if !st.repos.get(&sid).is_some_and(|h| h.known(&p).is_some()) && !self.paths.contains(&(sid, p.clone())) {
+                self.paths.push((sid, p));
+            }
         }
     }
 }
@@ -748,6 +830,108 @@ pub fn write(
     Ok(Ok(BuiltWrite { muts, rev, head: durable, notify, sequenced, results }))
 }
 
+/// space.clearRecords' entry (see [`SpaceOp::ClearRecords`]): every
+/// record at `paths` and its blob refs go, the head moves to a new rev with
+/// the remaining records' hash, and the authority hears of it as of any
+/// write. No oplog rows: the caller sweeps the ops before the new rev once
+/// it is acked, so listRepoOps from an earlier `since` gets the commit
+/// alone. Ok(None): nothing to delete (no new rev, no notification).
+#[allow(clippy::too_many_arguments)]
+pub fn clear(
+    st: &mut SpaceStates,
+    did: &str,
+    sid: SpaceId,
+    uri: &Arc<str>,
+    paths: Vec<String>,
+    collections: &[String],
+    last: bool,
+    clock_id: u64,
+    applied: &Arc<AtomicBool>,
+) -> Result<Option<BuiltWrite>, SpaceError> {
+    let own = authority(uri) == Some(did);
+    if own && st.hosts.get(&sid).and_then(|h| h.space.as_ref()).is_some_and(|s| !s.live()) {
+        return Err(SpaceError::SpaceDeleted);
+    }
+    let head = st.repos.get_mut(&sid).ok_or_else(|| internal("space head not loaded"))?;
+    if *head.uri != **uri {
+        return Err(internal(format!("space id collision: {} and {uri}", head.uri)));
+    }
+    if head.rev.is_none() {
+        return Ok(None);
+    }
+    let kept = |path: &str| own && path.split_once('/').is_some_and(|(c, _)| super::policy::is_published_collection(c));
+    let mut targets: Vec<(String, PathRec)> = Vec::new();
+    for path in paths {
+        if kept(&path) || targets.iter().any(|(p, _)| *p == path) {
+            continue;
+        }
+        let held = head.known(&path).ok_or_else(|| internal(format!("space record {path} not loaded")))?;
+        if let Some(r) = held.clone() {
+            targets.push((path, r));
+        }
+    }
+    if last {
+        // writes in flight when the caller scanned: theirs go too
+        let mut more: Vec<(String, PathRec)> = head
+            .overlay
+            .iter()
+            .filter(|(p, (r, _))| r.is_some() && !kept(p) && !targets.iter().any(|(t, _)| t == *p))
+            .map(|(p, (r, _))| (p.clone(), r.clone().expect("filtered")))
+            .collect();
+        more.sort_by(|a, b| a.0.cmp(&b.0));
+        for (p, _) in &more {
+            let c = p.split_once('/').map_or("", |(c, _)| c);
+            if !collections.iter().any(|g| g == c) {
+                return Err(SpaceError::Write(WriteError::Unavailable(
+                    "the space repo changed while clearing it; retry".into(),
+                )));
+            }
+        }
+        targets.extend(more);
+    }
+    if targets.is_empty() {
+        return Ok(None);
+    }
+    let rev = tid::next_rev(head.rev, clock_id);
+    let mut muts = Vec::with_capacity(3 * targets.len() + 6);
+    let mut batch = HashMap::with_capacity(targets.len());
+    let mut before = HashMap::with_capacity(targets.len());
+    for (path, rec) in targets {
+        let (collection, rkey) = path.split_once('/').unwrap_or((&path, ""));
+        head.hash.remove(&super::commit::element(collection, rkey, &rec.cid.to_string()));
+        head.records = head.records.saturating_sub(1);
+        muts.push(del(state::space_record_key(did, &sid, &path)));
+        before.insert(path.clone(), rec.blobs);
+        batch.insert(path, None);
+    }
+    blob_ref_mutations(did, sid, rev, &batch, &before, &mut muts);
+    head.rev = Some(rev);
+    for (path, rec) in batch {
+        head.overlay.insert(path, (rec, applied.clone()));
+    }
+    let row =
+        HeadRow { uri: uri.to_string(), rev, hash: head.hash.clone(), records: head.records, created: head.created };
+    muts.push(put(state::space_head_key(did, &sid), row.encode()));
+    let digest = head.hash.digest();
+    let durable = DurableSpaceHead {
+        uri: uri.clone(),
+        rev,
+        hash: head.hash.clone(),
+        records: head.records,
+        created: head.created,
+        shard: vlsync_store::slots::ShardId(0),
+        epoch: 0,
+    };
+    let (notify, sequenced) = if own {
+        (None, record_self(st, did, sid, rev, digest, clock_id, &mut muts)?)
+    } else {
+        let o = OutboxRow { uri: uri.to_string(), repo_rev: rev, hash: digest };
+        muts.push(put(state::space_outbox_key(did, &sid), o.encode()));
+        (Some(o), None)
+    };
+    Ok(Some(BuiltWrite { muts, rev, head: durable, notify, sequenced, results: Vec::new() }))
+}
+
 /// The `sb`/`sc` rows of a batch's net change per path: refs the record no
 /// longer names go, and every ref it names is (re)written with the batch's
 /// rev, so listBlobs `since` sees a blob kept across an update, as `b/`.
@@ -839,13 +1023,14 @@ pub fn record_writer(
     let host = st.hosts.get_mut(&sid).ok_or_else(|| internal("space host state not loaded"))?;
     let space = host.live().filter(|s| s.uri == uri).ok_or(SpaceError::SpaceNotFound)?;
     let allowed = writer == authority
-        || match &space.write_policy {
-            Policy::Public => true,
-            Policy::MemberList => match host.members.get(writer) {
+        || match &space.policy {
+            SpacePolicy::Personal => false,
+            SpacePolicy::Member { public_write: true, .. } => true,
+            SpacePolicy::Member { .. } => match host.members.get(writer) {
                 Some(m) => m.is_some_and(|m| m.write),
                 None => return Err(internal("space member not loaded")),
             },
-            Policy::ManagingApp { .. } => managing_app == Some(true),
+            SpacePolicy::Managed { .. } => managing_app == Some(true),
         };
     if !allowed {
         return Err(SpaceError::NotAuthorized("notifyWrite writer is not authorized".into()));
@@ -946,17 +1131,19 @@ pub fn import_commit(
     Ok(BuiltWrite { muts, rev, head, notify, sequenced, results: Vec::new() })
 }
 
-/// simplespace.createSpace: refused while a live space has the URI. Over a
+/// space.createSpace: refused while a live space has the URI. Over a
 /// tombstone it starts fresh (the caller swept the old rows first). Writes
 /// the authority made before creating it are sequenced now, as the
 /// reference's retried notify of them would be once the space exists.
+/// Hands back the policy record to publish.
 pub fn create_space(
     st: &mut SpaceStates,
     authority: &str,
     sid: SpaceId,
     row: SpaceRow,
     clock_id: u64,
-) -> Result<Vec<Mutation>, SpaceError> {
+) -> Result<(Vec<Mutation>, Vec<SpaceWrite>), SpaceError> {
+    let publish = vec![super::policy::policy_write(&row.policy)];
     let own = st.repos.get(&sid).and_then(|h| Some((h.rev?, h.hash.digest())));
     let host = st.hosts.get_mut(&sid).ok_or_else(|| internal("space host state not loaded"))?;
     if host.live().is_some() {
@@ -976,7 +1163,7 @@ pub fn create_space(
     if let Some((rev, hash)) = own {
         sequence(host, authority, sid, authority, rev, hash, clock_id, &mut muts)?;
     }
-    Ok(muts)
+    Ok((muts, needed(st, sid, publish)))
 }
 
 fn live_host(st: &mut SpaceStates, sid: SpaceId) -> Result<&mut HostHead, SpaceError> {
@@ -987,50 +1174,161 @@ fn live_host(st: &mut SpaceStates, sid: SpaceId) -> Result<&mut HostHead, SpaceE
     }
 }
 
-/// simplespace.updateSpace. None: nothing given, nothing written.
+/// The published-record writes that change something: a put of what the
+/// path already holds, or a withdrawal of nothing, is dropped.
+fn needed(st: &SpaceStates, sid: SpaceId, writes: Vec<SpaceWrite>) -> Vec<SpaceWrite> {
+    let Some(head) = st.repos.get(&sid) else { return writes };
+    writes
+        .into_iter()
+        .filter(|w| {
+            let held = head.known(&w.path()).map(|r| r.as_ref().map(|r| r.cid));
+            match held {
+                Some(held) => held != super::policy::written_cid(w),
+                None => true,
+            }
+        })
+        .collect()
+}
+
+/// space.updateSpace: the policy replaced wholesale. A new `$type` drops
+/// the member list (`members`, as the caller read it). Hands back the
+/// published records to write: the policy record, and every member's when
+/// `publishMembers` flips (so a migration away withdraws them).
 pub fn update_space(
     st: &mut SpaceStates,
     authority: &str,
     sid: SpaceId,
-    read_policy: Option<Policy>,
-    write_policy: Option<Policy>,
-    app_access: Option<AppAccess>,
-) -> Result<Option<Mutation>, SpaceError> {
+    policy: SpacePolicy,
+    members: Vec<(String, MemberRow)>,
+) -> Result<(Vec<Mutation>, Vec<SpaceWrite>), SpaceError> {
     let host = live_host(st, sid)?;
-    if read_policy.is_none() && write_policy.is_none() && app_access.is_none() {
-        return Ok(None);
-    }
     let mut row = host.space.clone().expect("live");
-    if let Some(p) = read_policy {
-        row.read_policy = p;
+    let current = std::mem::replace(&mut row.policy, policy.clone());
+    let mut muts = vec![put(state::space_key(authority, &sid), row.encode())];
+    let mut publish = vec![super::policy::policy_write(&policy)];
+    if current.publishes_members() != policy.publishes_members() {
+        for (m, a) in &members {
+            publish.push(super::policy::member_write(&policy, m, Some(*a)));
+        }
     }
-    if let Some(p) = write_policy {
-        row.write_policy = p;
+    if current.type_name() != policy.type_name() {
+        for (m, _) in &members {
+            muts.push(del(state::space_member_key(authority, &sid, m)));
+            host.members.insert(m.clone(), None);
+        }
     }
-    if let Some(a) = app_access {
-        row.app_access = a;
-    }
-    let m = put(state::space_key(authority, &sid), row.encode());
     host.space = Some(row);
-    Ok(Some(m))
+    Ok((muts, needed(st, sid, publish)))
 }
 
-/// simplespace.putMember (`access` Some: both flags replaced) and
-/// removeMember (None).
+/// memberspace.putMember (`access` Some: both flags replaced) and
+/// removeMember (None), on a member space only. A member who can't write
+/// leaves the writer set. Hands back its record to publish or withdraw.
 pub fn set_member(
     st: &mut SpaceStates,
     authority: &str,
     sid: SpaceId,
     member: &str,
     access: Option<MemberRow>,
-) -> Result<Mutation, SpaceError> {
+) -> Result<(Vec<Mutation>, Vec<SpaceWrite>), SpaceError> {
     let host = live_host(st, sid)?;
+    let policy = host.space.as_ref().expect("live").policy.clone();
+    if !policy.is_member() {
+        return Err(SpaceError::PolicyMismatch);
+    }
     let key = state::space_member_key(authority, &sid, member);
     host.members.insert(member.to_string(), access);
-    Ok(match access {
+    let mut muts = vec![match access {
         Some(a) => put(key, a.encode()),
         None => del(key),
-    })
+    }];
+    if !access.is_some_and(|a| a.write) {
+        drop_writer(host, authority, sid, member, &mut muts)?;
+    }
+    let publish = vec![super::policy::member_write(&policy, member, access)];
+    Ok((muts, needed(st, sid, publish)))
+}
+
+/// space.importSpaceMeta: what the host held goes, then the imported
+/// policy, members and writers go in. Each writer keeps its spaceRev (so
+/// listRepos cursors stay valid), sequenced in spaceRev order; the next
+/// write sequences after all of them.
+#[allow(clippy::too_many_arguments)]
+pub fn import_space_meta(
+    st: &mut SpaceStates,
+    authority: &str,
+    sid: SpaceId,
+    row: SpaceRow,
+    members: Vec<(String, MemberRow)>,
+    mut writers: Vec<(String, WriterRow)>,
+    drop_members: Vec<String>,
+    drop_writers: Vec<(String, Tid)>,
+) -> Result<Vec<Mutation>, SpaceError> {
+    let host = st.hosts.get_mut(&sid).ok_or_else(|| internal("space host state not loaded"))?;
+    let mut muts = Vec::with_capacity(2 + 2 * (members.len() + drop_members.len()) + 4 * writers.len());
+    for m in drop_members {
+        muts.push(del(state::space_member_key(authority, &sid, &m)));
+        host.members.insert(m, None);
+    }
+    for (w, space_rev) in drop_writers {
+        muts.push(del(state::space_seq_key(authority, &sid, space_rev.0)));
+        muts.push(del(state::space_writer_key(authority, &sid, &w)));
+        host.writers.insert(w, None);
+    }
+    muts.push(put(state::space_key(authority, &sid), row.encode()));
+    muts.push(put(state::space_list_key(authority, &row.uri, SpaceListed::Governs), Bytes::new()));
+    for (m, a) in members {
+        muts.push(put(state::space_member_key(authority, &sid, &m), a.encode()));
+        host.members.insert(m, Some(a));
+    }
+    writers.sort_by_key(|(_, w)| w.space_rev);
+    let mut prev = None;
+    for (w, r) in writers {
+        let seq = SeqRow { prev, writer: w.clone() };
+        muts.push(put(state::space_seq_key(authority, &sid, r.space_rev.0), seq.encode()));
+        muts.push(put(state::space_writer_key(authority, &sid, &w), r.encode()));
+        prev = Some(r.space_rev);
+        host.writers.insert(w, Some(r));
+    }
+    host.max_space_rev = host.max_space_rev.max(prev);
+    host.space = Some(row);
+    Ok(muts)
+}
+
+/// space.removeWriter. Idempotent: a DID not in the writer set writes
+/// nothing.
+pub fn remove_writer(
+    st: &mut SpaceStates,
+    authority: &str,
+    sid: SpaceId,
+    writer: &str,
+) -> Result<Vec<Mutation>, SpaceError> {
+    let host = live_host(st, sid)?;
+    let mut muts = Vec::with_capacity(2);
+    drop_writer(host, authority, sid, writer, &mut muts)?;
+    Ok(muts)
+}
+
+/// The writer's `sW` row and its `sQ` entry go, so listRepos stops naming
+/// it; it is sequenced afresh by its next write the policy allows. Not
+/// announced to syncers, and its records stay on its repo host.
+fn drop_writer(
+    host: &mut HostHead,
+    authority: &str,
+    sid: SpaceId,
+    writer: &str,
+    muts: &mut Vec<Mutation>,
+) -> Result<(), SpaceError> {
+    match host.writers.get(writer) {
+        None => Err(internal("space writer state not loaded")),
+        Some(None) => Ok(()),
+        Some(Some(row)) => {
+            muts.push(del(state::space_seq_key(authority, &sid, row.space_rev.0)));
+            muts.push(del(state::space_writer_key(authority, &sid, writer)));
+            host.writers.insert(writer.to_string(), None);
+            Ok(())
+        }
+    }
 }
 
 /// registerNotify (`row` Some) and unregisterNotify. With `expired_by`,
@@ -1060,7 +1358,7 @@ pub fn set_registration(
     }))
 }
 
-/// simplespace.deleteSpace: Ok(None) if it already was a tombstone. A
+/// space.deleteSpace: Ok(None) if it already was a tombstone. A
 /// space the authority only wrote to (never created) is deleted too, as
 /// the reference's `ensureSpace` row is.
 pub fn delete_space(
@@ -1480,9 +1778,15 @@ mod tests {
         record_writer(&mut st, auth, sid, URI, "did:plc:w", Tid(10), [1; 32], None, SameRev::Sequence, 1)
             .unwrap()
             .unwrap();
-        assert!(update_space(&mut st, auth, sid, None, None, None).unwrap().is_none());
-        let m = update_space(&mut st, auth, sid, Some(Policy::Public), None, None).unwrap().unwrap();
-        assert_eq!(SpaceRow::decode(m.val.as_ref().unwrap()).unwrap().read_policy, Policy::Public);
+        let public = SpacePolicy::Member {
+            public_read: true,
+            public_write: false,
+            allowed_apps: None,
+            publish_policy: false,
+            publish_members: false,
+        };
+        let (m, _) = update_space(&mut st, auth, sid, public.clone(), Vec::new()).unwrap();
+        assert_eq!(SpaceRow::decode(m[0].val.as_ref().unwrap()).unwrap().policy, public);
         let muts = delete_space(&mut st, auth, sid, URI, "t2".into()).unwrap().unwrap();
         let keys: Vec<_> = muts[1..].iter().map(|m| (m.key.to_vec(), m.val.is_none())).collect();
         let list = |why| state::space_list_key(auth, URI, why);
@@ -1539,7 +1843,7 @@ mod tests {
             .ok()
             .unwrap();
         assert!(b.sequenced.is_none() && b.notify.is_none(), "not created yet: nothing to sequence");
-        let muts = create_space(&mut st, auth, sid, SpaceRow::defaults(URI, "t"), 1).unwrap();
+        let (muts, _) = create_space(&mut st, auth, sid, SpaceRow::defaults(URI, "t"), 1).unwrap();
         assert_eq!(muts.len(), 4, "sS, sL, sQ, sW");
         assert_eq!(muts[1].key.to_vec(), state::space_list_key(auth, URI, SpaceListed::Governs));
         assert_eq!(st.hosts[&sid].writers[auth].unwrap().repo_rev, b.rev);

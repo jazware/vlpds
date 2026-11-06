@@ -86,7 +86,7 @@ impl Stub {
                 "controller": did,
                 "publicKeyMultibase": key.public_multibase(),
             }],
-            "service": [{"id": "#atproto_space_host", "type": "AtprotoSpaceHost", "serviceEndpoint": base}],
+            "service": [{"id": "#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": base}],
         });
         let notifies: Arc<Mutex<Vec<J>>> = Default::default();
         let status = Arc::new(Mutex::new(200u16));
@@ -174,7 +174,7 @@ async fn credential_cache_hits_still_check_signatures() {
     r.err(401, "BadSpaceSignature");
     // cached, signed for one audience and sent with another
     let mut rb = a.srv.http.get(&get);
-    for (k, v) in a.holder.headers(&format!("Atproto-Space {cred}"), Some(&a.did)) {
+    for (k, v) in a.holder.headers(&cred, &a.did) {
         let v = if k == "atproto-space-audience" { "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa".to_string() } else { v };
         rb = rb.header(k, v);
     }
@@ -248,7 +248,7 @@ async fn revocation_is_durable_scoped_and_authorized() {
     revoke(&first, &stub.service_jwt("did:plc:aaaaaaaaaaaaaaaaaaaaaaaa", REVOKE), &sp1, &["j1"])
         .await
         .err(403, "Forbidden");
-    let frag = format!("{}#atproto_space_host", m.did);
+    let frag = format!("{}#atproto_pds", m.did);
     revoke(&first, &stub.service_jwt(&frag, REVOKE), &sp1, &["j1"]).await.err(403, "Forbidden");
     let wrong_lxm = stub.service_jwt(&m.did, "com.atproto.space.notifyWrite");
     revoke(&first, &wrong_lxm, &sp1, &["j1"]).await.err(401, "BadJwtLexiconMethod");
@@ -407,7 +407,7 @@ async fn record_takedown_hides_the_record() {
                 assert_eq!(rkeys, ["shown", "hidden"]);
                 assert_eq!(op.unwrap()["value"]["text"], json!("x"));
             }
-            ops["commit"]["hash"].clone()
+            ops["commit"]["data"].clone()
         }
     };
     let before = check(false).await;
@@ -616,7 +616,7 @@ async fn list_spaces_index_pages() {
     }
     // a deleted space goes, whether the authority wrote in it or not
     for (t, k) in [(TYPE, "g01"), (TYPE, "g05"), (OTHER, "b07")] {
-        a.post("com.atproto.simplespace.deleteSpace", json!({"space": own(t, k)})).await.ok();
+        a.post("com.atproto.space.deleteSpace", json!({"space": own(t, k)})).await.ok();
         want.remove(&own(t, k));
     }
     assert_eq!(want.len(), 21 + 8);

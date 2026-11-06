@@ -28,8 +28,7 @@ export type SpaceRow = {
   handle?: string
   spaceType: string
   skey: string
-  readPolicy: string
-  writePolicy: string
+  policy: string
   appAccess: string
   createdAt: string
   deletedAt?: string
@@ -46,7 +45,7 @@ type ListOut = { totals: Totals; count: number; spaces: SpaceRow[]; cursor?: str
 type Writer = { did: string; handle?: string | null; repoRev: Rev; spaceRev: Rev; hash: string; local: boolean; records?: number; headRev?: Rev; takendownRecords?: number }
 type Registration = { service: string; host?: string | null; expiresAt?: string; expired: boolean }
 type SpaceInfo = {
-  space: { uri: string; authority: string; handle?: string | null; spaceType: string; skey: string; readPolicy: string; writePolicy: string; appAccess: string; createdAt: string; deletedAt?: string | null; takendown: boolean }
+  space: { uri: string; authority: string; handle?: string | null; spaceType: string; skey: string; policy: string; policyObject?: Record<string, unknown>; appAccess: string; createdAt: string; deletedAt?: string | null; takendown: boolean }
   members: { did: string; handle?: string | null; read: boolean; write: boolean }[]
   moreMembers: boolean
   writers: Writer[]
@@ -257,7 +256,7 @@ function SpacesOn() {
       ),
     },
     { id: 'auth', label: 'Authority', render: (s) => <Who did={s.authority} handle={s.handle} /> },
-    { id: 'rw', label: 'Read / write', render: (s) => <span className="t2">{s.readPolicy} / {s.writePolicy}</span> },
+    { id: 'rw', label: 'Policy', render: (s) => <span className="t2">{s.policy}</span> },
     { id: 'app', label: 'App', render: (s) => <span className="mono sm t2">{s.appAccess}</span> },
     { id: 'm', label: 'Members', r: true, render: (s) => <span className="mono">{s.members > d!.countCap ? `${fmtNum(d!.countCap)}+` : fmtNum(s.members)}</span> },
     { id: 'w', label: 'Writers', r: true, render: (s) => <span className="mono">{fmtNum(s.writers)}</span> },
@@ -684,7 +683,7 @@ registerDetail('space', {
             ]}
           />
         ) : (
-          <Empty>No members. Writers on a managing-app or public policy needn’t be on the list.</Empty>
+          <Empty>No members. Writers in a managed space, or one open to anyone’s writes, needn’t be on the list.</Empty>
         )}
       </Sec>
     )
@@ -757,12 +756,12 @@ registerDetail('space', {
       </Sec>
     )
     const info = (
-      <Sec title="Space" digest={`${s.readPolicy} read · ${s.writePolicy} write`} open>
+      <Sec title="Space" digest={s.policy} open>
         <KV
           rows={[
             ['URI', <Copy text={s.uri}>{`at://${shortDid(s.authority)}/space/${s.spaceType}/${s.skey}`}</Copy>],
             ['Authority', <Who did={s.authority} handle={s.handle} />],
-            ['Read / write', `${s.readPolicy} / ${s.writePolicy}`],
+            ['Policy', s.policy],
             ['App access', <span className="mono">{s.appAccess}</span>],
             ['Created', ago(Date.parse(s.createdAt))],
             ['State', <StateChip s={s} />],

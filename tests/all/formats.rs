@@ -201,6 +201,7 @@ fn account() -> vlpds::state::Account {
         handle: "fixture.test".into(),
         wrapped_signing_key: "vw1.kid.AAAA".into(),
         signing_pubkey: "zQ3shfixture".into(),
+        kem_key: None,
         password_hash: "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA".into(),
         created_at: TIME.into(),
         status: Some("deactivated".into()),

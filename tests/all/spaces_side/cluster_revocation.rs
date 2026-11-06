@@ -52,7 +52,7 @@ impl Fixture {
         let member = SpaceClient::new(owner, &unique_name("rvm"), &scope).await;
         let space = auth.create_space(&st, "rv").await;
         let m = json!({"space": space, "did": member.did, "read": true, "write": true});
-        auth.post("com.atproto.simplespace.putMember", m).await.ok();
+        auth.post("com.atproto.memberspace.putMember", m).await.ok();
         let rec = json!({"$type": collection, "text": "revocation target", "createdAt": now_iso()});
         member.create_record(&space, &collection, Some("r"), rec).await.ok();
         Fixture { auth, member, space, collection, http: reqwest::Client::new() }

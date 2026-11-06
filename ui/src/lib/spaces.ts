@@ -159,41 +159,89 @@ export async function myRepo(s: OAuthSession, space: string): Promise<MyRepo | n
   return { records, more, rev, lastWrite: tidTime(rev) }
 }
 
-export type Policy = { $type: string; managingApp?: string }
+export const PERSONAL_POLICY = 'com.atproto.personalspace.policy'
+export const MEMBER_POLICY = 'com.atproto.memberspace.policy'
+export const MANAGED_POLICY = 'com.atproto.managedspace.policy'
+
+/** A space's policy, as getSpace returns it (an open union by `$type`). */
+export type Policy = {
+  $type: string
+  publicRead?: boolean
+  publicWrite?: boolean
+  allowedApps?: string[]
+  publishPolicy?: boolean
+  publishMembers?: boolean
+  managingApp?: string
+}
 export type Member = { did: string; read: boolean; write: boolean }
-export type Governance = { readPolicy: Policy; writePolicy: Policy; appAccess: { $type: string; allowed?: string[] }; members: Member[]; more: boolean }
+export type Governance = { policy: Policy; members: Member[]; more: boolean }
 
 const MEMBER_PAGES = 10
 
-/** A space the account governs: its policies and members. */
+export const isMemberspace = (p?: Policy) => p?.$type === MEMBER_POLICY
+
+/** A space the account governs: its policy, and its members when it has a member list. */
 export async function governance(s: OAuthSession, space: string): Promise<Governance> {
-  const g = await s.call('com.atproto.simplespace.getSpace', { params: { space } })
+  const g = await s.call('com.atproto.space.getSpace', { params: { space } })
+  const policy: Policy = g.policy ?? { $type: '' }
   const members: Member[] = []
   let more = false
-  for (let cursor: string | undefined, i = 0; ; i++) {
+  // only a member space has a member list (others answer PolicyMismatch)
+  for (let cursor: string | undefined, i = 0; isMemberspace(policy); i++) {
     if (i === MEMBER_PAGES) {
       more = true
       break
     }
-    const r = await s.call('com.atproto.simplespace.listMembers', { params: { space, limit: 1000, cursor } })
+    const r = await s.call('com.atproto.memberspace.listMembers', { params: { space, limit: 1000, cursor } })
     members.push(...(r.members ?? []))
     if (!r.cursor || !(r.members ?? []).length) break
     cursor = r.cursor
   }
-  return { readPolicy: g.readPolicy, writePolicy: g.writePolicy, appAccess: g.appAccess, members, more }
+  return { policy, members, more }
 }
 
-export function policyText(p?: Policy): string {
-  switch (p?.$type?.split('#')[1]) {
-    case 'publicPolicy':
-      return 'anyone'
-    case 'memberListPolicy':
-      return 'members'
-    case 'managingAppPolicy':
-      return 'an app decides'
+/** The policy's kind: Personal, Members or Managed by an app. */
+export function policyKind(p?: Policy): string {
+  switch (p?.$type) {
+    case PERSONAL_POLICY:
+      return 'Personal'
+    case MEMBER_POLICY:
+      return 'Members'
+    case MANAGED_POLICY:
+      return `Managed by ${p.managingApp ?? 'an app'}`
     default:
-      return p?.$type ?? '—'
+      return p?.$type || '—'
   }
+}
+
+/** Who can read and write besides the owner. */
+export function policySides(p?: Policy): { read: string; write: string } {
+  switch (p?.$type) {
+    case PERSONAL_POLICY:
+      return { read: 'only you', write: 'only you' }
+    case MEMBER_POLICY:
+      return { read: p.publicRead ? 'anyone' : 'members', write: p.publicWrite ? 'anyone' : 'members' }
+    case MANAGED_POLICY:
+      return { read: 'the app decides', write: 'the app decides' }
+    default:
+      return { read: '—', write: '—' }
+  }
+}
+
+/** Read · write, in one line. */
+export function policyText(p?: Policy): string {
+  const { read, write } = policySides(p)
+  return `${read} · ${write}`
+}
+
+/** What the policy publishes as records in your repo in the space. */
+export function publishedText(p?: Policy): string | undefined {
+  const policy = !!p?.publishPolicy
+  const members = isMemberspace(p) && !!p?.publishMembers
+  if (policy && members) return 'The policy and member list are published in the space.'
+  if (policy) return 'The policy is published in the space.'
+  if (members) return 'The member list is published in the space.'
+  return undefined
 }
 
 /** Runs `fn` over `xs`, `n` at a time. */

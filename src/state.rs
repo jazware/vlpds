@@ -212,9 +212,11 @@ pub const SPACE_NOTIFY_FAMILY: &[u8] = b"sN/";
 pub const SPACE_BLOB_FAMILY: &[u8] = b"sb/";
 pub const SPACE_BLOB_CID_FAMILY: &[u8] = b"sc/";
 pub const SPACE_LIST_FAMILY: &[u8] = b"sL/";
+/// notifySpaceDeleted owed to a service (`crate::space::deletions`).
+pub const SPACE_DELETED_FAMILY: &[u8] = b"sD/";
 
 /// Every Spaces family: rows that must never reach a firehose frame.
-pub const SPACE_FAMILIES: [&[u8]; 12] = [
+pub const SPACE_FAMILIES: [&[u8]; 13] = [
     SPACE_HEAD_FAMILY,
     SPACE_RECORD_FAMILY,
     SPACE_OPLOG_FAMILY,
@@ -227,6 +229,7 @@ pub const SPACE_FAMILIES: [&[u8]; 12] = [
     SPACE_BLOB_FAMILY,
     SPACE_BLOB_CID_FAMILY,
     SPACE_LIST_FAMILY,
+    SPACE_DELETED_FAMILY,
 ];
 
 /// Why an account is listed under a space URI in `sL/`.
@@ -321,6 +324,10 @@ pub fn space_seq_key(authority: &str, sid: &SpaceId, space_rev: u64) -> Vec<u8> 
 
 pub fn space_notify_key(authority: &str, sid: &SpaceId, service: &str) -> Vec<u8> {
     keyed(authority, SPACE_NOTIFY_FAMILY, &[authority.as_bytes(), b"\0", sid, service.as_bytes()])
+}
+
+pub fn space_deleted_key(authority: &str, sid: &SpaceId, service: &str) -> Vec<u8> {
+    keyed(authority, SPACE_DELETED_FAMILY, &[authority.as_bytes(), b"\0", sid, service.as_bytes()])
 }
 
 /// The CID is in its string form, as in `b/`, so listBlobs pages in the
@@ -657,8 +664,25 @@ pub struct Account {
     /// refused meanwhile (DESIGN.md "Signing-key rotation").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_signing_key: Option<PendingSigningKey>,
+    /// The `#atproto_kem` key syncers establish Spaces MAC secrets with
+    /// (`crate::space::kem_keys`); None until it's made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kem_key: Option<KemKeyRow>,
     #[serde(default, flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct KemKeyRow {
+    /// The P-256 scalar wrapped under the KEK (`secrets::Purpose::KemKey`,
+    /// bound to the DID).
+    pub wrapped: String,
+    /// Multibase multikey.
+    pub pubkey: String,
+    /// The DID document is known to list it (false: not yet, or not ours to
+    /// change).
+    #[serde(default)]
+    pub published: bool,
 }
 
 fn is_zero(v: &u64) -> bool {

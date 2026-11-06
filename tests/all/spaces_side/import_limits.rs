@@ -1,9 +1,9 @@
 //! `vlpds.space.importRepo` under hostile bodies: everything that costs
 //! memory is checked before the body is read (a space write grant, the
 //! account's rate limit and import slots, the import budget), and every
-//! block is capped from its length before it's buffered: the commit at
-//! 1 KiB, the index at `--space-repo-max-records` × 128 bytes (1 MiB at
-//! least), a record at 1 MB, as a space write's.
+//! frame is capped from its length before it's buffered: the metadata at
+//! 4 KiB, a record path at 1 KiB, a record at 1 MiB (STAR's profile), and
+//! the record count at `--space-repo-max-records`.
 
 use super::phase3::*;
 use super::ref_net::*;
@@ -43,7 +43,7 @@ async fn try_import_body(sc: &SpaceClient, space: &str, body: impl Fn() -> reqwe
             .post(&url)
             .header("dpop", sc.key.proof("POST", &url, Some(&sc.access)))
             .header("authorization", format!("DPoP {}", sc.access))
-            .header("content-type", CAR_TYPE)
+            .header("content-type", STAR_TYPE)
             .body(body());
         let r = crate::common::spaces::resp(rb.send().await.ok()?).await;
         if let Some(n) = r.headers.get("dpop-nonce").and_then(|v| v.to_str().ok()) {
@@ -62,11 +62,11 @@ fn hanging() -> reqwest::Body {
     reqwest::Body::wrap_stream(futures::stream::pending::<Result<bytes::Bytes, std::io::Error>>())
 }
 
-/// `car` in 64 KiB chunks, counting what the server pulled, then never
+/// `body` in 64 KiB chunks, counting what the server pulled, then never
 /// ending: an answer can't wait for the end.
-fn counted(car: bytes::Bytes, pulled: Arc<AtomicUsize>) -> reqwest::Body {
+fn counted(body: bytes::Bytes, pulled: Arc<AtomicUsize>) -> reqwest::Body {
     let chunks: Vec<bytes::Bytes> =
-        (0..car.len()).step_by(64 << 10).map(|i| car.slice(i..(i + (64 << 10)).min(car.len()))).collect();
+        (0..body.len()).step_by(64 << 10).map(|i| body.slice(i..(i + (64 << 10)).min(body.len()))).collect();
     let sent = futures::stream::iter(chunks).map(move |c| {
         pulled.fetch_add(c.len(), Ordering::Relaxed);
         Ok::<_, std::io::Error>(c)
@@ -84,42 +84,50 @@ fn rss() -> u64 {
         .map_or(0, |kb| kb << 10)
 }
 
-/// A dag-cbor array of `n` ones: ~40 bytes per byte as a decoded value.
-fn ones(n: usize) -> Vec<u8> {
-    let mut b = vec![0x9a];
-    b.extend_from_slice(&(n as u32).to_be_bytes());
-    b.resize(5 + n, 0x01);
-    b
-}
-
 fn records(b: RepoBuilder, n: usize) -> RepoBuilder {
     (0..n).fold(b, |b, i| {
         b.record(TEST_COLLECTION, &format!("imp{i:04}"), record(TEST_COLLECTION, &format!("imported {i}")))
     })
 }
 
-/// A 32 MiB root block of tiny items (the commit, or the index after a
-/// real commit) is refused from its length: 8 accounts at once finish fast, the
-/// server pulls a fraction of each body, and the process barely grows
-/// (a decode would hold ~1.3 GB each).
+/// A frame of `len` bytes (its varint length, then zeros) after `prefix`.
+fn framed(prefix: &[u8], len: usize) -> Vec<u8> {
+    let mut b = prefix.to_vec();
+    vlpds::space::star::write_varint(&mut b, len as u64);
+    b.resize(b.len() + len, 0);
+    b
+}
+
+/// A 32 MiB metadata frame, or a 32 MiB record path after a real header, is
+/// refused from its length: 8 accounts at once finish fast, the server
+/// pulls a fraction of each body, and the process barely grows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_huge_root_block_is_refused_cheaply() {
+async fn a_huge_frame_is_refused_cheaply() {
     let o = one_with(|_, _| {}).await;
-    let s = &o.net.pds[0];
-    let built = records(RepoBuilder::new(&o.space, &o.bob.did, &rev_ago(Duration::from_secs(60))), 1)
-        .build(&*account_key(s, &o.bob.did).await);
-    let huge = ones((32 << 20) - 64);
-    let huge_cid = Cid::dag_cbor(&huge);
-    let as_commit = write_car(&[huge_cid, built.index_cid], &[(huge_cid, huge.clone())]);
-    let as_index =
-        write_car(&[built.commit_cid, huge_cid], &[(built.commit_cid, built.commit_block.clone()), (huge_cid, huge)]);
+    let rev = rev_ago(Duration::from_secs(60));
+    let built = records(RepoBuilder::new(&o.space, &o.bob.did, &rev), 1).build();
     // one import per account: an account runs two at once
     let mut actors = vec![];
     for i in 0..8 {
-        actors.push(o.net.actor(&format!("imp{i}"), 0).await);
+        let sc = o.net.actor(&format!("imp{i}"), 0).await;
+        put_member(&o.alice, &o.space, &sc, true, true).await.ok();
+        actors.push(sc);
     }
-    for (what, car) in [("commit", as_commit), ("index", as_index)] {
-        let car = bytes::Bytes::from(car);
+    // a path frame follows each account's own commit
+    let as_path = |sc: &SpaceClient| {
+        let mut header = Vec::new();
+        vlpds::space::star::write_header(&mut header, &RepoBuilder::new(&o.space, &sc.did, &rev).build().commit);
+        bytes::Bytes::from(framed(&header, (32 << 20) - 64))
+    };
+    let as_meta = bytes::Bytes::from(framed(&vlpds::space::star::MAGIC, (32 << 20) - 64));
+    for what in ["metadata", "record path"] {
+        let bodies: Vec<bytes::Bytes> = actors
+            .iter()
+            .map(|sc| match what {
+                "metadata" => as_meta.clone(),
+                _ => as_path(sc),
+            })
+            .collect();
         let base = rss();
         let peak = Arc::new(std::sync::atomic::AtomicU64::new(base));
         let sampling = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -134,10 +142,10 @@ async fn a_huge_root_block_is_refused_cheaply() {
         };
         let t = Instant::now();
         let pulled: Vec<Arc<AtomicUsize>> = (0..8).map(|_| Arc::default()).collect();
-        let runs = pulled.iter().zip(&actors).map(|(p, sc)| {
-            let (car, p) = (car.clone(), p.clone());
+        let runs = pulled.iter().zip(&actors).zip(&bodies).map(|((p, sc), body)| {
+            let (body, p) = (body.clone(), p.clone());
             let space = &o.space;
-            async move { try_import_body(sc, space, || counted(car.clone(), p.clone())).await }
+            async move { try_import_body(sc, space, || counted(body.clone(), p.clone())).await }
         });
         let rs = tokio::time::timeout(Duration::from_secs(20), futures::future::join_all(runs))
             .await
@@ -154,18 +162,18 @@ async fn a_huge_root_block_is_refused_cheaply() {
         assert!(took < Duration::from_secs(10), "{what}: {took:?}");
         assert!(grew < 400 << 20, "{what}: RSS grew {} MiB", grew >> 20);
         assert!(most < 24 << 20, "{what}: the server pulled {} MiB of a 32 MiB body", most >> 20);
-        // the first 64 KiB (the block's length) are enough for the answer
-        let prefix = car.slice(..64 << 10);
+        // the first 64 KiB (the frame's length) are enough for the answer
+        let prefix = bodies[0].slice(..64 << 10);
         let r = tokio::time::timeout(
             Duration::from_secs(10),
             import_body(&actors[0], &o.space, || counted(prefix.clone(), Arc::default())),
         )
         .await
-        .unwrap_or_else(|_| panic!("{what}: the import waited for the block"));
-        refused_mentioning(&r, &[&format!("{what} block is over")]);
+        .unwrap_or_else(|_| panic!("{what}: the import waited for the frame"));
+        refused_mentioning(&r, &[&format!("the {what} is over")]);
     }
     nothing_written_here(&o.bob, &o.space).await;
-    import_repo(&o.bob, &o.space, &built.car()).await.ok();
+    import_repo(&o.bob, &o.space, &built.star()).await.ok();
 }
 
 async fn nothing_written_here(sc: &SpaceClient, space: &str) {
@@ -194,55 +202,31 @@ async fn a_grant_without_space_write_is_refused_before_the_body() {
     assert!(waited.is_err(), "a write grant got an answer without a body: {:?}", waited.unwrap());
 }
 
-/// The commit over 1 KiB, the index over its cap and a record over 1 MB
-/// are each refused, naming the block, and nothing is written.
+/// Metadata over 4 KiB, a record over 1 MiB and more records than the cap
+/// are each refused, naming what, and nothing is written.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn oversize_blocks_are_refused() {
+async fn oversize_frames_are_refused() {
     let o = one_with(|_, c| c.space_repo_max_records = 1000).await;
-    let s = &o.net.pds[0];
-    let key = account_key(s, &o.bob.did).await;
     let rev = rev_ago(Duration::from_secs(60));
-    let built = records(RepoBuilder::new(&o.space, &o.bob.did, &rev), 2).build(&key);
-    assert!(built.commit_block.len() < 512, "a real commit is {} bytes", built.commit_block.len());
+    let built = records(RepoBuilder::new(&o.space, &o.bob.did, &rev), 2).build();
 
-    // a commit padded past 1 KiB
-    let mut padded = Value::decode(&built.commit_block).unwrap();
-    let Value::Map(m) = &mut padded else { unreachable!() };
-    m.push(("zzzzzzzzzz".into(), Value::Bytes(vec![0; 1100])));
-    let pb = padded.to_cbor();
-    let pc = Cid::dag_cbor(&pb);
-    let car = built.car_with(|bl| bl[0] = (pc, pb.clone()));
-    let car = {
-        let (_, bl) = vlatproto::car::read_car(&car).unwrap();
-        let owned: Vec<(Cid, Vec<u8>)> = bl.iter().map(|(c, b)| (*c, b.to_vec())).collect();
-        write_car(&[pc, built.index_cid], &owned)
-    };
-    refused_mentioning(&import_repo(&o.bob, &o.space, &car).await, &["commit block is over"]);
+    // metadata padded past 4 KiB
+    let meta = framed(&vlpds::space::star::MAGIC, 5000);
+    refused_mentioning(&import_repo(&o.bob, &o.space, &meta).await, &["the metadata is over"]);
 
-    // an index over max(1000 × 128 B, 1 MiB): 20k entries of ~60 bytes
-    let fake = Cid::dag_cbor(b"x");
-    let entries: Vec<(String, Cid)> = (0..20_000).map(|i| (format!("{TEST_COLLECTION}/k{i:06}"), fake)).collect();
-    let ib = index_block(&entries);
-    assert!(ib.len() > 1 << 20);
-    let ic = Cid::dag_cbor(&ib);
-    let car = write_car(&[built.commit_cid, ic], &[(built.commit_cid, built.commit_block.clone()), (ic, ib)]);
-    refused_mentioning(&import_repo(&o.bob, &o.space, &car).await, &["index block is over"]);
-    // under the byte cap but over the record count: refused from the map's head
-    let entries: Vec<(String, Cid)> = (0..1001).map(|i| (format!("{TEST_COLLECTION}/k{i:06}"), fake)).collect();
-    let ib = index_block(&entries);
-    let ic = Cid::dag_cbor(&ib);
-    let car = write_car(&[built.commit_cid, ic], &[(built.commit_cid, built.commit_block.clone()), (ic, ib)]);
-    refused_mentioning(&import_repo(&o.bob, &o.space, &car).await, &["limit"]);
+    // over the record count, counted as the records come
+    let many = records(RepoBuilder::new(&o.space, &o.bob.did, &rev), 1001).build();
+    refused_mentioning(&import_repo(&o.bob, &o.space, &many.star()).await, &["limit"]);
 
-    // a record over 1 MB, which a space write refuses too
+    // a record over 1 MiB, the most an archive's record may be
     let big = RepoBuilder::new(&o.space, &o.bob.did, &rev).record(
         TEST_COLLECTION,
         "big",
-        json!({"$type": TEST_COLLECTION, "text": "x".repeat(1_000_100), "createdAt": now_iso()}),
+        json!({"$type": TEST_COLLECTION, "text": "x".repeat(1_048_600), "createdAt": now_iso()}),
     );
-    refused_mentioning(&import_repo(&o.bob, &o.space, &big.build(&key).car()).await, &["record block is over"]);
+    refused_mentioning(&import_repo(&o.bob, &o.space, &big.build().star()).await, &["the record is over"]);
     nothing_written_here(&o.bob, &o.space).await;
-    import_repo(&o.bob, &o.space, &built.car()).await.ok();
+    import_repo(&o.bob, &o.space, &built.star()).await.ok();
 }
 
 /// `space-import` caps an account's imports per hour, and an account runs
@@ -251,8 +235,7 @@ async fn oversize_blocks_are_refused() {
 async fn imports_are_rate_limited_and_capped_per_account() {
     let o = one_with(|_, c| c.rate_limits_enabled = true).await;
     let s = &o.net.pds[0];
-    let built = records(RepoBuilder::new(&o.space, &o.bob.did, &rev_ago(Duration::from_secs(60))), 1)
-        .build(&*account_key(s, &o.bob.did).await);
+    let built = records(RepoBuilder::new(&o.space, &o.bob.did, &rev_ago(Duration::from_secs(60))), 1).build();
 
     s.xrpc
         .post(
@@ -268,7 +251,7 @@ async fn imports_are_rate_limited_and_capped_per_account() {
     let (third, a, b) = tokio::join!(
         async {
             tokio::time::sleep(Duration::from_millis(1000)).await;
-            import_repo(bob, space, &built.car()).await
+            import_repo(bob, space, &built.star()).await
         },
         hold(),
         hold(),
@@ -279,13 +262,13 @@ async fn imports_are_rate_limited_and_capped_per_account() {
     // sees the client's connection close, a moment after the client gave up
     let sp = s.app.spaces.as_ref().unwrap();
     retry("the held imports' slots came back", || async { (sp.imports_running(&bob.did) == 0).then_some(()) }).await;
-    import_repo(bob, space, &built.car()).await.ok();
+    import_repo(bob, space, &built.star()).await.ok();
 
     // 4 of 5 spent (two held, the refused one, the import)
-    import_repo(bob, space, &built.car()).await.ok();
-    import_repo(bob, space, &built.car()).await.err(429, "RateLimitExceeded");
+    import_repo(bob, space, &built.star()).await.ok();
+    import_repo(bob, space, &built.star()).await.err(429, "RateLimitExceeded");
     // alice has her own
-    let r = import_repo(&o.alice, space, &built.car()).await;
+    let r = import_repo(&o.alice, space, &built.star()).await;
     assert_ne!(r.status, 429, "{}", r.text());
 }
 
@@ -296,7 +279,7 @@ async fn imports_are_rate_limited_and_capped_per_account() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_chunked_imports_fit_the_budget() {
     let o = one_with(|_, c| {
-        c.import_memory_bytes = Some(200 << 20);
+        c.import_memory_bytes = Some(30 << 20);
         c.import_wait = Duration::from_secs(2);
     })
     .await;
@@ -310,9 +293,8 @@ async fn concurrent_chunked_imports_fit_the_budget() {
     }
     let mut cars = vec![];
     for sc in &actors {
-        let built = records(RepoBuilder::new(&o.space, &sc.did, &rev_ago(Duration::from_secs(60))), 3)
-            .build(&*account_key(s, &sc.did).await);
-        cars.push(bytes::Bytes::from(built.car()));
+        let built = records(RepoBuilder::new(&o.space, &sc.did, &rev_ago(Duration::from_secs(60))), 3).build();
+        cars.push(bytes::Bytes::from(built.star()));
     }
     let peak = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let sampling = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -351,7 +333,7 @@ async fn concurrent_chunked_imports_fit_the_budget() {
     }
     println!("{ok} of 6 let in; peak reserved {} of {} MiB", peak.load(Ordering::Relaxed) >> 20, budget.total() >> 20);
     assert!(ok >= 1, "none let in");
-    assert!(ok < 6, "a 200 MiB budget let in 6 chunked imports at their largest");
+    assert!(ok < 6, "a 30 MiB budget let in 6 chunked imports at their largest");
     assert!(peak.load(Ordering::Relaxed) <= budget.total());
     assert_eq!(budget.reserved(), 0);
     // one at a time, they all go in
@@ -369,9 +351,8 @@ async fn concurrent_chunked_imports_fit_the_budget() {
 async fn a_stalled_space_import_body_fails() {
     let o = one_with(|_, c| c.import_body_idle = Duration::from_millis(500)).await;
     let s = &o.net.pds[0];
-    let built = records(RepoBuilder::new(&o.space, &o.bob.did, &rev_ago(Duration::from_secs(60))), 3)
-        .build(&*account_key(s, &o.bob.did).await);
-    let car = bytes::Bytes::from(built.car());
+    let built = records(RepoBuilder::new(&o.space, &o.bob.did, &rev_ago(Duration::from_secs(60))), 3).build();
+    let car = bytes::Bytes::from(built.star());
     let t = Instant::now();
     let r = tokio::time::timeout(
         Duration::from_secs(20),
@@ -382,5 +363,5 @@ async fn a_stalled_space_import_body_fails() {
     refused_mentioning(&r, &["stalled"]);
     assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
     assert_eq!(s.app.imports.reserved(), 0);
-    import_repo(&o.bob, &o.space, &built.car()).await.ok();
+    import_repo(&o.bob, &o.space, &built.star()).await.ok();
 }

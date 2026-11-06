@@ -13,7 +13,7 @@ timeline:
   lanes:
     - { id: app, label: App, sub: "OAuth client · P-256 key", tone: ink }
     - { id: user, label: Your PDS, sub: holds your account key, tone: accent }
-    - { id: auth, label: Authority's host, sub: simplespace, tone: accent }
+    - { id: auth, label: Authority's host, sub: space host, tone: accent }
     - { id: bob, label: bob's PDS, sub: member repo, tone: accent }
     - { id: carol, label: carol's PDS, sub: member repo, tone: accent }
   spans:
@@ -37,22 +37,39 @@ facts:
   - { value: OAuth, label: only, note: "app passwords and password sessions get no space access", tone: rust }
 ```
 
-A read takes three steps. The app gets a delegation token from the user's own PDS, swaps it at the
-authority's host for a space credential, and then reads any member's repo with that credential. The
-credential has no audience of its own, so every request names the repo it's for in a signed header.
+A read takes three steps. The app gets a delegation token from the user's own PDS, sends it to the
+authority's host with a fresh P-256 key (`credentialKid`) for a space credential bound to that key,
+and then reads any member's repo with that credential. The credential has no audience of its own,
+so every request names the repo it's for in a signed header. A read that returns a commit or a
+record also asks for a MAC, which proves the answer came from the repo's host.
 
 ## The three tokens
 
 | Token | Minted by | Lifetime | Bound to | Checked by |
 |---|---|---|---|---|
-| Delegation (`atproto-space-delegation+jwt`) | your PDS, with your account key | 60 s, single use | `aud` = the authority's `#atproto_space_host` | the authority, which claims its `jti` once |
-| Space credential (`atproto-space-credential+jwt`) | the authority, with its account key | 10 min, 60 min at most | `cnf.kid` = the app's P-256 did:key | every member host, on every request |
-| Request signature (RFC 9421) | the app | per request, reusable | the `authorization` and `atproto-space-audience` headers | the host serving the request |
+| Delegation (`atproto-space-delegation+jwt`) | your PDS, with your account key | 60 s, single use | `aud` = the authority's `#atproto_pds` | the authority, which claims its `jti` once |
+| Space credential (`atproto-space-credential+jwt`) | the authority, with its account key | 10 min, 60 min at most | `cnf.kid` = the request's `credentialKid`, a P-256 did:key | every member host, on every request |
+| Request signature (RFC 9421) | the app | per request, reusable | the `authorization` and `atproto-space-audience` headers, `tag="atproto-space-credential"` | the host serving the request |
+| MAC (`Atproto-Space-Mac`) | the repo's host | one response | a secret from the request's key share and the repo's `#atproto_kem` key | the app |
 
-vlpds signs both JWTs with ES256K and the `#atproto` key. It doesn't publish a separate
-`#atproto_space` key, so the reference's fallback to `#atproto` applies. The delegation token's
-`jti` is claimed with `claim_replay_anywhere`, so a replay is refused even on another node after a
-failover.
+vlpds signs both JWTs with ES256K and the `#atproto` key, and their `kid` is exactly `#atproto`
+(any other is refused). A space authority is an account like any other: its `#atproto_pds` service
+is its space host and its `#atproto` key signs its credentials; the October 1 alpha's
+`#atproto_space_host` and `#atproto_space` entries are ignored. The delegation token's `jti` is
+claimed with `claim_replay_anywhere`, so a replay is refused (`InvalidDelegationToken`) even on
+another node after a failover.
+
+## getSpaceCredential
+
+The request is a JSON body: `space` and `credentialKid` (a P-256 did:key) always, and
+`delegationToken` and `clientAttestation` when the space needs them. A bad delegation token (its
+signature, expiry, audience, subject, or a replay) is `InvalidDelegationToken`, a 400. Without a
+token, only a member space with `publicRead` issues a credential; any other answers
+`SpaceNotFound`, so a request without one can't learn that it exists. The user is checked before the
+app: a user the policy refuses gets `SpaceNotFound` too (never `UserNotAuthorized`), so a refusal
+discloses nothing about the space, and `AppNotAuthorized` comes only once the user passes. A member
+space's `allowedApps` holds with a token or without, and a deleted space answers `SpaceDeleted` either
+way.
 
 ## OAuth only
 
@@ -65,7 +82,7 @@ failover.
 Space data is OAuth-only on vlpds. The reference lets legacy app passwords read and write the
 account's own space records, so this is a deliberate divergence
 ([Interop](interop.md#where-vlpds-differs)). `getServiceAuth` follows the same rule for a
-`com.atproto.space.*` or `com.atproto.simplespace.*` method, with `--spaces` on or off: an app
+`com.atproto.space.*`, `com.atproto.memberspace.*` or `com.atproto.managedspace.*` method, with `--spaces` on or off: an app
 password or password session never gets a token for one, and an OAuth app needs a `space:` grant
 that covers it. `transition:generic` or `rpc:` alone isn't enough. A `notifyCredentialRevoked`
 token (an authority's app revoking at member hosts) needs `manage` or the account's own spaces, a
@@ -123,16 +140,23 @@ leaves its key behind, and the next visit deletes it once it's a day old.
 
 ```steps
 - title: The scheme and the revocations
-  body: "`Authorization: Atproto-Space <credential>`, sent once. Until the node has loaded the revocations it answers 503 to every credential read."
+  body: "`Authorization: Atproto-Space-Credential <credential>`, sent once, the scheme in any case. The October 1 `Atproto-Space` scheme is a 400 `InvalidToken`. Until the node has loaded the revocations it answers 503 to every credential read."
 - title: The credential
   body: "A cache lookup by sha256 of the token. On a miss vlpds checks `typ`, `iss` = the space's authority, the authority's key, `exp` (a lifetime of 3,600 s at most, 5 s of skew) and the ES256K signature, then caches it until `exp`."
 - title: The request signature
-  body: "`atproto-space-audience` must be a single DID. The RFC 9421 signature must cover exactly the `authorization` and `atproto-space-audience` headers, made by the key in `cnf.kid`. This runs on every request, cache hit or not."
+  body: "`atproto-space-audience` must be a single DID. The RFC 9421 signature, labelled `atproto-space-credential` with `tag=\"atproto-space-credential\"`, must cover exactly the `authorization` (as sent) and `atproto-space-audience` headers, made by the key in `cnf.kid`. This runs on every request, cache hit or not."
 - title: Not revoked
   body: "The (space, `jti`) pair isn't in the revocation set. This also runs on every request."
 - title: The handler's checks
   body: "The audience is the repo being read (the authority, for host methods like `listRepos`), and the credential's space is the requested space. Then the repo must be available: a taken-down repo answers `RepoTakendown` and a deactivated one `RepoDeactivated`."
+- title: The MAC
+  body: "`getLatestCommit`, `getRepo`, `listRepoOps` and `getRecord` need `Atproto-Space-Want-Mac: type=…, ver=1, key_share=<did:key>` with a credential (`BadSpaceMac` without it), and take it on an account's own read. The answer's `Atproto-Space-Mac` is an HMAC over the commit (or the record's URI and CID) under the DHKEM(P-256) secret of that key share and the repo's `#atproto_kem` key."
 ```
+
+Commits carry no signature: a syncer trusts a commit's `data` once its MAC verifies under the secret
+of its own request, so a leaked response proves nothing to anyone else. A `listRepoOps` page short of
+the head has no commit and no MAC. Every account here has a `#atproto_kem` key, which this host
+holds wrapped under the KEK ([KEM keys](operating.md#kem-keys)).
 
 The signature covers only those two headers, with no method or URL in it, so one signed request
 can be replayed against any read of the same repo while the credential lives. That's the spec as it

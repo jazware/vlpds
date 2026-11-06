@@ -207,9 +207,9 @@ the repos while the account is still active there.
 - title: Sign in at the old server
   body: "OAuth with `atproto space:*?authority=*&action=read_self`, which reads the account's own space repos and nothing else. The page lists the spaces with `listSpaces` and each repo's blobs with `space.listBlobs`."
 - title: Sign in here
-  body: "OAuth with `atproto space:*?authority=*&collection=*&action=create&action=read_self`, what `importRepo` checks, plus `blob:*/*` only when a repo names blobs."
+  body: "OAuth with `atproto space:*?authority=*&collection=*&action=create&action=read_self&manage=create&manage=update`, what `importRepo` and `importSpaceMeta` check, plus `blob:*/*` only when a repo names blobs."
 - title: Copy each space
-  body: "`space.getRepo` there, then `vlpds.space.importRepo` here, then each blob with `space.getBlob` there and `repo.uploadBlob` here (checked against its CID). 429s and dropped connections are retried as in the copy step."
+  body: "For a space the account governs, `space.exportSpaceMeta` there and `space.importSpaceMeta` here first (its policy, members and writer set; skipped when the old server predates it). Then `space.getRepo` there, `vlpds.space.importRepo` here, then each blob with `space.getBlob` there and `repo.uploadBlob` here (checked against its CID). 429s and dropped connections are retried as in the copy step."
 - title: Show what moved
   body: "Each space is listed as copied (with its record and blob counts), as having nothing of the account's in it (a space it governs but never wrote in), or as not copied with the reason. The user can retry the failures or go on without them. Then the page revokes both sessions and deactivates the old account."
 ```

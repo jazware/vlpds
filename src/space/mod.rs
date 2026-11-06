@@ -1,12 +1,15 @@
 //! AT Protocol Spaces (permissioned data), tracking the reference's alpha
-//! (bluesky-social/atproto PR #5187; pinned commit in
-//! testdata/spaces-alpha/SOURCE). This holds the protocol primitives only:
-//! pure, no I/O, each checked against vectors from the reference.
+//! (bluesky-social/atproto permissioned-data, the October 22 2026 release;
+//! pinned commit in testdata/spaces-alpha/SOURCE). This holds the protocol
+//! primitives only: pure, no I/O, each checked against vectors from the
+//! reference.
 //!
 //! - [`lthash`]: the space repo's homomorphic set hash.
-//! - [`commit`]: the deniable commit (ctx, MAC, signature).
-//! - [`httpsig`]: the RFC 9421 subset requests carry with a delegation
-//!   token or a space credential.
+//! - [`commit`]: the commit (repo, space, rev, data), unsigned.
+//! - [`kem`]: the per-request shared secret against `#atproto_kem`.
+//! - [`mac`]: commit and record MACs, and their headers.
+//! - [`star`]: getRepo's STAR archives.
+//! - [`httpsig`]: the RFC 9421 subset requests with a space credential carry.
 //! - [`token`]: delegation tokens, space credentials, client attestations.
 //!
 //! Serving is behind `--spaces` (`Config::spaces`), off by default; with it
@@ -17,30 +20,38 @@
 //! - [`repo`]: space writes and space host ops on the repo worker.
 //! - [`heads`]: durable space repo heads for reads.
 //! - [`outbox`]: delivery of notifyWrite to space authorities.
-//! - [`host`]: the space host role (simplespace policies, notifyWrite).
+//! - [`host`]: the space host's calls out (managing apps, notifyWrite).
+//! - [`policy`]: the records a policy publishes in the authority's repo.
 //! - [`fanout`]: forwarding of sequenced writes to registered services.
-//! - [`car`]: getRepo's streamed export.
+//! - [`deletions`]: notifySpaceDeleted, delivered until it lands.
+//! - [`kem_keys`]: accounts' `#atproto_kem` keys, made and published.
 //! - [`retention`]: pruning of oplogs past the retention window.
 //! - [`attestation`]: client attestations for `appAccess` allow lists.
 //! - [`revocations`]: revoked credentials.
 //! - [`credcache`]: verified credentials, until they expire.
 
 pub mod attestation;
-pub mod car;
 pub mod check;
 pub mod commit;
 pub mod credcache;
+pub mod deletions;
 pub mod fanout;
 pub mod heads;
 pub mod host;
 pub mod httpsig;
+pub mod kem;
+pub mod kem_keys;
 pub mod lthash;
+pub mod meta_archive;
+pub mod mac;
 pub mod outbox;
+pub mod policy;
 pub mod repo;
 pub mod retention;
 pub mod revocations;
 pub mod rows;
 mod sfv;
+pub mod star;
 pub mod token;
 
 use std::sync::Arc;
@@ -553,7 +564,7 @@ impl Default for Spaces {
 /// The XRPC methods of the Spaces lexicons. NSID authorities are
 /// case-insensitive, as the proxy's method lists match them.
 pub fn is_space_nsid(nsid: &str) -> bool {
-    ["com.atproto.space.", "com.atproto.simplespace."]
+    ["com.atproto.space.", "com.atproto.memberspace.", "com.atproto.managedspace.", "com.atproto.personalspace."]
         .iter()
         .any(|p| nsid.get(..p.len()).is_some_and(|h| h.eq_ignore_ascii_case(p)))
 }
@@ -646,10 +657,17 @@ mod tests {
 
     #[test]
     fn space_nsids() {
-        for yes in ["com.atproto.space.getRecord", "com.atproto.simplespace.createSpace", "COM.ATPROTO.Space.x"] {
+        for yes in ["com.atproto.space.getRecord", "com.atproto.memberspace.putMember", "COM.ATPROTO.Space.x"] {
             assert!(is_space_nsid(yes), "{yes}");
         }
-        for no in ["com.atproto.repo.getRecord", "com.atproto.spaces.x", "com.atproto.space", "app.bsky.space.x", ""] {
+        for no in [
+            "com.atproto.repo.getRecord",
+            "com.atproto.spaces.x",
+            "com.atproto.space",
+            "app.bsky.space.x",
+            "com.atproto.simplespace.createSpace",
+            "",
+        ] {
             assert!(!is_space_nsid(no), "{no}");
         }
     }

@@ -1015,54 +1015,76 @@ tests of the 300 s cap and aren't counted.
 | OAuth: requires a wildcard grant to list spaces unfiltered | ported | `..::oauth_requires_a_wildcard_grant_to_list_spaces_unfiltered` (C2) |
 | OAuth: materializes the space type declared collections into a bare grant | ported | `..::oauth_materializes_declared_collections_into_a_bare_grant` (C6). The declaration is published in the account's repo with a pinned NSID authority |
 
-### space/simplespace.test.ts
+### space/policy.test.ts
+
+The October 29 alpha's policies (5d88b414), replacing `space/simplespace.test.ts`.
 
 | case | status | vlpds |
 |---|---|---|
-| creates a space anchored on the caller own DID | ported | `ref_simplespace::creates_a_space_anchored_on_the_caller` (C2) |
-| refuses a duplicate space | ported | `..::refuses_a_duplicate_space` (C1) |
-| refuses a space key that is not a valid record key | ported | `..::refuses_a_space_key_that_is_not_a_record_key` (C2) |
-| filters spaces by spaceType | ported | `..::filters_spaces_by_space_type` (C2) |
-| governs a space written to before createSpace | ported | `..::governs_a_space_written_to_before_create_space` (C3) |
-| adds and removes members, and the owner is not one of them | ported | `..::adds_and_removes_members` (C3) |
-| refuses membership changes from a non-owner member | ported | `..::refuses_membership_changes_from_a_non_owner` (C3) |
-| refuses listMembers to a space credential and to a non-owner member | ported | `..::refuses_list_members_to_a_credential_and_a_non_owner` (C3) |
-| putMember replaces both access values | ported | `..::put_member_replaces_both_access_values` (C3) |
-| persists what createSpace was given | ported | `..::persists_what_create_space_was_given` (C2) |
-| defaults to a member-list, open space | ported | `..::defaults_to_a_member_list_open_space` (C1) |
-| patches readPolicy, writePolicy, and appAccess independently | ported | `..::patches_policies_and_app_access_independently` (C3) |
-| drops managingApp by switching policy | ported | `..::drops_managing_app_by_switching_policy` (C3) |
-| refuses an update from a non-owner | ported | `..::refuses_an_update_from_a_non_owner` (C3) |
-| refuses an unrecognized appAccess variant rather than widening the space | ported | `..::refuses_an_unrecognized_app_access_variant` (C3) |
-| refuses an unrecognized policy variant | ported | `..::refuses_an_unrecognized_policy_variant` (C3) |
-| refuses a managingApp that does not name a service | ported | `..::refuses_a_managing_app_that_is_not_a_did` (C3) |
-| serves the config to a member with a space credential | ported | `..::serves_the_config_to_a_member_credential` (C3) |
-| refuses the config to a credential for another space | ported | `..::refuses_the_config_to_a_credential_for_another_space` (C3) |
-| refuses the config to another account on an account credential | ported | `..::refuses_the_config_to_another_account_on_its_own_token` (C3) |
-| refuses to answer for a space this host does not govern | ported | `..::refuses_to_answer_for_a_space_this_host_does_not_govern` (C3) |
-| mints for a non-member when the read policy is public | ported | `..::mints_for_a_non_member_under_a_public_read_policy` (C2) |
-| refuses a non-member under member-list read policy | ported | `..::refuses_a_non_member_under_member_list` (C1) |
-| refuses a member without read access | ported | `..::refuses_a_member_without_read_access` (C3) |
-| always admits the authority, whatever the read policy | ported | `..::always_admits_the_authority` (C2) |
-| refuses when appAccess is an allowList and no attestation is presented | ported | `..::refuses_an_allow_list_space_without_an_attestation` (C2) |
+| lifecycle: creates a space anchored on the caller own DID | ported | `ref_policy::creates_a_space_anchored_on_the_caller` (C2) |
+| lifecycle: refuses a duplicate space | ported | `..::refuses_a_duplicate_space` (C1) |
+| lifecycle: refuses a space key that is not a valid record key | ported | `..::refuses_a_space_key_that_is_not_a_record_key` (C2) |
+| lifecycle: filters spaces by spaceType | ported | `..::filters_spaces_by_space_type` (C2) |
+| lifecycle: refuses an owner write until createSpace | divergent | `..::refuses_an_owner_write_until_create_space` (ignored): vlpds takes an authority's write before createSpace and governs the space once it is created (`spaces_host::written_before_created`) |
+| memberspace members: adds and removes members, and the owner is not one of them | ported | `..::adds_and_removes_members` (C3) |
+| memberspace members: refuses membership changes from a non-owner member | ported | `..::refuses_membership_changes_from_a_non_owner` (C3) |
+| memberspace members: refuses listMembers to a space credential and to a non-owner member | ported | `..::refuses_list_members_to_a_credential_and_a_non_owner` (C3) |
+| memberspace members: putMember replaces both access values | ported | `..::put_member_replaces_both_access_values` (C3) |
+| memberspace members: refuses member methods on a space under another policy | ported | `..::refuses_member_methods_under_another_policy` (C3) |
+| memberspace members: removeMember drops the member from the writer set | ported | `..::remove_member_drops_the_member_from_the_writer_set` (C3) |
+| memberspace members: putMember drops the member from the writer set when it revokes write | ported | `..::put_member_drops_the_member_from_the_writer_set_when_it_revokes_write` (C3) |
+| policy: persists what createSpace was given | ported | `..::persists_what_create_space_was_given` (C2) |
+| policy: fills in the defaults of an omitted configuration | ported | `..::fills_in_the_defaults_of_an_omitted_configuration` (C1) |
+| policy: replaces the policy wholesale on update | ported | `..::replaces_the_policy_wholesale_on_update` (C2) |
+| policy: keeps the member list across a configuration change | ported | `..::keeps_the_member_list_across_a_configuration_change` (C3) |
+| policy: refuses an update from a non-owner | ported | `..::refuses_an_update_from_a_non_owner` (C3) |
+| policy: refuses an unrecognized policy | ported | `..::refuses_an_unrecognized_policy` (C2) |
+| policy: refuses a managingApp that does not name a service | ported | `..::refuses_a_managing_app_that_is_not_a_did` (C2) |
+| policy: refuses the policy to a member with a space credential | ported | `..::refuses_the_policy_to_a_member_credential` (C3) |
+| policy: refuses the policy to another account on an account credential | ported | `..::refuses_the_policy_to_another_account` (C3) |
+| policy: refuses to answer for a space this host does not govern | ported | `..::refuses_to_answer_for_a_space_this_host_does_not_govern` (C3) |
+| policy migration: discards the member list, and migrating back does not restore it | ported | `..::migration_discards_the_member_list` (C3) |
+| publishing: publishes the policy to readers | ported | `..::publishes_the_policy_to_readers` (C3) |
+| publishing: keeps the published policy in sync, and withdraws it when unpublished | ported | `..::keeps_the_published_policy_in_sync` (C2) |
+| publishing: publishes the member list, keyed by member DID | ported | `..::publishes_the_member_list_keyed_by_member_did` (C3) |
+| publishing: leaves the port of a localhost did:web unencoded in its record key | ported | `..::leaves_a_localhost_did_web_port_unencoded_in_its_record_key` (C2) |
+| publishing: publishes or withdraws the whole member list when publishMembers changes | ported | `..::publishes_or_withdraws_the_whole_member_list` (C3) |
+| publishing: withdraws the published member list on migration | ported | `..::withdraws_the_published_member_list_on_migration` (C3) |
+| publishing: keeps the published records when the authority clears its repo | ported | `..::keeps_the_published_records_when_the_authority_clears_its_repo` (C3) |
+| publishing: notifies the space of what it publishes | ported | `..::notifies_the_space_of_what_it_publishes` (C2) |
+| publishing: refuses direct writes of published records | ported | `..::refuses_direct_writes_of_published_records` (C3) |
+| personalspace: authorizes only the authority to read | ported | `..::personalspace_authorizes_only_the_authority_to_read` (C3) |
+| personalspace: tracks no writer but the authority | ported | `..::personalspace_tracks_no_writer_but_the_authority` (C3) |
+| mint gates: mints for a non-member when read access is public | ported | `..::mints_for_a_non_member_when_read_access_is_public` (C3) |
+| mint gates: mints without a delegation token when read access is public | ported | `..::mints_without_a_delegation_token_when_read_access_is_public` (C2) |
+| mint gates: hides a $name space from a request without a delegation token | ported | `..::hides_a_space_from_a_request_without_a_delegation_token` (C2), the three policies in one test |
+| mint gates: hides a space from a request without a delegation token before checking the app | ported | `..::hides_a_tokenless_request_before_checking_the_app` (C2) |
+| mint gates: refuses a request without a delegation token or attestation when apps are restricted | ported | `..::refuses_a_tokenless_request_without_an_attestation_when_apps_are_restricted` (C2) |
+| mint gates: hides the space from a non-member when read access is not public | ported | `..::hides_the_space_from_a_non_member` (C3) |
+| mint gates: hides the space from a non-member before checking the app | ported | `..::hides_the_space_from_a_non_member_before_checking_the_app` (C3) |
+| mint gates: hides the space from a member without read access | ported | `..::hides_the_space_from_a_member_without_read_access` (C3) |
+| mint gates: always admits the authority, whatever the policy | ported | `..::always_admits_the_authority` (C2) |
+| mint gates: refuses when apps are restricted and no attestation is presented | ported | `..::refuses_restricted_apps_without_an_attestation` (C3) |
 | client attestation: mints for an allow-listed app that signs with its published key | ported | `ref_client_attestation::accepts_an_attestation_when_the_client_publishes_a_jwks_uri` (C3) |
 | client attestation: refuses an attestation signed by a key the app does not publish | ported | `ref_client_attestation::refuses_an_attestation_signed_by_an_unpublished_key` (C3) |
 | client attestation: refuses an attestation addressed to another authority | ported | `ref_client_attestation::refuses_an_attestation_addressed_to_another_space_host` (C3) |
 | client attestation: refuses an attestation from an app that is not allow-listed | ported | `ref_client_attestation::refuses_an_attestation_from_an_app_that_is_not_allow_listed` (C3) |
+| client attestation: mints for an allow-listed app without a delegation token | ported | `ref_policy::mints_for_an_allow_listed_app_without_a_delegation_token` (C2) |
 | client attestation: refuses an expired attestation | ported | `ref_client_attestation::refuses_an_expired_attestation` (C3) |
-| managing-app: admits a user the managing app authorizes | ported | `..::managing_app_admits_a_user_it_authorizes` (C3) |
-| managing-app: refuses a user the managing app declines | ported | `..::managing_app_refuses_a_user_it_declines` (C3) |
-| managing-app: denies when the managing app errors | ported | `..::managing_app_denies_when_it_errors` (C3) |
-| managing-app: denies when the managing app cannot be resolved | ported | `..::managing_app_denies_when_unresolvable` (C3) |
-| managing-app: records a writer the managing app admits | ported | `..::managing_app_admits_a_writer` (C3) |
-| registers, forwards writes, and stops once withdrawn | ported | `..::registers_forwards_writes_and_stops_once_withdrawn` (C3) |
-| stops delivering to a registration past its expiry, and resumes on renewal | ported | `..::stops_past_expiry_and_resumes_on_renewal`. The row is expired through the authority's worker (`xrpc::space::set_registration_expiry`), and vlpds prunes it where the reference withholds it, so the renewal registers it again |
-| refuses a service that cannot be resolved | ported | `..::refuses_a_service_that_cannot_be_resolved` (C3) |
-| purges the authority own repo and keeps a tombstone | ported | `..::delete_purges_the_authority_repo_and_keeps_a_tombstone` (C5). Blob gone = space.getBlob refuses it |
-| answers SpaceDeleted on credential renewal | ported | `..::answers_space_deleted_on_credential_renewal` (C3) |
-| notifies registered syncers | ported | `..::delete_notifies_registered_syncers` (C3) |
-| leaves a member repo untouched | ported | `..::delete_leaves_a_member_repo_untouched` (C3) |
-| allows re-creating a deleted space, with fresh config | ported | `..::allows_re_creating_a_deleted_space_with_fresh_config` (C3) |
+| managedspace: admits a user the managing app authorizes | ported | `ref_policy::managing_app_admits_a_user_it_authorizes` (C3), and the service auth's `lxm` is `com.atproto.managedspace.checkUserAccess` |
+| managedspace: refuses a user the managing app declines | ported | `..::managing_app_refuses_a_user_it_declines` (C3) |
+| managedspace: denies when the managing app errors | ported | `..::managing_app_denies_when_it_errors` (C3) |
+| managedspace: denies when the managing app cannot be resolved | ported | `..::managing_app_denies_when_unresolvable` (C3) |
+| managedspace: records a writer the managing app admits | ported | `..::managing_app_admits_a_writer` (C3), asked with `access=write` and no `clientId` |
+| notify registration: registers, forwards writes, and stops once withdrawn | ported | `..::registers_forwards_writes_and_stops_once_withdrawn` (C3) |
+| notify registration: stops delivering to a registration past its expiry, and resumes on renewal | ported | `..::stops_past_expiry_and_resumes_on_renewal`. The row is expired through the authority's worker (`xrpc::space::set_registration_expiry`), and vlpds prunes it where the reference withholds it, so the renewal registers it again |
+| notify registration: refuses a service that cannot be resolved | ported | `..::refuses_a_service_that_cannot_be_resolved` (C3) |
+| deletion: purges the authority own repo and keeps a tombstone | ported | `..::delete_purges_the_authority_repo_and_keeps_a_tombstone` (C5). Blob gone = space.getBlob refuses it |
+| deletion: answers SpaceDeleted on credential renewal | ported | `..::answers_space_deleted_on_credential_renewal` (C3) |
+| deletion: answers SpaceDeleted to a request without a delegation token | ported | `..::answers_space_deleted_without_a_delegation_token` (C2) |
+| deletion: notifies registered syncers | ported | `..::delete_notifies_registered_syncers` (C3) |
+| deletion: leaves a member repo untouched | ported | `..::delete_leaves_a_member_repo_untouched` (C3) |
+| deletion: allows re-creating a deleted space, with a fresh policy | ported | `..::allows_re_creating_a_deleted_space_with_a_fresh_policy` (C3) |
 
 ### space-scope.test.ts
 

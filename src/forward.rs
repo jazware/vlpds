@@ -124,6 +124,7 @@ fn retryable_space_write(req: &Request, spaces: bool) -> bool {
                 | "/xrpc/com.atproto.space.putRecord"
                 | "/xrpc/com.atproto.space.deleteRecord"
                 | "/xrpc/com.atproto.space.applyWrites"
+                | "/xrpc/com.atproto.space.clearRecords"
         )
 }
 
@@ -482,7 +483,13 @@ fn space_host_method(nsid: &str) -> bool {
             | "com.atproto.space.listRepos"
             | "com.atproto.space.registerNotify"
             | "com.atproto.space.unregisterNotify"
-    ) || nsid.starts_with("com.atproto.simplespace.")
+            | "com.atproto.space.createSpace"
+            | "com.atproto.space.getSpace"
+            | "com.atproto.space.updateSpace"
+            | "com.atproto.space.deleteSpace"
+            | "com.atproto.space.removeWriter"
+            | "com.atproto.space.exportSpaceMeta"
+    ) || nsid.starts_with("com.atproto.memberspace.")
 }
 
 /// The authority DID of the `space` field (the query of a GET, the JSON

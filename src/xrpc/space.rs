@@ -10,8 +10,11 @@ use super::repo::{
 };
 use super::*;
 use crate::oauth::scopes::{SpaceAccess, SpaceTarget};
+use crate::space::commit::Commit;
 use crate::space::heads::DurableSpaceHead;
+use crate::space::kem::MacError;
 use crate::space::lthash::LtHash;
+use crate::space::mac::{self, COMMIT_MAC_TYPE, RECORD_MAC_TYPE};
 use crate::space::outbox::{Outcome, Pending};
 use crate::space::repo::{
     PutScopes, SameRev, SpaceAck, SpaceError, SpaceOp, SpaceOutcome, SpaceReq, SpaceWrite, MAX_WRITES,
@@ -31,6 +34,7 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/xrpc/com.atproto.space.putRecord", post(put_record))
         .route("/xrpc/com.atproto.space.deleteRecord", post(delete_record))
         .route("/xrpc/com.atproto.space.applyWrites", post(apply_writes))
+        .route("/xrpc/com.atproto.space.clearRecords", post(clear_records))
         .route("/xrpc/com.atproto.space.getRecord", get(get_record))
         .route("/xrpc/com.atproto.space.listRecords", get(list_records))
         .route("/xrpc/com.atproto.space.getBlob", get(get_blob))
@@ -106,6 +110,7 @@ pub(super) fn space_error(e: SpaceError) -> XrpcError {
         SpaceError::SpaceNotFound => XrpcError::bad("SpaceNotFound", "Space not found"),
         SpaceError::SpaceDeleted => XrpcError::bad("SpaceDeleted", "Space has been deleted"),
         SpaceError::SpaceAlreadyExists => XrpcError::bad("SpaceAlreadyExists", "Space already exists"),
+        SpaceError::PolicyMismatch => super::space_policy::policy_mismatch(),
         SpaceError::NotAuthorized(m) => forbidden(m),
         SpaceError::Unswept(_) => XrpcError::unavailable("Unavailable", "the space repo is being cleared; retry"),
         SpaceError::SameRev => XrpcError::internal("an unchecked same-rev notify"),
@@ -171,6 +176,21 @@ pub(super) async fn submit_space_once(
     rx.await.map_err(|_| XrpcError::internal("worker dropped request"))
 }
 
+/// Reference `assertNotPolicyRecord`: policy and member records are
+/// written only by the PDS, from a space's configuration
+/// (`crate::space::policy`), so a direct write is refused in any repo.
+fn not_published(collection: &str) -> XResult<()> {
+    if crate::space::policy::is_published_collection(collection) {
+        return Err(XrpcError::bad(
+            "InvalidRequest",
+            format!(
+                "{collection} records are published by the PDS from a space's configuration and cannot be written directly"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Reference: `repo` must be the caller (ForbiddenError).
 fn writer(creds: &Credentials, repo: &str) -> XResult<String> {
     let did = creds.user_did()?;
@@ -231,6 +251,7 @@ async fn create_record_inner(app: &Arc<App>, creds: &Credentials, body: RecordBo
     let record = take(&mut v, "record")?;
     crate::ratelimit::check_repo_write(creds.did(), crate::ratelimit::CREATE_POINTS)?;
     let did = writer(creds, &repo)?;
+    not_published(&collection)?;
     creds.need_space(&space.target(), SpaceAccess::Write("create", &collection))?;
     check_path(&collection, rkey.as_deref())?;
     let rkey = rkey.unwrap_or_else(|| app.tids.next().to_string());
@@ -257,6 +278,7 @@ async fn put_record_inner(app: &Arc<App>, creds: &Credentials, body: RecordBody)
     let record = take(&mut v, "record")?;
     crate::ratelimit::check_repo_write(creds.did(), crate::ratelimit::UPDATE_POINTS)?;
     let did = writer(creds, &repo)?;
+    not_published(&collection)?;
     // a create or an update by what the path holds: the worker asks for the
     // scope of the one it turns out to be (reference putRecord)
     let t = space.target();
@@ -304,12 +326,112 @@ async fn delete_record_inner(app: &App, creds: &Credentials, inp: DeleteRecordIn
     let space = Space::parse(&inp.space)?;
     crate::ratelimit::check_repo_write(creds.did(), crate::ratelimit::DELETE_POINTS)?;
     let did = writer(creds, &inp.repo)?;
+    not_published(&inp.collection)?;
     creds.need_space(&space.target(), SpaceAccess::Write("delete", &inp.collection))?;
     check_path(&inp.collection, Some(&inp.rkey))?;
     // idempotent, as com.atproto.repo.deleteRecord is
     let w = SpaceWrite::Delete { collection: inp.collection, rkey: inp.rkey, must_exist: false };
     submit_space(app, &did, &space, SpaceOp::Write { writes: vec![w] }).await?;
     Ok(Json(json!({})))
+}
+
+#[derive(Deserialize)]
+struct ClearRecordsIn {
+    space: String,
+    repo: String,
+}
+
+/// Records per clearRecords entry. A repo this size or smaller (nearly
+/// every one) is cleared in a single entry; a bigger one in entries of this
+/// many, each a consistent repo at its own rev (its hash the records left),
+/// the last one the empty repo (or the kept records).
+const CLEAR_BATCH: usize = 5000;
+/// Rescans when a write lands mid-clear in a collection the scan hadn't seen.
+const CLEAR_TRIES: usize = 5;
+
+async fn clear_records(State(app): AppState, Auth(creds): Auth, Json(inp): Json<ClearRecordsIn>) -> XResult<Json<J>> {
+    let r = clear_records_inner(&app, &creds, inp).await;
+    write_result("clearRecords", &r);
+    r
+}
+
+/// Reference clearRecords: every record of the caller's repo in the space
+/// goes, with its blob refs and the repo's oplog, and the repo moves to a
+/// new rev at the empty digest (the authority's own repo keeps the policy
+/// and member records the PDS publishes, and its digest covers them). It
+/// stays in the writer set, and the authority hears of it as of a write. A
+/// `delete` grant is needed for every collection cleared. Nothing to clear
+/// is a no-op: no new rev, no notification.
+async fn clear_records_inner(app: &Arc<App>, creds: &Credentials, inp: ClearRecordsIn) -> XResult<Json<J>> {
+    spaces(app)?;
+    let space = Space::parse(&inp.space)?;
+    crate::ratelimit::check_repo_write(creds.did(), crate::ratelimit::DELETE_POINTS)?;
+    let did = writer(creds, &inp.repo)?;
+    let own = did == space.authority;
+    let p = app.partition(&did)?;
+    let prefix = state::space_prefix(state::SPACE_RECORD_FAMILY, &did, &space.sid);
+    let mut granted: Vec<String> = Vec::new();
+    let mut cleared: Option<Tid> = None;
+    let mut tries = 0;
+    loop {
+        // the next batch of paths to clear, the kept collections left out
+        let mut paths = Vec::new();
+        let mut it =
+            p.db.scan(prefix.clone()..vlsync_store::keys::prefix_end(&prefix)).await.map_err(XrpcError::from_err)?;
+        while let Some(kv) = it.next().await.map_err(XrpcError::from_err)? {
+            let path = std::str::from_utf8(&kv.key[prefix.len()..]).map_err(XrpcError::from_err)?;
+            let collection = path.split_once('/').map_or(path, |(c, _)| c);
+            if own && crate::space::policy::is_published_collection(collection) {
+                continue;
+            }
+            if !granted.iter().any(|g| g == collection) {
+                creds.need_space(&space.target(), SpaceAccess::Write("delete", collection))?;
+                granted.push(collection.to_string());
+            }
+            paths.push(path.to_string());
+            if paths.len() > CLEAR_BATCH {
+                break;
+            }
+        }
+        drop(it);
+        let last = paths.len() <= CLEAR_BATCH;
+        paths.truncate(CLEAR_BATCH);
+        let op = SpaceOp::ClearRecords { paths, collections: granted.clone(), last };
+        match submit_space(app, &did, &space, op).await {
+            Ok(SpaceAck::Write { rev, .. }) => {
+                cleared = rev.or(cleared);
+                if last {
+                    break;
+                }
+            }
+            Ok(_) => return Err(XrpcError::internal("unexpected space ack")),
+            Err(e) if e.error == crate::forward::SHARD_MOVED && last && tries < CLEAR_TRIES => tries += 1,
+            Err(e) => return Err(e),
+        }
+    }
+    if let Some(rev) = cleared {
+        sweep_oplog(&p, &did, &space.sid, rev).await.map_err(after_applied)?;
+    }
+    Ok(Json(json!({})))
+}
+
+/// The oplog rows before a clear's `rev`, in bounded entries: no write
+/// lands below it again. Until they're gone a listRepoOps from before the
+/// clear gets them, then the clear's commit, whose `data` won't match:
+/// the syncer resyncs from getRepo, as it would after a gap.
+async fn sweep_oplog(p: &crate::partition::Partition, did: &str, sid: &SpaceId, rev: Tid) -> XResult<()> {
+    let prefix = state::space_prefix(state::SPACE_OPLOG_FAMILY, did, sid);
+    let hi = [&prefix[..], &rev.0.to_be_bytes()].concat();
+    loop {
+        let opts = slatedb::config::ScanOptions::default();
+        let mut it = p.db.scan_with_options(prefix.clone()..hi.clone(), &opts).await.map_err(XrpcError::from_err)?;
+        let rows = it.next_batch(super::space_policy::SWEEP_BATCH).await.map_err(XrpcError::from_err)?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let muts = rows.into_iter().map(|kv| vlsync_store::segment::Mutation { key: kv.key, val: None }).collect();
+        super::write_private_local(p, muts).await?;
+    }
 }
 
 const CREATE: &str = "com.atproto.space.applyWrites#create";
@@ -361,6 +483,7 @@ async fn apply_writes_inner(app: &Arc<App>, creds: &Credentials, body: RecordBod
             DELETE => "delete",
             _ => return Err(XrpcError::bad("InvalidRequest", format!("Action not supported: {t}"))),
         };
+        not_published(&collection)?;
         creds.need_space(&space.target(), SpaceAccess::Write(action, &collection))?;
         check_path(&collection, rkey.as_deref())?;
         if action == "delete" {
@@ -446,7 +569,7 @@ pub(super) fn assert_space_read(creds: &Credentials, space: &Space, repo: &str) 
 /// 300 s. The account's own reads of its repo stay open.
 async fn assert_space_open(app: &App, space: &Space, self_read: bool) -> XResult<()> {
     if !self_read && space_takendown(app, space).await? {
-        return Err(super::simplespace::space_not_found());
+        return Err(super::space_policy::space_not_found());
     }
     Ok(())
 }
@@ -690,26 +813,58 @@ fn b64(b: &[u8]) -> J {
     json!({"$bytes": base64::engine::general_purpose::STANDARD_NO_PAD.encode(b)})
 }
 
-/// `buildSignedCommit`: a fresh ikm per response, signed by the author,
-/// over `set` (the head's unless records are hidden).
-fn signed_commit(
-    key: &Keypair,
-    space: &Space,
-    author: &str,
-    head: &DurableSpaceHead,
-    set: Option<&LtHash>,
-) -> XResult<J> {
-    let rev = head.rev.to_string();
-    let ctx = crate::space::commit::CommitCtx { space: &space.uri, author, rev: &rev };
-    let t = Instant::now();
-    let c = crate::space::commit::sign(set.unwrap_or(&head.hash), &ctx, rand::random(), |b| {
-        Ok::<_, std::convert::Infallible>(key.sign(b))
-    })
-    .map_err(|_| XrpcError::internal("space commit context too long"))?;
-    metrics::space_sign(t.elapsed());
-    Ok(
-        json!({"ver": c.ver, "hash": b64(&c.hash), "ikm": b64(&c.ikm), "sig": b64(&c.sig), "mac": b64(&c.mac), "rev": c.rev}),
-    )
+/// `buildCommit`: the commit over `set` (the head's unless records are
+/// hidden).
+fn commit_of(space: &Space, repo: &str, head: &DurableSpaceHead, set: Option<&LtHash>) -> Commit {
+    Commit::of(set.unwrap_or(&head.hash), &space.uri, repo, &head.rev.to_string())
+}
+
+/// Reference `getSpaceMacSecret`: a space credential's read of a commit or
+/// record must ask for a MAC (`Atproto-Space-Want-Mac`); an account's own
+/// read may. The secret its key share and the repo's `#atproto_kem` key
+/// derive, None when an own read didn't ask.
+async fn mac_secret(
+    app: &Arc<App>,
+    creds: &Credentials,
+    headers: &HeaderMap,
+    repo: &str,
+    ty: &'static str,
+) -> XResult<Option<[u8; 32]>> {
+    let want = mac::header_value(headers, mac::WANT_MAC_HEADER);
+    if want.is_none() && !matches!(creds, Credentials::SpaceCredential { .. }) {
+        return Ok(None);
+    }
+    let bad = |e: MacError| XrpcError::bad(MacError::CODE, e.0);
+    let share = mac::parse_want_mac(want.as_deref(), ty).map_err(bad)?;
+    let acct = app.account(repo).await?;
+    let Some(kem) = crate::space::kem_keys::keypair(app, &acct).await? else {
+        crate::space::kem_keys::spawn_ensure(app, repo);
+        return Err(XrpcError::unavailable("Unavailable", "the account has no #atproto_kem key yet; retry later"));
+    };
+    crate::space::kem::decapsulate(&kem, &share).map(Some).map_err(bad)
+}
+
+/// `Atproto-Space-Mac` for a response, when a MAC was asked for.
+fn mac_header(
+    secret: Option<[u8; 32]>,
+    ty: &str,
+    f: impl FnOnce(&[u8]) -> Result<[u8; 32], MacError>,
+) -> XResult<Option<String>> {
+    let Some(secret) = secret else { return Ok(None) };
+    let m = f(&secret).map_err(|e| XrpcError::internal(format!("space MAC: {e}")))?;
+    Ok(Some(mac::format_mac(ty, &m)))
+}
+
+/// Every response of a MAC-bearing method varies with the request's
+/// `Atproto-Space-Want-Mac`; one with a MAC carries it.
+fn with_mac(mut resp: Response, mac: Option<String>) -> Response {
+    use axum::http::HeaderValue;
+    let h = resp.headers_mut();
+    h.append(header::VARY, HeaderValue::from_static("Atproto-Space-Want-Mac"));
+    if let Some(v) = mac.and_then(|m| HeaderValue::from_str(&m).ok()) {
+        h.insert(mac::MAC_HEADER, v);
+    }
+    resp
 }
 
 #[derive(Deserialize)]
@@ -720,13 +875,19 @@ struct RecordQ {
     rkey: String,
 }
 
-async fn get_record(State(app): AppState, SpaceAuth(creds): SpaceAuth, Query(q): Query<RecordQ>) -> XResult<Response> {
+async fn get_record(
+    State(app): AppState,
+    SpaceAuth(creds): SpaceAuth,
+    headers: HeaderMap,
+    Query(q): Query<RecordQ>,
+) -> XResult<Response> {
     let sp = spaces(&app)?;
     let space = Space::parse(&q.space)?;
     let self_read = assert_space_read(&creds, &space, &q.repo)?;
     assert_space_open(&app, &space, self_read).await?;
     check_path(&q.collection, Some(&q.rkey))?;
     available(&app, &q.repo, self_read).await?;
+    let secret = mac_secret(&app, &creds, &headers, &q.repo, RECORD_MAC_TYPE).await?;
     metrics::space_read("getRecord", auth_label(&creds));
     let p = app.partition(&q.repo)?;
     let path = format!("{}/{}", q.collection, q.rkey);
@@ -750,7 +911,8 @@ async fn get_record(State(app): AppState, SpaceAuth(creds): SpaceAuth, Query(q):
     out.extend_from_slice(b"\",\"value\":");
     vlatproto::cbor::write_json(bytes, &mut out).map_err(XrpcError::from_err)?;
     out.push(b'}');
-    Ok(json_bytes(out))
+    let mac = mac_header(secret, RECORD_MAC_TYPE, |s| mac::record_mac(s, &uri, &cid.to_bytes()))?;
+    Ok(with_mac(json_bytes(out), mac))
 }
 
 #[derive(Deserialize)]
@@ -997,19 +1159,23 @@ struct RepoQ {
 async fn get_latest_commit(
     State(app): AppState,
     SpaceAuth(creds): SpaceAuth,
+    headers: HeaderMap,
     Query(q): Query<RepoQ>,
-) -> XResult<Json<J>> {
+) -> XResult<Response> {
     let sp = spaces(&app)?;
     let space = Space::parse(&q.space)?;
     let self_read = assert_space_read(&creds, &space, &q.repo)?;
     assert_space_open(&app, &space, self_read).await?;
-    let key = available(&app, &q.repo, self_read).await?;
+    available(&app, &q.repo, self_read).await?;
+    let secret = mac_secret(&app, &creds, &headers, &q.repo, COMMIT_MAC_TYPE).await?;
     metrics::space_read("getLatestCommit", auth_label(&creds));
     let p = app.partition(&q.repo)?;
     let (head, set) = served_head(&app, sp, &p, &q.repo, &space)
         .await?
         .ok_or_else(|| XrpcError::bad("RepoNotFound", format!("Could not find repo for space: {}", space.uri)))?;
-    Ok(Json(json!({"commit": signed_commit(&key, &space, &q.repo, &head, set.as_ref())?})))
+    let commit = commit_of(&space, &q.repo, &head, set.as_ref());
+    let mac = mac_header(secret, COMMIT_MAC_TYPE, |s| mac::commit_mac(s, &commit))?;
+    Ok(with_mac(Json(json!({"commit": commit.to_json()})).into_response(), mac))
 }
 
 #[derive(Deserialize)]
@@ -1038,6 +1204,7 @@ fn parse_cursor(c: &str) -> XResult<(Tid, u16)> {
 async fn list_repo_ops(
     State(app): AppState,
     SpaceAuth(creds): SpaceAuth,
+    headers: HeaderMap,
     Query(q): Query<ListRepoOpsQ>,
 ) -> XResult<Response> {
     let sp = spaces(&app)?;
@@ -1050,7 +1217,9 @@ async fn list_repo_ops(
     };
     let limit = super::extract::limit_param(q.limit, 100, 1, 1000)?;
     let cursor = q.cursor.as_deref().map(parse_cursor).transpose()?;
-    let key = available(&app, &q.repo, self_read).await?;
+    available(&app, &q.repo, self_read).await?;
+    // every page asks, those that turn out to have no commit too
+    let secret = mac_secret(&app, &creds, &headers, &q.repo, COMMIT_MAC_TYPE).await?;
     metrics::space_read("listRepoOps", auth_label(&creds));
     let start = Instant::now();
     let p = app.partition(&q.repo)?;
@@ -1064,18 +1233,21 @@ async fn list_repo_ops(
         };
         if caught_up {
             let mut out = json!({"ops": []});
+            let mut mac = None;
             if let Some(h) = &head {
-                out["commit"] = signed_commit(&key, &space, &q.repo, h, None)?;
+                let commit = commit_of(&space, &q.repo, h, None);
+                mac = mac_header(secret, COMMIT_MAC_TYPE, |s| mac::commit_mac(s, &commit))?;
+                out["commit"] = commit.to_json();
             }
             metrics::space_list_repo_ops("noop", start.elapsed());
-            return Ok(Json(out).into_response());
+            return Ok(with_mac(Json(out).into_response(), mac));
         }
     }
     // one snapshot: the commit describes exactly the ops' end state
     let snap = p.db.snapshot().map_err(XrpcError::from_err)?;
     let head = match snap.get(state::space_head_key(&q.repo, &space.sid)).await.map_err(XrpcError::from_err)? {
         Some(v) => head_of(HeadRow::decode(&v).map_err(XrpcError::from_err)?, &space, &p)?,
-        None => return Ok(Json(json!({"ops": []})).into_response()),
+        None => return Ok(with_mac(Json(json!({"ops": []})).into_response(), None)),
     };
     let prefix = state::space_prefix(state::SPACE_OPLOG_FAMILY, &q.repo, &space.sid);
     let after = |rev: u64, idx: u32| -> Vec<u8> {
@@ -1154,14 +1326,16 @@ async fn list_repo_ops(
     ops.push(b']');
     let mut out = Vec::with_capacity(ops.len() + 512);
     out.push(b'{');
+    let mut mac = None;
     if rows_seen < limit && !full {
         let set = match hidden.is_empty() {
             true => None,
             false => Some(served_set(&snap, &q.repo, &space.sid, &head.hash, &hidden).await?),
         };
         out.extend_from_slice(b"\"commit\":");
-        let commit = signed_commit(&key, &space, &q.repo, &head, set.as_ref())?;
-        serde_json::to_writer(&mut out, &commit).map_err(XrpcError::from_err)?;
+        let commit = commit_of(&space, &q.repo, &head, set.as_ref());
+        mac = mac_header(secret, COMMIT_MAC_TYPE, |s| mac::commit_mac(s, &commit))?;
+        serde_json::to_writer(&mut out, &commit.to_json()).map_err(XrpcError::from_err)?;
         out.push(b',');
     } else if let Some((rev, idx)) = last {
         out.extend_from_slice(b"\"cursor\":");
@@ -1172,7 +1346,7 @@ async fn list_repo_ops(
     out.extend_from_slice(&ops);
     out.push(b'}');
     metrics::space_list_repo_ops("scan", start.elapsed());
-    Ok(json_bytes(out))
+    Ok(with_mac(json_bytes(out), mac))
 }
 
 #[derive(Deserialize)]
@@ -1206,38 +1380,52 @@ async fn get_delegation_token(State(app): AppState, Auth(creds): Auth, Query(q):
 #[serde(rename_all = "camelCase")]
 struct CredentialIn {
     space: String,
+    credential_kid: String,
+    delegation_token: Option<String>,
     client_attestation: Option<String>,
 }
 
-/// At the space's authority (forwarded there by `space`): the delegation
-/// token checked and claimed, then the simplespace policy. The credential
-/// is bound to the key that signed this request.
-async fn get_space_credential(
-    State(app): AppState,
-    headers: HeaderMap,
-    Json(inp): Json<CredentialIn>,
-) -> XResult<Json<J>> {
+/// At the space's authority (forwarded there by `space`): the request's
+/// assertions checked (a delegation token, a client attestation, each when
+/// given), then the space's policy. The credential is bound to
+/// `credentialKid`.
+async fn get_space_credential(State(app): AppState, Json(inp): Json<CredentialIn>) -> XResult<Json<J>> {
     spaces(&app)?;
-    let r = issue_credential(&app, &headers, inp).await;
+    let r = issue_credential(&app, inp).await;
     metrics::space_credential_issued(match &r {
         Ok(_) => "ok",
         Err(e) if e.status.is_server_error() => "error",
-        Err(e) if e.status == StatusCode::UNAUTHORIZED => "bad_token",
+        Err(e) if e.status == StatusCode::UNAUTHORIZED || e.error == "InvalidDelegationToken" => "bad_token",
         Err(_) => "refused",
     });
     r
 }
 
-async fn issue_credential(app: &App, headers: &HeaderMap, inp: CredentialIn) -> XResult<Json<J>> {
-    let d = verify_delegation(app, headers).await?;
-    if d.space != inp.space {
-        return Err(XrpcError::bad(
-            "InvalidDelegationToken",
-            "Delegation token subject does not match requested space",
-        ));
+/// Reference getSpaceCredential (`authorizeCredential`). The user goes
+/// first, and one the policy refuses gets SpaceNotFound, so a refusal
+/// discloses nothing about the space; without a delegation token only a
+/// member space with `publicRead` admits anyone. Then the app: a member
+/// space's `allowedApps` holds either way (AppNotAuthorized). A deleted
+/// space answers SpaceDeleted with or without a token.
+async fn issue_credential(app: &App, inp: CredentialIn) -> XResult<Json<J>> {
+    if crate::space::did_key_alg(&inp.credential_kid) != Some("ES256") {
+        return Err(XrpcError::bad("InvalidRequest", "credentialKid must be a P-256 did:key"));
     }
+    let user = match &inp.delegation_token {
+        Some(t) => {
+            let d = verify_delegation(app, t).await?;
+            if d.space != inp.space {
+                return Err(XrpcError::bad(
+                    "InvalidDelegationToken",
+                    "Delegation token subject does not match requested space",
+                ));
+            }
+            Some(d.user)
+        }
+        None => None,
+    };
     let space = Space::parse(&inp.space)?;
-    super::simplespace::assert_space_host(app, &space).await?;
+    super::space_policy::assert_space_host(app, &space).await?;
     let client_id = match &inp.client_attestation {
         Some(a) => {
             let aud = token::space_host_aud(&space.authority);
@@ -1245,10 +1433,10 @@ async fn issue_credential(app: &App, headers: &HeaderMap, inp: CredentialIn) -> 
         }
         None => None,
     };
-    let row = super::simplespace::space_row(app, &space).await?;
+    let row = super::space_policy::space_row(app, &space).await?;
     if !row.live() {
         // the durable signal that a space is gone, for a syncer that missed
-        // notifySpaceDeleted
+        // notifySpaceDeleted (a public space's may hold no token)
         return Err(XrpcError::bad("SpaceDeleted", "Space has been deleted"));
     }
     // told only to those it would otherwise admit: a non-member learns
@@ -1260,8 +1448,8 @@ async fn issue_credential(app: &App, headers: &HeaderMap, inp: CredentialIn) -> 
     if matches!(status.as_deref(), Some("takendown" | "suspended")) {
         return Err(XrpcError::bad("RepoTakendown", "Space authority has been taken down"));
     }
-    if d.user != space.authority {
-        match super::internal::account_anywhere(app, &d.user).await {
+    if let Some(user) = user.as_deref().filter(|u| *u != space.authority) {
+        match super::internal::account_anywhere(app, user).await {
             Ok(a) if matches!(a.status.as_deref(), Some("takendown" | "suspended")) => {
                 return Err(XrpcError::bad("AccountTakedown", "User account has been taken down"));
             }
@@ -1271,20 +1459,23 @@ async fn issue_credential(app: &App, headers: &HeaderMap, inp: CredentialIn) -> 
             Err(e) => return Err(e),
         }
     }
-    // the app perimeter first: decided from the config alone, so a refused
-    // app is never disclosed to a managing app
-    if let crate::space::rows::AppAccess::AllowList { allowed } = &row.app_access {
-        if !client_id.as_ref().is_some_and(|c| allowed.contains(c)) {
-            return Err(XrpcError::bad("AppNotAuthorized", "Application not authorized for this space"));
+    let user_ok = match &user {
+        Some(user) => {
+            super::space_policy::authorize_user(app, &space, &row, user, "read", client_id.as_deref()).await?
         }
+        None => row.policy.public_read(),
+    };
+    if !user_ok {
+        return Err(super::space_policy::space_not_found());
     }
-    if !super::simplespace::authorize_user(app, &space, &row, &d.user, "read", client_id.as_deref()).await? {
-        return Err(XrpcError::bad("UserNotAuthorized", "User not authorized for this space"));
+    if !row.policy.app_authorized(client_id.as_deref()) {
+        return Err(XrpcError::bad("AppNotAuthorized", "Application not authorized for this space"));
     }
     if taken_down {
         return Err(XrpcError::bad("NotAuthorized", "Space has been taken down"));
     }
-    let mint = token::Mint { iss: &space.authority, sub: &space.uri, key_id: Some(&d.key_id), ..Default::default() };
+    let mint =
+        token::Mint { iss: &space.authority, sub: &space.uri, key_id: Some(&inp.credential_kid), ..Default::default() };
     let now = vlatproto::tid::now_micros() as i64 / 1_000_000;
     let cred = token::encode(TokenType::Credential, &mint, "ES256K", now, &token::new_jti(), |b| {
         Ok::<_, std::convert::Infallible>(key.sign(b))
@@ -1713,12 +1904,12 @@ pub async fn deliver(app: &App, p: &Pending) -> Outcome {
         metrics::space_notify("in", notify_in_result(&r));
         return outcome(r.map(|_| ()));
     }
+    // the authority's PDS is its space host
     let endpoint = match app.did_resolver.resolve(&space.authority).await {
-        Ok(doc) => vlatproto::did_resolver::service_endpoint(&doc, "atproto_space_host")
-            .or_else(|| vlatproto::did_resolver::service_endpoint(&doc, "atproto_pds")),
+        Ok(doc) => vlatproto::did_resolver::service_endpoint(&doc, "atproto_pds"),
         Err(e) => return Outcome::Retry(format!("could not resolve {}: {e:?}", space.authority)),
     };
-    let Some(endpoint) = endpoint else { return Outcome::Retry(format!("{} names no space host", space.authority)) };
+    let Some(endpoint) = endpoint else { return Outcome::Retry(format!("{} names no PDS", space.authority)) };
     let aud = token::space_host_aud(&space.authority);
     let lxm = "com.atproto.space.notifyWrite";
     let jwt = match crate::auth::service_auth_jwt(&key, &p.did, &aud, Some(lxm), 60) {
@@ -1729,7 +1920,7 @@ pub async fn deliver(app: &App, p: &Pending) -> Outcome {
         "space": space.uri,
         "repo": &*p.did,
         "repoRev": p.repo_rev.to_string(),
-        "hash": b64(&hash),
+        "data": b64(&hash),
     });
     let url = format!("{}/xrpc/{lxm}", endpoint.trim_end_matches('/'));
     let req = match vlatproto::http::guarded(app.config.dev_mode).request(reqwest::Method::POST, &url) {
@@ -1867,48 +2058,30 @@ pub async fn set_registration_expiry(app: &App, uri: &str, service: &str, expire
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct GetRepoQ {
     space: String,
     repo: String,
-    exclude_values: Option<bool>,
 }
 
-/// A signed commit as a CAR block (dag-cbor; the reference's `SignedCommit`
-/// with byte fields as bytes).
-fn commit_block(c: &crate::space::commit::SignedCommit) -> Vec<u8> {
-    let mut b = Vec::with_capacity(256);
-    vlatproto::cbor::write_map_head(&mut b, 6);
-    // canonical key order: by length, then bytes
-    for (k, v) in [("ikm", &c.ikm), ("mac", &c.mac)] {
-        vlatproto::cbor::write_text(&mut b, k);
-        vlatproto::cbor::write_bytes(&mut b, v);
-    }
-    vlatproto::cbor::write_text(&mut b, "rev");
-    vlatproto::cbor::write_text(&mut b, &c.rev);
-    vlatproto::cbor::write_text(&mut b, "sig");
-    vlatproto::cbor::write_bytes(&mut b, &c.sig);
-    vlatproto::cbor::write_text(&mut b, "ver");
-    vlatproto::cbor::write_int(&mut b, c.ver);
-    vlatproto::cbor::write_text(&mut b, "hash");
-    vlatproto::cbor::write_bytes(&mut b, &c.hash);
-    b
-}
-
-/// Reference getRepo (`serializeRepo`), streamed in two passes over one
-/// snapshot (src/space/car.rs) under an export slot (`--max-exports`), and
-/// ended for a client that reads nothing for `--export-stall-secs`. Pass 1
-/// holds the paths and CIDs only: at most `--space-repo-max-records` of
-/// them. A record taken down is left out of the index and the blocks, and
-/// the commit is signed over the set without it ([`hidden_paths`]); with
-/// `excludeValues` only the roots go.
-async fn get_repo(State(app): AppState, SpaceAuth(creds): SpaceAuth, Query(q): Query<GetRepoQ>) -> XResult<Response> {
-    use crate::space::car::{Car, Entries, RepoEncoder};
+/// Reference getRepo (`serializeRepo`): a STAR archive, streamed from one
+/// snapshot under an export slot (`--max-exports`), and ended for a client
+/// that reads nothing for `--export-stall-secs`. The records come in the
+/// order the store keeps them, which is the archive's (bytewise by path).
+/// A record taken down is left out, and the commit is over the set without
+/// it ([`hidden_paths`]).
+async fn get_repo(
+    State(app): AppState,
+    SpaceAuth(creds): SpaceAuth,
+    headers: HeaderMap,
+    Query(q): Query<GetRepoQ>,
+) -> XResult<Response> {
+    use crate::space::star;
     spaces(&app)?;
     let space = Space::parse(&q.space)?;
     let self_read = assert_space_read(&creds, &space, &q.repo)?;
     assert_space_open(&app, &space, self_read).await?;
-    let key = available(&app, &q.repo, self_read).await?;
+    available(&app, &q.repo, self_read).await?;
+    let secret = mac_secret(&app, &creds, &headers, &q.repo, COMMIT_MAC_TYPE).await?;
     metrics::space_read("getRepo", auth_label(&creds));
     let slot = super::sync::export_slot(&app).await?;
     let p = app.partition(&q.repo)?;
@@ -1916,108 +2089,65 @@ async fn get_repo(State(app): AppState, SpaceAuth(creds): SpaceAuth, Query(q): Q
     let not_found = || XrpcError::bad("RepoNotFound", format!("Could not find repo for space: {}", space.uri));
     let v = snap.get(state::space_head_key(&q.repo, &space.sid)).await.map_err(XrpcError::from_err)?;
     let head = head_of(HeadRow::decode(&v.ok_or_else(not_found)?).map_err(XrpcError::from_err)?, &space, &p)?;
-    let values = !q.exclude_values.unwrap_or(false);
     let hidden = hidden_paths(&app, &q.repo, &space.sid).await?;
+    let set = match hidden.is_empty() {
+        true => None,
+        false => Some(served_set(&snap, &q.repo, &space.sid, &head.hash, &hidden).await?),
+    };
+    let commit = commit_of(&space, &q.repo, &head, set.as_ref());
+    let mac = mac_header(secret, COMMIT_MAC_TYPE, |s| mac::commit_mac(s, &commit))?;
     let overloaded = || XrpcError {
         status: StatusCode::SERVICE_UNAVAILABLE,
         error: "Overloaded".into(),
         message: "too many space repo exports in progress; retry shortly".into(),
     };
-    let sp = spaces(&app)?;
-    let planned = crate::space::export_bytes(head.records);
-    let mut room = sp.reserve_export(planned).await.ok_or_else(overloaded)?;
-    let mut set = head.hash.clone();
+    // one chunk at a time: nothing of the repo is held
+    let room = spaces(&app)?.reserve_export(crate::space::export_bytes(0)).await.ok_or_else(overloaded)?;
     let prefix = state::space_prefix(state::SPACE_RECORD_FAMILY, &q.repo, &space.sid);
-    let opts = slatedb::config::ScanOptions { read_ahead_bytes: 4 << 20, cache_blocks: true, ..Default::default() };
-    let mut iter = vlsync_store::keys::BatchedScan::new(
-        snap.scan_with_options(prefix.clone()..vlsync_store::keys::prefix_end(&prefix), &opts)
-            .await
-            .map_err(XrpcError::from_err)?,
-    );
-    let mut entries = Entries::default();
-    while let Some(kv) = iter.next().await.map_err(XrpcError::from_err)? {
-        let path = std::str::from_utf8(&kv.key[prefix.len()..]).map_err(XrpcError::from_err)?;
-        let (cid, _) = state::record_value_parts(&kv.value).map_err(XrpcError::from_err)?;
-        if !hidden.is_empty() && hidden.iter().any(|h| h == path) {
-            let (collection, rkey) = path.split_once('/').ok_or_else(|| XrpcError::internal("malformed space path"))?;
-            set.remove(&crate::space::commit::element(collection, rkey, &cid.to_string()));
-            continue;
-        }
-        entries.push(path, cid);
-    }
-    drop(iter);
-    // long paths: what pass 1 holds past its estimate is reserved too
-    let held = entries.heap_bytes() as u64 + super::sync::EXPORT_CHUNK as u64;
-    if held > planned {
-        room.merge(sp.reserve_export(held - planned).await.ok_or_else(overloaded)?);
-    }
-    let rev = head.rev.to_string();
-    let ctx = crate::space::commit::CommitCtx { space: &space.uri, author: &q.repo, rev: &rev };
-    let t = Instant::now();
-    let commit =
-        crate::space::commit::sign(&set, &ctx, rand::random(), |b| Ok::<_, std::convert::Infallible>(key.sign(b)))
-            .map_err(|_| XrpcError::internal("space commit context too long"))?;
-    metrics::space_sign(t.elapsed());
     let stall = app.config.export_stall;
-    Ok(super::sync::export_body(slot, "application/vnd.ipld.car", move |tx| async move {
+    let body = super::sync::export_body(slot, "application/octet-stream", move |tx| async move {
         let _room = room;
         const CHUNK: usize = super::sync::EXPORT_CHUNK;
-        let mut car = Car::new(commit_block(&commit));
-        let order = car.order(&entries);
-        car.begin(&entries, &order);
-        let held = entries.heap_bytes() + order.capacity() * std::mem::size_of::<std::ops::Range<usize>>();
-        // what an export holds: pass 1's paths and CIDs and the chunk being
-        // filled (the body queue is the sync exports' budget)
-        metrics::space_export_bytes(held + CHUNK);
+        metrics::space_export_bytes(CHUNK);
         let mut buf = Vec::with_capacity(CHUNK + 4096);
-        while car.prelude(&mut buf, CHUNK) {
-            flush_chunk(&tx, &mut buf, stall).await?;
-        }
-        if values {
-            for run in &order {
-                let (first, last) = (entries.path(run.start), entries.path(run.end - 1));
-                let lo = [&prefix[..], first.as_bytes()].concat();
-                let hi = [&prefix[..], last.as_bytes(), &[0]].concat();
-                let mut it = match snap.scan_with_options(lo..hi, &opts).await {
-                    Ok(it) => vlsync_store::keys::BatchedScan::new(it),
-                    Err(e) => {
-                        tracing::warn!("space getRepo: record scan failed: {e}");
-                        return Err("error");
-                    }
-                };
-                for i in run.clone() {
-                    // a run's range also spans the hidden records among its paths
-                    let kv = loop {
-                        match it.next().await {
-                            Ok(Some(kv)) if hidden.iter().any(|h| h.as_bytes() == &kv.key[prefix.len()..]) => {}
-                            Ok(Some(kv)) => break kv,
-                            Ok(None) => return Err("error"),
-                            Err(e) => {
-                                tracing::warn!("space getRepo: record scan failed: {e}");
-                                return Err("error");
-                            }
-                        }
-                    };
-                    let path = entries.path(i);
-                    let (cid, bytes) = match state::record_value_parts(&kv.value) {
-                        Ok(v) if &kv.key[prefix.len()..] == path.as_bytes() && v.0 == *entries.cid(i) => v,
-                        _ => {
-                            tracing::warn!("space getRepo: the snapshot changed between passes");
-                            return Err("error");
-                        }
-                    };
-                    car.record(&cid, bytes, &mut buf);
-                    if buf.len() >= CHUNK {
-                        flush_chunk(&tx, &mut buf, stall).await?;
-                    }
+        star::write_header(&mut buf, &commit);
+        let opts = slatedb::config::ScanOptions { read_ahead_bytes: 4 << 20, cache_blocks: true, ..Default::default() };
+        let mut it = match snap.scan_with_options(prefix.clone()..vlsync_store::keys::prefix_end(&prefix), &opts).await
+        {
+            Ok(it) => vlsync_store::keys::BatchedScan::new(it),
+            Err(e) => {
+                tracing::warn!("space getRepo: record scan failed: {e}");
+                return Err("error");
+            }
+        };
+        loop {
+            let kv = match it.next().await {
+                Ok(Some(kv)) => kv,
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::warn!("space getRepo: record scan failed: {e}");
+                    return Err("error");
                 }
+            };
+            let path = &kv.key[prefix.len()..];
+            if hidden.iter().any(|h| h.as_bytes() == path) {
+                continue;
+            }
+            let Ok((_, bytes)) = state::record_value_parts(&kv.value) else {
+                tracing::warn!("space getRepo: an undecodable record row");
+                return Err("error");
+            };
+            star::write_pair(&mut buf, path, bytes);
+            if buf.len() >= CHUNK {
+                flush_chunk(&tx, &mut buf, stall).await?;
             }
         }
         if !buf.is_empty() {
             flush_chunk(&tx, &mut buf, stall).await?;
         }
         Ok(())
-    }))
+    });
+    Ok(with_mac(body, mac))
 }
 
 async fn flush_chunk(
@@ -2047,18 +2177,18 @@ pub(super) async fn process_notify_write(
     hash: [u8; 32],
     same_rev: SameRev,
 ) -> XResult<Notified> {
-    super::simplespace::assert_space_host(app, space).await?;
+    super::space_policy::assert_space_host(app, space).await?;
     if repo_rev.micros() > vlatproto::tid::now_micros() + FUTURE_REV.as_micros() as u64 {
         return Err(XrpcError::bad("FutureRev", "Repo revision is in the future"));
     }
-    let row = super::simplespace::live_space(app, space).await?;
+    let row = super::space_policy::live_space(app, space).await?;
     if space_takendown(app, space).await? {
         tracing::debug!(space = %hex::encode(space.sid), "notifyWrite to a taken-down space dropped");
         return Ok(Notified::Noop);
     }
-    let managing_app = match &row.write_policy {
-        crate::space::rows::Policy::ManagingApp { .. } if writer != space.authority => {
-            Some(super::simplespace::authorize_user(app, space, &row, writer, "write", None).await?)
+    let managing_app = match &row.policy {
+        crate::space::rows::SpacePolicy::Managed { .. } if writer != space.authority => {
+            Some(super::space_policy::authorize_user(app, space, &row, writer, "write", None).await?)
         }
         _ => None,
     };
@@ -2122,8 +2252,9 @@ fn bytes_field<const N: usize>(v: &J) -> Option<[u8; N]> {
 
 /// Reference notifyWrite at a space host: the writer's repo host, by
 /// service auth from the writer (`iss` is the claimed `repo`, so no host
-/// notifies for another's account) addressed to the space's authority. The
-/// repoRev is checked before auth, as the reference's input validation is.
+/// notifies for another's account) addressed to the space's authority
+/// (`{authority}#atproto_pds`, or the bare DID). The repoRev is checked
+/// before auth, as the reference's input validation is.
 async fn notify_write(State(app): AppState, headers: HeaderMap, Json(inp): Json<J>) -> XResult<StatusCode> {
     spaces(&app)?;
     let r = notify_write_inner(&app, &headers, &inp).await;
@@ -2141,9 +2272,9 @@ async fn notify_write_inner(app: &App, headers: &HeaderMap, inp: &J) -> XResult<
         .filter(|d| vlatproto::syntax::valid_did(d))
         .ok_or_else(|| XrpcError::bad("InvalidRequest", "Input/repo must be a valid did"))?;
     let hash = inp
-        .get("hash")
+        .get("data")
         .and_then(bytes_field::<32>)
-        .ok_or_else(|| XrpcError::bad("InvalidRequest", "Input/hash must be 32 bytes"))?;
+        .ok_or_else(|| XrpcError::bad("InvalidRequest", "Input/data must be 32 bytes"))?;
     let auth = super::authn::verify_space_service_jwt(app, headers, "com.atproto.space.notifyWrite").await?;
     if auth.iss != repo {
         return Err(forbidden("notifyWrite iss does not match claimed writer"));
@@ -2214,9 +2345,9 @@ async fn list_repos(State(app): AppState, headers: HeaderMap, Query(q): Query<Li
     let space = Space::parse(&q.space)?;
     let limit = super::extract::limit_param(q.limit, 100, 1, 1000)?;
     host_credential(&app, &headers, &space).await?;
-    super::simplespace::live_space(&app, &space).await?;
+    super::space_policy::live_space(&app, &space).await?;
     if space_takendown(&app, &space).await? {
-        return Err(super::simplespace::space_not_found());
+        return Err(super::space_policy::space_not_found());
     }
     metrics::space_read("listRepos", "credential");
     let p = app.partition(&space.authority)?;
@@ -2251,7 +2382,7 @@ async fn list_repos(State(app): AppState, headers: HeaderMap, Query(q): Query<Li
             repos.push(json!({
                 "did": writer,
                 "repoRev": w.repo_rev.to_string(),
-                "hash": b64(&w.hash),
+                "data": b64(&w.hash),
                 "spaceRev": space_rev.to_string(),
             }));
             last = Some(space_rev);
@@ -2277,9 +2408,9 @@ async fn register_notify(State(app): AppState, headers: HeaderMap, Json(inp): Js
     let sp = spaces(&app)?.clone();
     let space = Space::parse(&inp.space)?;
     let cred = host_credential(&app, &headers, &space).await?;
-    super::simplespace::assert_space_host(&app, &space).await?;
+    super::space_policy::assert_space_host(&app, &space).await?;
     if space_takendown(&app, &space).await? {
-        return Err(super::simplespace::space_not_found());
+        return Err(super::space_policy::space_not_found());
     }
     use crate::space::host::{MAX_REGISTRATIONS, MAX_SERVICE_LEN};
     if inp.service.len() > MAX_SERVICE_LEN {
@@ -2341,7 +2472,7 @@ async fn unregister_notify(
     spaces(&app)?;
     let space = Space::parse(&inp.space)?;
     host_credential(&app, &headers, &space).await?;
-    super::simplespace::assert_space_host(&app, &space).await?;
+    super::space_policy::assert_space_host(&app, &space).await?;
     submit_space(&app, &space.authority, &space, SpaceOp::UnregisterNotify { service: inp.service, expired_by: None })
         .await?;
     Ok(StatusCode::OK)
@@ -2365,21 +2496,5 @@ mod tests {
         // past every TID
         assert_eq!(space_rev_after("c"), None);
         assert_eq!(space_rev_after("zzz"), None);
-    }
-
-    #[test]
-    fn commit_blocks_are_canonical() {
-        let c = crate::space::commit::SignedCommit {
-            ver: 1,
-            hash: vec![1; 32],
-            ikm: vec![2; 32],
-            sig: vec![3; 64],
-            mac: vec![4; 32],
-            rev: "3jzfcijpj2z2a".into(),
-        };
-        let b = commit_block(&c);
-        let v = vlatproto::cbor::Value::decode(&b).unwrap();
-        assert_eq!(v.to_cbor(), b, "decodes and re-encodes to the same bytes");
-        assert_eq!(v.get("rev").and_then(|r| r.as_str()), Some("3jzfcijpj2z2a"));
     }
 }

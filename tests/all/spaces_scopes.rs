@@ -387,13 +387,11 @@ async fn types_authorities_and_actions_are_enforced() {
     // a type with no grant at all
     let r = a
         .post(
-            "com.atproto.simplespace.createSpace",
+            "com.atproto.space.createSpace",
             json!({
                 "spaceType": "com.c6enf.third",
                 "skey": "t",
-                "readPolicy": {"$type": "com.atproto.simplespace.defs#memberListPolicy"},
-                "writePolicy": {"$type": "com.atproto.simplespace.defs#memberListPolicy"},
-                "appAccess": {"$type": "com.atproto.simplespace.defs#open"},
+                "policy": {"$type": "com.atproto.memberspace.policy"},
             }),
         )
         .await;
@@ -625,7 +623,7 @@ async fn space_rate_buckets_trip() {
     let b = SpaceClient::new(&s, "c6rlb", &full).await;
     let space = a.create_space(ty, "main").await;
     a.create_record(&space, coll, Some("x"), rec(coll)).await.ok();
-    a.post("com.atproto.simplespace.putMember", json!({"space": space, "did": b.did, "read": true, "write": true}))
+    a.post("com.atproto.memberspace.putMember", json!({"space": space, "did": b.did, "read": true, "write": true}))
         .await
         .ok();
     set_limits(
@@ -670,7 +668,7 @@ async fn space_rate_buckets_trip() {
     signed_read(&s, &a, &space, &a.did, &c2).await.ok();
 
     // space-notify-in: per writer (b's notifyWrite reaching its authority)
-    let notify = json!({"space": space, "repo": b.did, "repoRev": "3l2cqzy5yf22a", "hash": {"$bytes": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}});
+    let notify = json!({"space": space, "repo": b.did, "repoRev": "3l2cqzy5yf22a", "data": {"$bytes": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}});
     let jwt = service_jwt(&s, &b.did, &a.did, "com.atproto.space.notifyWrite").await;
     let first = bearer_post(&s, "com.atproto.space.notifyWrite", &jwt, notify.clone()).await;
     assert_ne!(first.status, 429, "{first:?}");

@@ -199,7 +199,7 @@ impl World {
         let local = writers[auth].create_space(&st, "local").await;
         for w in &writers[1..] {
             let m = json!({"space": local, "did": w.did, "read": true, "write": true});
-            writers[auth].post("com.atproto.simplespace.putMember", m).await.ok();
+            writers[auth].post("com.atproto.memberspace.putMember", m).await.ok();
         }
         let (stub, syncer) = (StubDid::spawn().await, StubDid::spawn().await);
         stub.refuse(true);
@@ -251,7 +251,7 @@ impl World {
                 let ctx = format!("{ctx}: {} in {space}", w.did);
                 let replay = space == self.local;
                 let (records, c) = consistent(&self.nodes[0], w, space, replay, &ctx).await;
-                out.insert((w.did.clone(), space.to_string()), View { records, rev: c.rev, hash: c.hash });
+                out.insert((w.did.clone(), space.to_string()), View { records, rev: c.rev, hash: c.data });
             }
         }
         out
@@ -264,7 +264,7 @@ impl World {
         let rows = by_did(&repos);
         assert_eq!(rows.len(), repos.len(), "listRepos repeats a repo: {repos:?}");
         rows.into_iter()
-            .map(|(d, r)| (d, (r["repoRev"].clone(), r["spaceRev"].clone(), bytes_field(&r["hash"]))))
+            .map(|(d, r)| (d, (r["repoRev"].clone(), r["spaceRev"].clone(), bytes_field(&r["data"]))))
             .collect()
     }
 
@@ -338,7 +338,7 @@ async fn split_and_merge_keep_every_space_row() {
             assert!(head.rev > was.rev, "{} in {space}: rev {} after {}", wr.did, head.rev, was.rev);
             if space == w.local {
                 let (rr, sr, hash) = &host[&wr.did];
-                assert_eq!((rr, hash), (&json!(head.rev), &head.hash), "{}: listRepos lags", wr.did);
+                assert_eq!((rr, hash), (&json!(head.rev), &head.data), "{}: listRepos lags", wr.did);
                 assert!(sr.as_str() > before.host[&wr.did].1.as_str(), "{}: spaceRev didn't move", wr.did);
             }
         }

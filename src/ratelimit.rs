@@ -399,7 +399,7 @@ limit!(
     HOUR,
     2000
 );
-limit!(SPACE_CREATE, 44, "space-create", Did, "simplespace.createSpace per account", DAY, 100);
+limit!(SPACE_CREATE, 44, "space-create", Did, "space.createSpace per account", DAY, 100);
 limit!(SPACE_REGISTER, 45, "space-register", Credential, "space.registerNotify with one space credential", HOUR, 60);
 
 limit!(
