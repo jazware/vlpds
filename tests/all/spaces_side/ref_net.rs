@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use vlpds::space::commit::{self, SignedCommit};
+use vlpds::space::commit::{self, Commit};
 use vlpds::space::lthash::LtHash;
 use vlpds::space::token::{self, Mint, TokenType};
 
@@ -289,15 +289,11 @@ pub async fn exchange(
     token: &str,
     attestation: Option<&str>,
 ) -> Resp {
-    let mut body = json!({"space": space});
+    let mut body = json!({"space": space, "credentialKid": holder.did, "delegationToken": token});
     if let Some(a) = attestation {
         body["clientAttestation"] = json!(a);
     }
-    let mut rb = http.post(format!("{host}/xrpc/com.atproto.space.getSpaceCredential"));
-    for (k, v) in holder.headers(&format!("Bearer {token}"), None) {
-        rb = rb.header(k, v);
-    }
-    resp(rb.json(&body).send().await.unwrap()).await
+    crate::common::spaces::get_space_credential(http, host, body).await
 }
 
 /// One write's options (the reference's `WriteOptions`).
@@ -381,7 +377,7 @@ pub async fn repo_state(actor: &SpaceClient, space: &str) -> Option<(String, Vec
         return None;
     }
     let c = &r.ok()["commit"];
-    Some((c["rev"].as_str().unwrap().to_string(), bytes_field(&c["hash"])))
+    Some((c["rev"].as_str().unwrap().to_string(), bytes_field(&c["data"])))
 }
 
 /// Every record of the actor's repo in `space`, paged as its owner.
@@ -428,22 +424,9 @@ pub fn replay(ops: &[J]) -> LtHash {
 }
 
 pub fn commit_matches(set: &LtHash, c: &J) -> bool {
-    let sc: SignedCommit = signed_commit(c);
+    let sc: Commit = signed_commit(c);
     assert_eq!(sc.ver, 1, "commit ver");
     commit::matches(set, &sc)
-}
-
-/// The account's `#atproto` key as a did:key (describeRepo).
-pub async fn did_key(s: &TestServer, did: &str) -> String {
-    let j = s.describe_repo(did).await.ok();
-    let vm = j["didDoc"]["verificationMethod"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|v| v["id"].as_str().is_some_and(|i| i.ends_with("#atproto")))
-        .unwrap()
-        .clone();
-    format!("did:key:{}", vm["publicKeyMultibase"].as_str().unwrap())
 }
 
 /// A service JWT signed by the actor's account key, as its PDS's outbox
@@ -548,7 +531,7 @@ impl Cred {
     pub async fn post(&self, base: &str, nsid: &str, body: J) -> Resp {
         let aud = body["repo"].as_str().unwrap_or_else(|| authority_of(body["space"].as_str().unwrap())).to_string();
         let mut rb = self.http.post(format!("{base}/xrpc/{nsid}"));
-        for (k, v) in self.holder.headers(&format!("Atproto-Space {}", self.credential), Some(&aud)) {
+        for (k, v) in self.holder.headers(&self.credential, &aud) {
             rb = rb.header(k, v);
         }
         resp(rb.json(&body).send().await.unwrap()).await
@@ -556,15 +539,24 @@ impl Cred {
 
     /// The signed headers for `aud` (`createSpaceSigHeaders`).
     pub fn headers(&self, aud: &str) -> Vec<(String, String)> {
-        self.holder.headers(&format!("Atproto-Space {}", self.credential), Some(aud))
+        self.holder.headers(&self.credential, aud)
     }
 }
 
-/// A GET at `base` with exactly these headers.
+/// A GET at `base` with these headers, and a fresh `Atproto-Space-Want-Mac`
+/// when it's a credential read that returns a MAC and they name none.
 pub async fn raw_get(base: &str, nsid: &str, query: &[(&str, &str)], headers: &[(String, String)]) -> Resp {
-    let mut rb = reqwest::Client::new().get(xrpc_url(base, nsid, query));
+    let http = reqwest::Client::new();
+    let mut rb = http.get(xrpc_url(base, nsid, query));
     for (k, v) in headers {
         rb = rb.header(k, v);
+    }
+    let credential = headers.iter().any(|(k, v)| k == "authorization" && v.starts_with("Atproto-Space-Credential "));
+    let named = headers.iter().any(|(k, _)| k == vlpds::space::mac::WANT_MAC_HEADER);
+    if let (Some(ty), true, false) = (crate::common::spaces::mac_type(nsid), credential, named) {
+        let repo = query.iter().find(|(k, _)| *k == "repo").map(|(_, v)| *v).unwrap_or_default();
+        let (want, _) = crate::common::spaces::want_mac(&http, base, repo, ty).await;
+        rb = rb.header(vlpds::space::mac::WANT_MAC_HEADER, want);
     }
     resp(rb.send().await.unwrap()).await
 }
@@ -690,9 +682,9 @@ impl MockService {
         }
     }
 
-    /// A remote space host (`#atproto_space_host`, `#atproto_pds`).
+    /// A remote space host: the authority's PDS (`#atproto_pds`).
     pub async fn space_host() -> MockService {
-        Self::spawn(&[("atproto_space_host", "AtprotoSpaceHost"), ("atproto_pds", "AtprotoPersonalDataServer")]).await
+        Self::spawn(&[("atproto_pds", "AtprotoPersonalDataServer")]).await
     }
 
     /// A syncing service (`#atproto_space_syncer`).
@@ -902,7 +894,7 @@ async fn ref_harness_self_check() {
     let md: J = http.get(&app.client_id).send().await.unwrap().json().await.unwrap();
     assert_eq!(md["client_id"], json!(app.client_id));
     let jwks: J = http.get(md["jwks_uri"].as_str().unwrap()).send().await.unwrap().json().await.unwrap();
-    let att = app.attest("did:plc:x#atproto_space_host", Attest::default());
+    let att = app.attest("did:plc:x#atproto_pds", Attest::default());
     let parts: Vec<&str> = att.split('.').collect();
     let jwk = &jwks["keys"][0];
     let dec = |s: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s).unwrap();
@@ -914,10 +906,7 @@ async fn ref_harness_self_check() {
     use p256::ecdsa::signature::Verifier;
     vk.verify(format!("{}.{}", parts[0], parts[1]).as_bytes(), &sig).expect("attestation signed by the published key");
     let claims = jwt_claims(&att);
-    assert_eq!(
-        (claims["iss"].clone(), claims["aud"].clone()),
-        (json!(app.client_id), json!("did:plc:x#atproto_space_host"))
-    );
+    assert_eq!((claims["iss"].clone(), claims["aud"].clone()), (json!(app.client_id), json!("did:plc:x#atproto_pds")));
     assert!(claims["jti"].is_string());
     assert!(jwt_claims(&app.attest("a", Attest { jti: Some(None), ..Default::default() }))["jti"].is_null());
     app.set_keys(Keys::UriMissing);

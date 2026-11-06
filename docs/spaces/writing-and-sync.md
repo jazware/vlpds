@@ -34,7 +34,7 @@ timeline:
     - { from: host, to: ob, at: 13.2, label: "200" }
     - { from: fan, to: sync, at: 13.8, label: "notifyWrite · spaceRev", tone: blue }
     - { from: sync, to: w, at: 16.1, side: left, label: listRepoOps, tone: blue }
-    - { from: w, to: sync, at: 19.8, side: left, label: ops · signed commit, tone: blue }
+    - { from: w, to: sync, at: 19.8, side: left, label: ops · commit + MAC, tone: blue }
   marks:
     - { at: 5.6, label: durable, tone: amber }
     - { at: 7.8, label: 200 sent }
@@ -134,7 +134,7 @@ or a takeover. The sending side lives in memory on the shard's owner.
 - title: Check the rev
   body: "`repoRev` more than 5 min in the future gets `FutureRev`. The writer must pass the space's `writePolicy` (a managing app is asked with `checkUserAccess`)."
 - title: Sequence it on the authority's worker
-  body: "A `repoRev` below the writer's last one is a no-op, and so is the same `repoRev` with the same hash, so a resent notify is harmless. The same `repoRev` with another hash is a record takedown or its reversal changing what the writer serves ([Privacy](privacy.md#takedowns)), so it's sequenced again. From another host, it's sequenced only once the writer's PDS serves a signed commit with that hash at that rev, and at most 3 times per writer and space in 10 min. The rest are dropped and left to polls. The push isn't logged either, so if the author's host crashes before it goes, syncers find out on their next poll. Otherwise the worker assigns the next `spaceRev` (a TID) and writes `sW` plus the `sQ` swap as one private entry. One worker per authority means no lock."
+  body: "A `repoRev` below the writer's last one is a no-op, and so is the same `repoRev` with the same hash, so a resent notify is harmless. The same `repoRev` with another hash is a record takedown or its reversal changing what the writer serves ([Privacy](privacy.md#takedowns)), so it's sequenced again. From another host, it's sequenced only once the writer's PDS serves a commit with that hash at that rev (read as a syncer reads it, with a credential the authority issues itself and a MAC against the writer's `#atproto_kem` key), and at most 3 times per writer and space in 10 min. The rest are dropped and left to polls. The push isn't logged either, so if the author's host crashes before it goes, syncers find out on their next poll. Otherwise the worker assigns the next `spaceRev` (a TID) and writes `sW` plus the `sQ` swap as one private entry. One worker per authority means no lock."
 - title: Answer 200 once it's durable
   body: "The writer's outbox only drops its row after this."
 - title: Fan out
@@ -195,8 +195,8 @@ The reference sends each forward as it's sequenced, with no order. Its syncers s
 | `getRepo` | two streamed passes over one snapshot, under an export slot | bounded by the 100k record cap | |
 | `listRepos` (at the authority) | a cursor scan of `sQ` joined to `sW` | | |
 
-When a page of `listRepoOps` reaches the head it includes the commit, signed for this response. The
-syncer checks its running LtHash against the commit's hash. If they differ it falls back to
+When a page of `listRepoOps` reaches the head it includes the commit, MAC'd for this response. The
+syncer checks its running LtHash against the commit's `data`. If they differ it falls back to
 `getRepo`. That's also what happens when `since` is older than the 7-day oplog window, since vlpds
 answers from the window's start and the replayed hash can't match. Numbers are client-side from the
 interop harness at `8f837fa8` (one node, MinIO).

@@ -9,7 +9,7 @@
 //! - Tokens the reference forges with an account's own key (which vlpds
 //!   never hands out) are signed by a [`MockService`] DID standing in for
 //!   that party: a member forging a credential, a user misaddressing a
-//!   delegation token, an authority publishing no `#atproto_space` key.
+//!   delegation token, an authority naming another `kid` than `#atproto`.
 //! - The OAuth scope suite gets real grants (`regrant`) where the reference
 //!   stubs the verifier.
 //! - Revocation storage internals (row counts, the hour of retention, a
@@ -133,7 +133,7 @@ async fn refuses_a_credential_without_a_signature() {
     let space = net.create_space(&alice, SpaceOpts::default()).await;
     let cred = net.credential_for(&alice, &space).await;
     let q = [("space", space.as_str()), ("repo", alice.did.as_str())];
-    let unsigned = vec![("authorization".to_string(), format!("Atproto-Space {}", cred.credential))];
+    let unsigned = vec![("authorization".to_string(), format!("Atproto-Space-Credential {}", cred.credential))];
     raw_get(&net.pds[0].url, "com.atproto.space.getLatestCommit", &q, &unsigned).await.err(401, "BadSpaceSignature");
 }
 
@@ -290,10 +290,10 @@ async fn refuses_a_credential_the_authority_did_not_issue() {
     refused_mentioning(&r, &["not the space authority"]);
 }
 
-/// space credentials: "refuses one whose kid names a key the authority does
-/// not publish". The authority is a did:web publishing only `#atproto`,
-/// and alice holds a repo in its space; a credential it signs under kid
-/// `#atproto` reads, one claiming `#atproto_space` doesn't.
+/// space credentials: "refuses one whose kid is not exactly #atproto". The
+/// authority is a did:web, and alice holds a repo in its space; a
+/// credential it signs under kid `#atproto` reads, one under any other kid
+/// (or none) doesn't, though the same key signed it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn refuses_a_credential_whose_kid_the_authority_does_not_publish() {
     let net = Net::new(0).await;
@@ -302,15 +302,34 @@ async fn refuses_a_credential_whose_kid_the_authority_does_not_publish() {
     let space = format!("at://{}/space/{TEST_SPACE_TYPE}/kid", authority.did);
     write(&alice, &space, W::new()).await.ok();
     let q = [("space", space.as_str()), ("repo", alice.did.as_str())];
-    let cred = |kid: &'static str| {
+    let cred = |kid: Option<&'static str>| {
         let holder = Holder::new();
-        let m =
-            Mint { iss: &authority.did, sub: &space, key_id: Some(&holder.did), kid: Some(kid), ..Default::default() };
-        Cred { credential: authority.token(TokenType::Credential, m), holder, http: reqwest::Client::new() }
+        let m = Mint { iss: &authority.did, sub: &space, key_id: Some(&holder.did), ..Default::default() };
+        let jwt = authority.token(TokenType::Credential, m);
+        let jwt = match kid {
+            Some("#atproto") => jwt,
+            kid => {
+                // the same claims and key, another header
+                let parts: Vec<&str> = jwt.split('.').collect();
+                let mut h: J = serde_json::from_slice(
+                    &base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, parts[0]).unwrap(),
+                )
+                .unwrap();
+                match kid {
+                    Some(k) => h["kid"] = json!(k),
+                    None => drop(h.as_object_mut().unwrap().remove("kid")),
+                }
+                let input = format!("{}.{}", super::ref_net::b64url(h.to_string()), parts[1]);
+                format!("{input}.{}", super::ref_net::b64url(authority.key.sign(input.as_bytes())))
+            }
+        };
+        Cred { credential: jwt, holder, http: reqwest::Client::new() }
     };
-    cred("#atproto").get(&net.pds[0].url, "com.atproto.space.getLatestCommit", &q).await.ok();
-    let r = cred("#atproto_space").get(&net.pds[0].url, "com.atproto.space.getLatestCommit", &q).await;
-    refused_mentioning(&r, &["key"]);
+    cred(Some("#atproto")).get(&net.pds[0].url, "com.atproto.space.getLatestCommit", &q).await.ok();
+    for kid in [Some("#atproto_space"), Some("atproto"), None] {
+        let r = cred(kid).get(&net.pds[0].url, "com.atproto.space.getLatestCommit", &q).await;
+        refused_mentioning(&r, &["kid"]);
+    }
 }
 
 /// space credentials: "refuses one for a revoked member"
@@ -423,18 +442,17 @@ async fn delegation_tokens_are_useless_at_a_host_that_does_not_govern_the_space(
     r.err(400, "SpaceNotFound");
 }
 
-/// delegation tokens: "requires proof of possession when exchanging a
-/// delegation token"
+/// credential requests: "requires credentialKid": the token as the
+/// request's authorization (the October 1 shape) isn't one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn exchange_requires_proof_of_possession() {
+async fn a_credential_request_names_its_key() {
     let net = Net::new(2).await;
     let (alice, carol) = (net.actor("alice", 0).await, net.actor("carol", 2).await);
-    let space = net.create_space(&alice, SpaceOpts::default()).await;
+    let space = net.create_space(&alice, SpaceOpts { members: &[&carol], ..Default::default() }).await;
     let token = delegation_token(&carol, &space).await;
     let h = vec![("authorization".to_string(), format!("Bearer {token}"))];
-    raw_post(&net.pds[0].url, "com.atproto.space.getSpaceCredential", json!({"space": space}), &h)
-        .await
-        .err(401, "BadSpaceSignature");
+    let r = raw_post(&net.pds[0].url, "com.atproto.space.getSpaceCredential", json!({"space": space}), &h).await;
+    assert_eq!(r.status, 400, "{}", r.text());
 }
 
 /// delegation tokens: "binds the credential to the key that signed the
@@ -450,19 +468,28 @@ async fn binds_the_credential_to_the_exchange_key() {
     assert_eq!(jwt_claims(&cred)["cnf"], json!({"kid": holder.did}));
 }
 
-/// delegation tokens: "binds the exchange signature to the delegation token"
+/// credential requests: "rejects a credentialKid that is not a P-256 did:key"
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn binds_the_exchange_signature_to_the_delegation_token() {
+async fn rejects_a_credential_kid_that_isnt_p256() {
     let net = Net::new(2).await;
     let (alice, carol) = (net.actor("alice", 0).await, net.actor("carol", 2).await);
-    let space = net.create_space(&alice, SpaceOpts::default()).await;
+    let space = net.create_space(&alice, SpaceOpts { members: &[&carol], ..Default::default() }).await;
+    for kid in [vlatproto::crypto::Keypair::generate().did_key(), "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa".into(), "".into()]
+    {
+        let token = delegation_token(&carol, &space).await;
+        let body = json!({"space": space, "credentialKid": kid, "delegationToken": token});
+        raw_post(&net.pds[0].url, "com.atproto.space.getSpaceCredential", body, &[]).await.err(400, "InvalidRequest");
+    }
+    // the old request shape: no credentialKid
     let token = delegation_token(&carol, &space).await;
-    let other_token = delegation_token(&carol, &space).await;
-    let mut h = Holder::new().headers(&format!("Bearer {token}"), None);
-    h.iter_mut().find(|(k, _)| k == "authorization").unwrap().1 = format!("Bearer {other_token}");
-    raw_post(&net.pds[0].url, "com.atproto.space.getSpaceCredential", json!({"space": space}), &h)
-        .await
-        .err(401, "BadSpaceSignature");
+    let r = raw_post(
+        &net.pds[0].url,
+        "com.atproto.space.getSpaceCredential",
+        json!({"space": space}),
+        &[("authorization".into(), format!("Bearer {token}"))],
+    )
+    .await;
+    assert_eq!(r.status, 400, "{}", r.text());
 }
 
 /// delegation tokens: "refuses a replayed credential exchange"
@@ -472,10 +499,10 @@ async fn refuses_a_replayed_credential_exchange() {
     let (alice, carol) = (net.actor("alice", 0).await, net.actor("carol", 2).await);
     let space = net.create_space(&alice, SpaceOpts { members: &[&carol], ..Default::default() }).await;
     let token = delegation_token(&carol, &space).await;
-    let h = Holder::new().headers(&format!("Bearer {token}"), None);
-    let go = || raw_post(&net.pds[0].url, "com.atproto.space.getSpaceCredential", json!({"space": space}), &h);
+    let body = json!({"space": space, "credentialKid": Holder::new().did, "delegationToken": token});
+    let go = || raw_post(&net.pds[0].url, "com.atproto.space.getSpaceCredential", body.clone(), &[]);
     go().await.ok();
-    go().await.err(401, "JwtReplayed");
+    go().await.err(400, "InvalidDelegationToken");
 }
 
 /// delegation tokens: "are refused when the audience names another

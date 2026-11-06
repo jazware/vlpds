@@ -1,10 +1,10 @@
 //! The space host's calls out (reference `simplespace/manager.ts` and
 //! `api/com/atproto/space/util.ts`): resolving a service identifier,
-//! asking a managing app whether a user may read or write, forwarding a
-//! sequenced write to a registered service, and telling registered services
-//! a space is gone. Every call goes through the SSRF-guarded client with
-//! service auth from the authority (`aud` = the service identifier as
-//! published), a 10 s timeout and a small response cap.
+//! asking a managing app whether a user may read or write, and forwarding
+//! a sequenced write to a registered service (notifySpaceDeleted is
+//! [`super::deletions`]'s). Every call goes through the SSRF-guarded
+//! client with service auth from the authority (`aud` = the service
+//! identifier as published), a 10 s timeout and a small response cap.
 
 use super::rows::NotifyRow;
 use crate::state::{self, SpaceId};
@@ -23,8 +23,7 @@ const MAX_ENDPOINT: usize = 2048;
 pub const REGISTRATION_TTL: Duration = Duration::from_secs(24 * 3600);
 
 /// Reference `resolveServiceEndpoint`: `did#fragment` names that service
-/// entry; a bare DID its PDS. `#atproto_space_host` falls back to the PDS
-/// when the document has no dedicated entry.
+/// entry; a bare DID its PDS.
 pub async fn resolve_service_endpoint(app: &App, service: &str) -> Option<String> {
     let (did, fragment) = match service.split_once('#') {
         Some((d, f)) => (d, Some(f)),
@@ -41,8 +40,6 @@ pub async fn resolve_service_endpoint(app: &App, service: &str) -> Option<String
         }
     };
     let ep = match fragment {
-        Some("atproto_space_host") => vlatproto::did_resolver::service_endpoint(&doc, "atproto_space_host")
-            .or_else(|| vlatproto::did_resolver::service_endpoint(&doc, "atproto_pds")),
         Some(f) => vlatproto::did_resolver::service_endpoint(&doc, f),
         None => vlatproto::did_resolver::service_endpoint(&doc, "atproto_pds"),
     };
@@ -58,7 +55,7 @@ pub(crate) fn http_error(what: &str, e: reqwest::Error) -> String {
 /// A call to `service` at `endpoint` as `iss` (an account hosted here):
 /// Ok(status, JSON body) once it answered.
 #[allow(clippy::too_many_arguments)]
-async fn call(
+pub(crate) async fn call(
     app: &App,
     client: vlatproto::http::Guarded,
     iss: &str,
@@ -207,7 +204,7 @@ pub async fn forward(app: &App, f: &Forward, prev: Option<Tid>) -> &'static str 
         "space": &*f.uri,
         "repo": f.writer,
         "repoRev": f.repo_rev.to_string(),
-        "hash": b64(&f.hash),
+        "data": b64(&f.hash),
         "spaceRev": f.space_rev.to_string(),
     });
     if let Some(p) = prev {
@@ -232,37 +229,17 @@ pub async fn forward(app: &App, f: &Forward, prev: Option<Tid>) -> &'static str 
     }
 }
 
-/// Reference deleteSpace's notifySpaceDeleted: best effort, one service at a
-/// time; one that misses it learns of it from `SpaceDeleted` on its next
-/// credential renewal.
-pub async fn notify_space_deleted(app: &App, authority: &str, uri: &str, services: Vec<(String, NotifyRow)>) {
-    let lxm = "com.atproto.space.notifySpaceDeleted";
-    let body = json!({"space": uri});
-    for (service, row) in services {
-        let client = vlatproto::http::guarded_fanout(app.config.dev_mode);
-        let r =
-            call(app, client, authority, &service, &row.endpoint, lxm, reqwest::Method::POST, &[], Some(&body)).await;
-        match r {
-            Ok((s, _)) if (200..300).contains(&s) => {}
-            Ok((s, _)) => {
-                tracing::info!(space = %crate::state::space_log_id(uri), service, status = s, "notifySpaceDeleted refused")
-            }
-            Err(e) => {
-                tracing::info!(space = %crate::state::space_log_id(uri), service, "notifySpaceDeleted failed: {e}")
-            }
-        }
-    }
-}
-
 /// How long the authority waits on a writer's host to confirm a same-rev
 /// hash: well inside the writer's own 10 s notify timeout.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Ok when `writer`'s host serves `hash` at `rev` in `space` now: its
-/// getLatestCommit, read as a syncer reads it with a credential `authority`
-/// issues itself, signed by `writer`'s #atproto key. A commit's hash is the
-/// author's claim only when it comes from the author's host (see
-/// [`super::commit::verify`]), which is where this asks.
+/// getLatestCommit, read as a syncer reads it, with a credential
+/// `authority` issues itself and a MAC against `writer`'s `#atproto_kem`
+/// key. A commit's data is the author's host's claim only under a MAC its
+/// response carried, which is what this checks. A MAC that fails is asked
+/// for once more after the writer's document is refetched (its KEM key may
+/// have rotated).
 pub async fn check_served_hash(
     app: &App,
     space: &str,
@@ -271,10 +248,50 @@ pub async fn check_served_hash(
     rev: Tid,
     hash: &[u8; 32],
 ) -> Result<(), String> {
-    use p256::ecdsa::signature::Signer;
     let doc = app.did_resolver.resolve(writer).await.map_err(|e| format!("could not resolve the writer: {e:?}"))?;
-    let endpoint = vlatproto::did_resolver::service_endpoint(&doc, "atproto_pds").ok_or("the writer names no PDS")?;
-    let (key, _) = crate::xrpc::proxy::account_key_status(app, authority).await.map_err(|e| e.message)?;
+    match served_commit(app, &doc, space, authority, writer).await {
+        Err(Checked::Mac(_)) if app.did_resolver.refresh(writer) => {
+            let doc =
+                app.did_resolver.resolve(writer).await.map_err(|e| format!("could not resolve the writer: {e:?}"))?;
+            served_commit(app, &doc, space, authority, writer).await
+        }
+        r => r,
+    }
+    .map_err(|e| match e {
+        Checked::Mac(m) | Checked::Other(m) => m,
+    })
+    .and_then(|c| {
+        if c.rev != rev.to_string() {
+            return Err(format!("the writer's host is at {}", c.rev));
+        }
+        if c.data[..] != hash[..] {
+            return Err("the writer's host serves another hash".into());
+        }
+        Ok(())
+    })
+}
+
+enum Checked {
+    /// The MAC didn't verify (or the writer has no usable KEM key).
+    Mac(String),
+    Other(String),
+}
+
+/// One getLatestCommit at the writer's host, its MAC verified.
+async fn served_commit(
+    app: &App,
+    doc: &J,
+    space: &str,
+    authority: &str,
+    writer: &str,
+) -> Result<super::commit::Commit, Checked> {
+    use p256::ecdsa::signature::Signer;
+    let other = Checked::Other;
+    let endpoint = vlatproto::did_resolver::service_endpoint(doc, "atproto_pds")
+        .ok_or_else(|| other("the writer names no PDS".into()))?;
+    let kem_key =
+        super::kem::kem_key_of(doc).ok_or_else(|| Checked::Mac("the writer has no #atproto_kem key".into()))?;
+    let (key, _) = crate::xrpc::proxy::account_key_status(app, authority).await.map_err(|e| other(e.message))?;
     let holder = <p256::ecdsa::SigningKey as p256::elliptic_curve::Generate>::generate();
     let mut mk = vec![0x80, 0x24];
     mk.extend_from_slice(holder.verifying_key().to_sec1_point(true).as_bytes());
@@ -291,75 +308,42 @@ pub async fn check_served_hash(
     let cred = super::token::encode(super::token::TokenType::Credential, &mint, "ES256K", now, &jti, |b| {
         Ok::<_, std::convert::Infallible>(key.sign(b))
     })
-    .map_err(|e| format!("credential: {e:?}"))?;
-    let authorization = format!("{} {cred}", crate::xrpc::authn::SPACE_SCHEME);
-    let input = super::httpsig::signature_input(true, &holder_did);
-    let sig: p256::ecdsa::Signature =
-        holder.sign(&super::httpsig::signature_base(&authorization, &input, Some(writer)));
-    use base64::Engine;
-    let sig = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+    .map_err(|e| other(format!("credential: {e:?}")))?;
+    let (share, secret) = super::kem::encapsulate(&kem_key).map_err(|e| Checked::Mac(e.to_string()))?;
     let url = format!("{}/xrpc/com.atproto.space.getLatestCommit", endpoint.trim_end_matches('/'));
-    let mut r = vlatproto::http::guarded(app.config.dev_mode)
-        .request(reqwest::Method::GET, &url)?
+    let mut rb = vlatproto::http::guarded(app.config.dev_mode)
+        .request(reqwest::Method::GET, &url)
+        .map_err(other)?
         .query(&[("space", space), ("repo", writer)])
-        .header(reqwest::header::AUTHORIZATION, authorization)
-        .header(super::httpsig::AUDIENCE_HEADER, writer)
-        .header("signature-input", format!("{}={input}", super::httpsig::LABEL))
-        .header("signature", format!("{}=:{sig}:", super::httpsig::LABEL))
-        .timeout(CHECK_TIMEOUT)
-        .send()
-        .await
-        .map_err(|e| http_error("getLatestCommit", e))?;
-    if !r.status().is_success() {
-        return Err(format!("getLatestCommit: {}", r.status()));
+        .header(super::mac::WANT_MAC_HEADER, super::mac::format_want_mac(super::mac::COMMIT_MAC_TYPE, &share))
+        .timeout(CHECK_TIMEOUT);
+    let signed = super::httpsig::sign_headers(&cred, writer, |b| {
+        let sig: p256::ecdsa::Signature = holder.sign(b);
+        sig.to_bytes().into()
+    });
+    for (k, v) in signed {
+        rb = rb.header(k, v);
     }
+    let mut r = rb.send().await.map_err(|e| other(http_error("getLatestCommit", e)))?;
+    if !r.status().is_success() {
+        return Err(other(format!("getLatestCommit: {}", r.status())));
+    }
+    let mac_value = r.headers().get(super::mac::MAC_HEADER).and_then(|v| v.to_str().ok()).map(String::from);
     let mut buf = Vec::new();
-    while let Some(c) = r.chunk().await.map_err(|e| http_error("getLatestCommit", e))? {
+    while let Some(c) = r.chunk().await.map_err(|e| other(http_error("getLatestCommit", e)))? {
         if buf.len() + c.len() > MAX_RESPONSE {
-            return Err("getLatestCommit: response too large".into());
+            return Err(other("getLatestCommit: response too large".into()));
         }
         buf.extend_from_slice(&c);
     }
-    let body: J = serde_json::from_slice(&buf).map_err(|_| "getLatestCommit: not JSON")?;
-    let c = &body["commit"];
-    let bytes = |k: &str| -> Result<Vec<u8>, String> {
-        let s = c[k]["$bytes"].as_str().ok_or_else(|| format!("commit.{k} isn't bytes"))?;
-        base64::engine::general_purpose::STANDARD_NO_PAD
-            .decode(s.trim_end_matches('='))
-            .map_err(|_| format!("commit.{k} isn't base64"))
-    };
-    let commit = super::commit::SignedCommit {
-        ver: c["ver"].as_i64().ok_or("commit.ver isn't an integer")?,
-        hash: bytes("hash")?,
-        ikm: bytes("ikm")?,
-        sig: bytes("sig")?,
-        mac: bytes("mac")?,
-        rev: c["rev"].as_str().ok_or("commit.rev isn't a string")?.to_string(),
-    };
-    let rev = rev.to_string();
-    if commit.rev != rev {
-        return Err(format!("the writer's host is at {}", commit.rev));
+    let body: J = serde_json::from_slice(&buf).map_err(|_| other("getLatestCommit: not JSON".into()))?;
+    let commit = super::commit::Commit::from_json(&body["commit"]).map_err(other)?;
+    let mac = super::mac::parse_mac(mac_value.as_deref(), super::mac::COMMIT_MAC_TYPE)
+        .map_err(|e| Checked::Mac(format!("getLatestCommit: {e}")))?;
+    if !super::commit::verify(&commit, space, writer, &secret, &mac) {
+        return Err(Checked::Mac("the commit doesn't verify against its MAC".into()));
     }
-    if commit.hash[..] != hash[..] {
-        return Err("the writer's host serves another hash".into());
-    }
-    let ctx = super::commit::CommitCtx { space, author: writer, rev: &rev };
-    let signed_by = |doc: &J| {
-        vlatproto::did_resolver::signing_key_multibase(doc)
-            .is_some_and(|mb| super::commit::verify(&commit, &ctx, &format!("did:key:{mb}")))
-    };
-    if signed_by(&doc) {
-        return Ok(());
-    }
-    // a key rotated since the document was cached
-    if app.did_resolver.refresh(writer) {
-        if let Ok(doc) = app.did_resolver.resolve(writer).await {
-            if signed_by(&doc) {
-                return Ok(());
-            }
-        }
-    }
-    Err("the commit doesn't verify against the writer's key".into())
+    Ok(commit)
 }
 
 #[cfg(test)]

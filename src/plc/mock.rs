@@ -206,7 +206,7 @@ mod tests {
         let m = MockPlc::start().await;
         let plc = Plc::new(&m.url, Arc::new(Keypair::generate()), None);
         let signing = Keypair::generate().did_key();
-        let (did, op) = plc.genesis(&signing, "alice.test", "https://pds.example", None).unwrap();
+        let (did, op) = plc.genesis(&signing, "alice.test", "https://pds.example", None, None).unwrap();
         // a genesis op posted under another DID is refused
         let other = vlatproto::crypto::random_plc_did();
         assert!(matches!(
@@ -246,7 +246,8 @@ mod tests {
     async fn prev_race_is_rebuilt_not_lost() {
         let m = MockPlc::start().await;
         let plc = Plc::new(&m.url, Arc::new(Keypair::generate()), None);
-        let (did, op) = plc.genesis(&Keypair::generate().did_key(), "alice.test", "https://pds.example", None).unwrap();
+        let (did, op) =
+            plc.genesis(&Keypair::generate().did_key(), "alice.test", "https://pds.example", None, None).unwrap();
         plc.create(&did, &op).await.unwrap();
         let new_key = Keypair::generate().did_key();
         let raced = plc

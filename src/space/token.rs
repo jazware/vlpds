@@ -2,13 +2,14 @@
 //! `typ`, so one can never pass for another:
 //!
 //! - delegation (`atproto-space-delegation+jwt`): minted by the user's PDS
-//!   with the account key (`kid #atproto`) for an app holding `space:`
-//!   read access; `iss` the user, `sub` the space, `aud` the authority's
-//!   `#atproto_space_host`; 60 s, single use.
+//!   with the account key (`kid` exactly `#atproto`) for an app holding
+//!   `space:` read access; `iss` the user, `sub` the space, `aud` the
+//!   authority's `#atproto_pds`; 60 s, single use.
 //! - credential (`atproto-space-credential+jwt`): minted by the space
-//!   authority in exchange; `iss` the authority, `sub` the space, no `aud`,
-//!   `cnf.kid` the P-256 did:key requests must be signed with
-//!   ([`super::httpsig`]); 10 min by default, at most 60.
+//!   authority with its `#atproto` key (`kid` exactly `#atproto`); `iss`
+//!   the authority, `sub` the space, no `aud`, `cnf.kid` the P-256 did:key
+//!   requests must be signed with ([`super::httpsig`]); 10 min by default,
+//!   at most 60.
 //! - client attestation (`atproto-client-attestation+jwt`): an app's own
 //!   claim, `iss` = `sub` = its client_id; its key comes from the client's
 //!   JWKS, so this checks structure only.
@@ -155,6 +156,12 @@ pub fn parse(ty: TokenType, jwt: &str) -> Result<SpaceToken, TokenError> {
         )
     })?;
     let alg = s(&h, "alg").filter(|a| !a.is_empty()).ok_or_else(|| err("BadJwt", "missing token \"alg\""))?;
+    if let Some(want) = ty.default_kid() {
+        if h.get("kid").and_then(|k| k.as_str()) != Some(want) {
+            let got = h.get("kid").map_or("undefined".to_string(), |k| k.as_str().map_or(k.to_string(), String::from));
+            return Err(err("BadJwt", format!("wrong token \"kid\": expected \"{want}\", got \"{got}\"")));
+        }
+    }
     // the reference only requires these to be truthy; a non-string fails
     // later there (key resolution, the space ref), here up front
     let iss = s(&p, "iss").filter(|v| !v.is_empty()).ok_or_else(|| err("BadJwtIss", "missing token \"iss\""))?;
@@ -228,20 +235,10 @@ impl SpaceToken {
     }
 }
 
-/// The DID document verification method a token's `kid` names: the
-/// account key, or a dedicated space key (reference PDS
-/// `resolveSpaceKey`). The `#` is optional.
-pub fn key_id(kid: Option<&str>) -> Result<&str, TokenError> {
-    let kid = kid.ok_or_else(|| err("BadJwt", "missing token \"kid\""))?;
-    match kid.strip_prefix('#').unwrap_or(kid) {
-        k @ ("atproto" | "atproto_space") => Ok(k),
-        _ => Err(err("BadJwt", format!("unsupported space token \"kid\": {kid}"))),
-    }
-}
-
-/// The audience a delegation token (and a client attestation) names.
+/// The audience a delegation token (and a client attestation) names: the
+/// authority's PDS, which is its space host.
 pub fn space_host_aud(authority: &str) -> String {
-    format!("{authority}#atproto_space_host")
+    format!("{authority}#atproto_pds")
 }
 
 /// A token's `sub` as a space ref: the 3-part URI exactly (reference PDS
@@ -285,7 +282,7 @@ pub struct Mint<'a> {
     pub key_id: Option<&'a str>,
     /// Default: the type's.
     pub expires_in_secs: Option<i64>,
-    /// Default: `#atproto` (none for a client attestation).
+    /// A client attestation's only: the other types' is always `#atproto`.
     pub kid: Option<&'a str>,
 }
 
@@ -316,6 +313,9 @@ pub fn encode<E>(
     }
     if ty == TokenType::Credential && m.key_id.is_none_or(str::is_empty) {
         return Err(MintError::Invalid("token requires a \"keyId\""));
+    }
+    if ty.default_kid().is_some() && m.kid.is_some() {
+        return Err(MintError::Invalid("this token's \"kid\" is always \"#atproto\""));
     }
     let lifetime = m.expires_in_secs.unwrap_or(ty.default_lifetime_secs());
     if ty == TokenType::Credential && !(1..=CREDENTIAL_MAX_AGE_SECS).contains(&lifetime) {
@@ -424,12 +424,11 @@ mod tests {
             assert_eq!(t.claims.iat, Some(now as f64));
             let lifetime = o["expiresInSec"].as_i64().unwrap_or(ty.default_lifetime_secs());
             assert_eq!(t.claims.exp, (now + lifetime) as f64);
-            assert_eq!(t.header.kid.as_deref(), Some(o["kid"].as_str().unwrap_or("#atproto")));
+            assert_eq!(t.header.kid.as_deref(), Some("#atproto"));
             match ty {
                 TokenType::Delegation => assert!(check_delegation(&t).is_ok()),
                 _ => assert!(check_credential(&t).is_ok()),
             }
-            assert!(key_id(t.header.kid.as_deref()).is_ok());
             // expired at exp + skew, not before
             assert!(t.check(t.claims.exp as i64 + 4, None, None).is_ok());
             assert_eq!(t.check(t.claims.exp as i64 + 5, None, None).unwrap_err().code, "JwtExpired");
@@ -447,7 +446,7 @@ mod tests {
                     aud: o["aud"].as_str(),
                     key_id: o["keyId"].as_str(),
                     expires_in_secs: o["expiresInSec"].as_i64(),
-                    kid: o["kid"].as_str(),
+                    kid: None,
                 };
                 let mine =
                     encode(ty, &m, "ES256K", now, &t.claims.jti, |b| Ok::<_, ()>(k.sign_deterministic(b))).unwrap();
@@ -489,7 +488,7 @@ mod tests {
                 &jwt,
                 &user.did_key(),
                 NOW,
-                Some("did:example:other#atproto_space_host"),
+                Some("did:example:other#atproto_pds"),
                 None
             )),
             "BadJwtAudience"
@@ -519,7 +518,7 @@ mod tests {
         assert!(verify(TokenType::Delegation, &ok, &user.did_key(), NOW, None, None).is_ok());
 
         // addressed to another authority than the space's
-        let elsewhere = Mint { aud: Some("did:example:other#atproto_space_host"), ..m };
+        let elsewhere = Mint { aud: Some("did:example:other#atproto_pds"), ..m };
         let t = parse(TokenType::Delegation, &mint(TokenType::Delegation, &elsewhere, &user, NOW)).unwrap();
         assert_eq!(check_delegation(&t).unwrap_err().code, "BadJwtAudience");
         let not_did = Mint { iss: "alice.test", ..m };
@@ -658,24 +657,41 @@ mod tests {
         assert!(parse(TokenType::Credential, &tampered).is_err());
     }
 
+    /// Delegation tokens and credentials name exactly `#atproto`: verifiers
+    /// refuse any other `kid`, and minting refuses to set one.
     #[test]
     fn kids() {
-        assert_eq!(key_id(Some("#atproto")), Ok("atproto"));
-        assert_eq!(key_id(Some("atproto_space")), Ok("atproto_space"));
-        assert_eq!(key_id(Some("#atproto_space")), Ok("atproto_space"));
-        for bad in [None, Some("#atproto_pds"), Some(""), Some("#"), Some("did:plc:x#atproto")] {
-            assert_eq!(key_id(bad).unwrap_err().code, "BadJwt", "{bad:?}");
-        }
         let key = Keypair::generate();
-        let m = Mint {
-            iss: AUTHORITY,
-            sub: SPACE,
-            key_id: Some("did:key:zx"),
-            kid: Some("#atproto_space"),
-            ..Default::default()
+        let m = Mint { iss: AUTHORITY, sub: SPACE, key_id: Some("did:key:zx"), ..Default::default() };
+        let jwt = mint(TokenType::Credential, &m, &key, NOW);
+        assert_eq!(parse(TokenType::Credential, &jwt).unwrap().header.kid.as_deref(), Some("#atproto"));
+        let r = encode(TokenType::Credential, &Mint { kid: Some("#atproto_space"), ..m }, "ES256K", NOW, "j", |_| {
+            Ok::<_, ()>([0; 64])
+        });
+        assert!(matches!(r, Err(MintError::Invalid(_))));
+        let rekid = |jwt: &str, kid: J| {
+            let mut parts: Vec<String> = jwt.split('.').map(String::from).collect();
+            let mut h: J = serde_json::from_slice(&B64.decode(&parts[0]).unwrap()).unwrap();
+            match kid {
+                J::Null => {
+                    h.as_object_mut().unwrap().remove("kid");
+                }
+                k => h["kid"] = k,
+            }
+            parts[0] = B64_OUT.encode(h.to_string());
+            parts.join(".")
         };
-        let t = parse(TokenType::Credential, &mint(TokenType::Credential, &m, &key, NOW)).unwrap();
-        assert_eq!(t.header.kid.as_deref(), Some("#atproto_space"));
+        for bad in [J::Null, "atproto".into(), "#atproto_space".into(), "#atproto_pds".into(), "".into(), 1.into()] {
+            let e = parse(TokenType::Credential, &rekid(&jwt, bad.clone())).unwrap_err();
+            assert_eq!(e.code, "BadJwt", "{bad}");
+            assert!(e.message.contains("kid"), "{bad}: {}", e.message);
+        }
+        let host = space_host();
+        let dm = Mint { iss: USER, sub: SPACE, aud: Some(&host), ..Default::default() };
+        let d = mint(TokenType::Delegation, &dm, &key, NOW);
+        assert!(parse(TokenType::Delegation, &d).is_ok());
+        assert_eq!(parse(TokenType::Delegation, &rekid(&d, "#atproto_space".into())).unwrap_err().code, "BadJwt");
+        assert_eq!(space_host_aud("did:example:space"), "did:example:space#atproto_pds");
     }
 
     #[test]
@@ -706,14 +722,14 @@ mod tests {
         for jwt in ["nope", "aaa.bbb", "!!!.e30.c2ln", "e30.e30.c2ln.x", "", "..", "W10.e30.c2ln", "bnVsbA.e30.c2ln"] {
             assert!(parse(TokenType::Credential, jwt).is_err(), "{jwt}");
         }
-        let header = B64_OUT.encode(br#"{"alg":"ES256K","typ":"atproto-space-credential+jwt"}"#);
+        let header = B64_OUT.encode(br##"{"alg":"ES256K","typ":"atproto-space-credential+jwt","kid":"#atproto"}"##);
         let payload = B64_OUT.encode(br#"{"iss":"did:example:space"}"#);
         assert_eq!(parse(TokenType::Credential, &format!("{header}.{payload}.c2ln")).unwrap_err().code, "BadJwtSub");
         let header = B64_OUT.encode(br#"{"typ":"atproto-space-credential+jwt"}"#);
         assert_eq!(parse(TokenType::Credential, &format!("{header}.{payload}.c2ln")).unwrap_err().code, "BadJwt");
         // padded parts decode too
         let header = base64::engine::general_purpose::URL_SAFE
-            .encode(br#"{"alg":"ES256K","typ":"atproto-space-delegation+jwt"}"#);
+            .encode(br##"{"alg":"ES256K","typ":"atproto-space-delegation+jwt","kid":"#atproto"}"##);
         let payload = base64::engine::general_purpose::URL_SAFE
             .encode(br#"{"iss":"did:x:a","sub":"s","aud":"a","exp":1,"jti":"j"}"#);
         assert!(parse(TokenType::Delegation, &format!("{header}.{payload}.c2ln")).is_ok());

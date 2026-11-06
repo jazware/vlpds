@@ -125,7 +125,7 @@ async fn takeover_mid_burst(authority_on_victim: bool) {
     }
     eprintln!("burst: {acked} acked, {unacked} not, across the kill");
 
-    let mut heads: BTreeMap<(String, &str), vlpds::space::commit::SignedCommit> = BTreeMap::new();
+    let mut heads: BTreeMap<(String, &str), vlpds::space::commit::Commit> = BTreeMap::new();
     for w in &writers {
         for space in spaces {
             heads.insert((w.did.clone(), space), latest(w, space, "final head").await);
@@ -141,7 +141,7 @@ async fn takeover_mid_burst(authority_on_victim: bool) {
             .iter()
             .all(|w| {
                 let c = &heads[&(w.did.clone(), local.as_str())];
-                rows.get(&w.did).is_some_and(|r| r["repoRev"] == json!(c.rev) && bytes_field(&r["hash"]) == c.hash)
+                rows.get(&w.did).is_some_and(|r| r["repoRev"] == json!(c.rev) && bytes_field(&r["data"]) == c.data)
             })
             .then_some(())
     })
@@ -193,7 +193,7 @@ async fn takeover_mid_burst(authority_on_victim: bool) {
         assert!(revs.windows(2).all(|p| p[0] <= p[1]), "{}: notifies went back: {revs:?}", w.did);
     }
     for n in remote_auth.seen() {
-        assert_eq!(n.claims["aud"], json!(format!("{}#atproto_space_host", remote_auth.did)), "{n:?}");
+        assert_eq!(n.claims["aud"], json!(format!("{}#atproto_pds", remote_auth.did)), "{n:?}");
         assert!(writers.iter().any(|w| n.claims["iss"] == json!(w.did)), "{n:?}");
     }
 

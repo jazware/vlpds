@@ -33,7 +33,8 @@ it. With no space traffic, a node with it on makes one conditional GET of the re
 
 ## What you get with `--spaces`
 
-A node with the flag serves every Spaces method a PDS serves at the `5b95b2f2` pin, in both roles.
+A node with the flag serves every Spaces method a PDS serves in the reference's October 22 alpha
+(`ac0c9f15`, published as `0.0.0-spaces-alpha-20261022141228`), in both roles.
 As a repo host it holds your accounts' space repos. As a simplespace host it runs the spaces your
 accounts govern. Nothing is proxied to another host.
 
@@ -124,6 +125,35 @@ permissions, and the space data stays in the bucket. Space-only blobs stay priva
 without the flag still answers `BlobNotFound` for a blob only space records name
 ([Blobs](privacy.md#blobs)).
 
+## KEM keys
+
+Syncers authenticate what a repo host serves with a MAC, keyed by a secret they derive against the
+account's `#atproto_kem` key: a P-256 key of its own (not the `#atproto` signing key) that the PDS
+holds, wrapped under the KEK like the signing key (`secrets::Purpose::KemKey`, on the account row).
+
+- A new account gets one at creation. When this PDS mints the DID it's in the PLC genesis op;
+  a DID minted ahead (a passkey or confirmed-email sign-up) gets it published right after.
+- At start each node runs a backfill over its shards: every account without a published key gets
+  one, about 4 a second. Where a server rotation key still signs the account's PLC ops and its PDS
+  is this one, the key goes to PLC and the account gets an `#identity` event. Otherwise (did:web, a
+  removed rotation key, an account that moved away) the key is kept and the log says
+  `cannot publish kem key, account must update its did doc`. Watch for `kem key backfill complete`.
+- `getRecommendedDidCredentials` lists `atproto_kem`, and `submitPlcOperation` refuses an op that
+  doesn't list this PDS's key (`Incorrect KEM key`), so a migration in carries it. An account that
+  moves in publishes it with its PLC op, or this PDS does at `activateAccount`.
+- Until an account's key is published, credential reads of its space repos that need a MAC answer
+  503 (`the account has no #atproto_kem key yet`).
+
+## Deleting a space
+
+`simplespace.deleteSpace` owes each service registered at the time a `notifySpaceDeleted`. Each is
+recorded (`sD` rows, in the authority's shard) before the space becomes a tombstone and sent at
+once, then by a sweep every ~30 s with backoff (10 s doubling, at most 30 min) until it's delivered,
+refused with a status not worth retrying, or the registration it was owed under expires. A space
+made again since cancels them (sending one would purge the syncer's new copy), and so does deleting
+the authority's account. A deactivated or taken-down authority's wait. A syncer that missed one
+learns of the deletion when its next credential request answers `SpaceDeleted`.
+
 ## Console
 
 The operator console has a Spaces tab. On a node without `--spaces` it says Spaces is off, and the
@@ -203,10 +233,9 @@ also takes that much room from the memory plan's space exports. The room fits 4 
 | `vlpds_space_credentials_issued_total{result}`, `vlpds_space_delegations_total` | credentials issued as an authority, delegation tokens minted |
 | `vlpds_space_revocations` | revoked credentials in force |
 | `vlpds_space_export_bytes`, `vlpds_space_oplog_pruned_total` | `getRepo` memory, oplog ops pruned |
-| `vlpds_space_sign_seconds` | signing one commit for a reader (every `getLatestCommit`, `listRepoOps` and `getRepo` signs its own) |
 | `vlpds_space_digest_mismatch_total` | space repos whose head disagreed with the set hash recomputed from their records. Should stay 0 |
 | `vlpds_space_repos` | space repos in this node's shards, counted by the oplog retention sweep every ~6 h |
-| `vlpds_space_imports_total{result}` | `vlpds.space.importRepo` calls: `ok`, `refused` (a bad CAR, signature or hash), `error` |
+| `vlpds_space_imports_total{result}` | `vlpds.space.importRepo` calls: `ok`, `refused` (a bad archive, another repo's, or records that aren't its commit's), `error` |
 | `vlpds_space_operator_reads_total{method}` | audited operator reads of space data |
 
 The internals dashboard has a Spaces row built from these: writes, write → notify ack, outbox rows and

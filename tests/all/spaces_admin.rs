@@ -6,14 +6,13 @@
 use crate::common::spaces::SpaceClient;
 use crate::common::*;
 use std::time::Duration;
-use vlatproto::cbor::Value;
 use vlatproto::cid::Cid;
 
 const TYPE: &str = "com.example.group";
 const COLL: &str = "com.example.post";
 const OWNER: &str = "space:com.example.group?collection=com.example.post&action=read&action=create&action=update&action=delete&manage=create&manage=update&manage=delete";
 const MEMBER: &str = "space:com.example.group?authority=*&collection=com.example.post&action=read&action=create";
-const CAR: &str = "application/vnd.ipld.car";
+const STAR: &str = "application/octet-stream";
 const IMPORT: &str = "vlpds.space.importRepo";
 
 fn rec(text: &str) -> J {
@@ -297,68 +296,20 @@ async fn pds(plc: &str, service_did: &str) -> TestServer {
     .await
 }
 
-/// A 2-root CAR of `roots` and `blocks`.
-fn car(roots: &[Cid], blocks: &[(Cid, Vec<u8>)]) -> Vec<u8> {
-    let mut h = Vec::new();
-    vlatproto::cbor::write_map_head(&mut h, 2);
-    vlatproto::cbor::write_text(&mut h, "roots");
-    vlatproto::cbor::write_array_head(&mut h, roots.len());
-    for r in roots {
-        vlatproto::cbor::write_cid(&mut h, r);
-    }
-    vlatproto::cbor::write_text(&mut h, "version");
-    vlatproto::cbor::write_uint(&mut h, 1);
+/// A STAR archive of `commit` and `records` as given (in their order).
+fn star(commit: &vlpds::space::commit::Commit, records: &[(String, Vec<u8>)]) -> Vec<u8> {
     let mut out = Vec::new();
-    vlatproto::car::write_varint(&mut out, h.len() as u64);
-    out.extend_from_slice(&h);
-    for (c, b) in blocks {
-        vlatproto::car::write_block(&mut out, c, b);
+    vlpds::space::star::write_header(&mut out, commit);
+    for (p, r) in records {
+        vlpds::space::star::write_pair(&mut out, p.as_bytes(), r);
     }
     out
 }
 
-fn commit_block(c: &vlpds::space::commit::SignedCommit) -> Vec<u8> {
-    use vlatproto::cbor::*;
-    let mut b = Vec::new();
-    write_map_head(&mut b, 6);
-    for (k, v) in [("ikm", &c.ikm), ("mac", &c.mac)] {
-        write_text(&mut b, k);
-        write_bytes(&mut b, v);
-    }
-    write_text(&mut b, "rev");
-    write_text(&mut b, &c.rev);
-    write_text(&mut b, "sig");
-    write_bytes(&mut b, &c.sig);
-    write_text(&mut b, "ver");
-    write_int(&mut b, c.ver);
-    write_text(&mut b, "hash");
-    write_bytes(&mut b, &c.hash);
-    b
-}
-
-fn decode_commit(b: &[u8]) -> vlpds::space::commit::SignedCommit {
-    let v = Value::decode(b).unwrap();
-    let bytes = |k: &str| match v.get(k) {
-        Some(Value::Bytes(b)) => b.clone(),
-        _ => panic!("commit.{k}"),
-    };
-    let rev = match v.get("rev") {
-        Some(Value::Text(t)) => t.clone(),
-        _ => panic!("commit.rev"),
-    };
-    vlpds::space::commit::SignedCommit {
-        ver: 1,
-        hash: bytes("hash"),
-        ikm: bytes("ikm"),
-        sig: bytes("sig"),
-        mac: bytes("mac"),
-        rev,
-    }
-}
-
 /// Export from one PDS with space.getRepo, import into another the account
-/// moves to: the same signed set hash at the same rev, and the same
-/// records. Tampered or mis-signed CARs are refused before anything lands.
+/// moves to: the same commit at the same rev, and the same records. An
+/// archive that isn't the account's, or whose records aren't its commit's,
+/// is refused, and nothing it staged is served.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn import_repo_round_trip_and_refusals() {
     let (plc, docs) = stub_plc().await;
@@ -394,8 +345,7 @@ async fn import_repo_round_trip_and_refusals() {
     let records_x = a.get("com.atproto.space.listRecords", &rq).await.ok()["records"].clone();
 
     // the account on y; it moves (DID switched, activated), then imports
-    // with OAuth: the CAR's commit was signed by x's key, which the DID's
-    // PLC history says it held at the rev
+    // with OAuth
     let handle = format!("{}.{HANDLE_DOMAIN}", unique_name("moved"));
     let token = x
         .xrpc
@@ -428,65 +378,44 @@ async fn import_repo_round_trip_and_refusals() {
         "service": [{"id": "#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": rdc["services"]["atproto_pds"]["endpoint"]}],
     });
     // a password session is no space access, before the move or after
-    let r = y.xrpc.post_bytes(&path, exported.clone(), CAR, &session).await;
+    let r = y.xrpc.post_bytes(&path, exported.clone(), STAR, &session).await;
     assert_eq!(r.status, 403, "{}", r.text());
     docs.lock().unwrap().insert(did.clone(), doc);
     y.xrpc.post_empty("com.atproto.server.activateAccount", &session).await.ok();
-    let r = y.xrpc.post_bytes(&path, exported.clone(), CAR, &session).await;
+    let r = y.xrpc.post_bytes(&path, exported.clone(), STAR, &session).await;
     r.err(403, "InsufficientScope");
     let b = SpaceClient::for_account(&y, &a.did, &handle, &jwt, OWNER).await;
-    let import = async |car: Vec<u8>| b.post_bytes(IMPORT, &[("space", space.as_str())], car, CAR).await;
+    let import = async |star: Vec<u8>| b.post_bytes(IMPORT, &[("space", space.as_str())], star, STAR).await;
 
-    let (roots, blocks) = vlatproto::car::read_car(&exported).unwrap();
-    let blocks: Vec<(Cid, Vec<u8>)> = blocks.into_iter().map(|(c, b)| (c, b.to_vec())).collect();
-    let (commit_cid, index_cid) = (roots[0], roots[1]);
-    let commit = decode_commit(&blocks.iter().find(|(c, _)| *c == commit_cid).unwrap().1);
-    let index = Value::decode(&blocks.iter().find(|(c, _)| *c == index_cid).unwrap().1).unwrap();
-    let records: Vec<(Cid, Vec<u8>)> =
-        blocks.iter().filter(|(c, _)| *c != commit_cid && *c != index_cid).cloned().collect();
-    let with_commit = |c: &vlpds::space::commit::SignedCommit| {
-        let cb = commit_block(c);
-        let cc = Cid::dag_cbor(&cb);
-        let mut all = vec![(cc, cb), blocks.iter().find(|(c, _)| *c == index_cid).unwrap().clone()];
-        all.extend(records.iter().cloned());
-        car(&[cc, index_cid], &all)
-    };
-
-    // a MAC that doesn't match
-    let mut bad = commit.clone();
-    *bad.mac.last_mut().unwrap() ^= 1;
-    import(with_commit(&bad)).await.err(400, "InvalidCommit");
-    // signed by a key the DID never had
-    let Value::Map(entries) = &index else { panic!("index") };
-    let mut set = vlpds::space::lthash::LtHash::default();
-    for (path, v) in entries {
-        let (Value::Link(c), Some((coll, rkey))) = (v, path.split_once('/')) else { panic!("index entry") };
-        set.add(&vlpds::space::commit::element(coll, rkey, &c.to_string()));
-    }
-    let other = vlatproto::crypto::Keypair::generate();
-    let ctx = vlpds::space::commit::CommitCtx { space: &space, author: &a.did, rev: &commit.rev };
-    let forged = vlpds::space::commit::sign(&set, &ctx, rand::random(), |m| Ok::<_, ()>(other.sign(m))).unwrap();
-    import(with_commit(&forged)).await.err(400, "InvalidCommit");
+    let parsed = vlpds::space::star::parse(&exported).unwrap();
+    let (commit, records) = (parsed.commit, parsed.records);
+    // another repo's, or another space's
+    let theirs = vlpds::space::commit::Commit { repo: "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa".into(), ..commit.clone() };
+    import(star(&theirs, &records)).await.err(400, "InvalidRequest");
+    let elsewhere = vlpds::space::commit::Commit { space: format!("{space}x"), ..commit.clone() };
+    import(star(&elsewhere, &records)).await.err(400, "InvalidRequest");
     // a rev far ahead would hold every later notify past the authority's
     // FutureRev window
     let ahead = vlatproto::tid::Tid::from_parts(vlatproto::tid::now_micros() + 3_600_000_000, 0).to_string();
-    let ctx = vlpds::space::commit::CommitCtx { space: &space, author: &a.did, rev: &ahead };
-    let future = vlpds::space::commit::sign(&set, &ctx, rand::random(), |m| Ok::<_, ()>(other.sign(m))).unwrap();
-    import(with_commit(&future)).await.err(400, "FutureRev");
-    // an index that isn't the signed set: a record left out
-    let fewer = Value::Map(entries[1..].to_vec());
-    let mut ib = Vec::new();
-    fewer.encode(&mut ib);
-    let ic = Cid::dag_cbor(&ib);
-    let mut all = vec![blocks.iter().find(|(c, _)| *c == commit_cid).unwrap().clone(), (ic, ib)];
-    all.extend(records.iter().cloned());
-    import(car(&[commit_cid, ic], &all)).await.err(400, "DigestMismatch");
-    // a record block missing
-    let mut short = blocks.clone();
-    short.pop();
-    import(car(&roots, &short)).await.err(400, "InvalidRequest");
+    let future = vlpds::space::commit::Commit { rev: ahead, ..commit.clone() };
+    import(star(&future, &records)).await.err(400, "FutureRev");
+    // records that aren't the commit's set: one left out, or its data off
+    import(star(&commit, &records[1..])).await.err(400, "DigestMismatch");
+    let mut off = commit.clone();
+    off.data[0] ^= 1;
+    import(star(&off, &records)).await.err(400, "DigestMismatch");
+    // out of order, and cut short
+    let mut swapped = records.clone();
+    swapped.swap(0, 1);
+    import(star(&commit, &swapped)).await.err(400, "InvalidRequest");
+    import(exported[..exported.len() - 3].to_vec()).await.err(400, "InvalidRequest");
+    assert_eq!(
+        b.get("com.atproto.space.listRecords", &rq).await.ok()["records"],
+        json!([]),
+        "nothing staged is served"
+    );
     // an active account's password session is no space access
-    let r = x.xrpc.post_bytes(&path, exported.clone(), CAR, &Auth::Bearer(a.session_jwt.clone())).await;
+    let r = x.xrpc.post_bytes(&path, exported.clone(), STAR, &Auth::Bearer(a.session_jwt.clone())).await;
     r.err(403, "InsufficientScope");
 
     let r = import(exported.clone()).await.ok();
@@ -499,7 +428,7 @@ async fn import_repo_round_trip_and_refusals() {
     assert_eq!((again["rev"].clone(), again["records"].clone()), (at_x["rev"].clone(), json!(2)));
 
     let at_y = b.get("com.atproto.space.getLatestCommit", &rq).await.ok()["commit"].clone();
-    assert_eq!((at_y["hash"].clone(), at_y["rev"].clone()), (at_x["hash"].clone(), at_x["rev"].clone()));
+    assert_eq!(at_y, at_x, "the same commit");
     assert_eq!(b.get("com.atproto.space.listRecords", &rq).await.ok()["records"], records_x);
     // the oplog starts empty; the next write follows the imported rev
     let ops = b.get("com.atproto.space.listRepoOps", &rq).await.ok();

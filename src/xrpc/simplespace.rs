@@ -301,26 +301,29 @@ async fn update_space(State(app): AppState, Auth(creds): Auth, Json(inp): Json<J
 /// Reference deleteSpace: the space becomes a tombstone (getSpaceCredential
 /// answers SpaceDeleted from then on), its member list, writer states and
 /// registrations go, and so does the authority's own repo in it; other
-/// members' repos are theirs and stay. Registered services are told, best
-/// effort. Deleting a deleted space finishes its sweep and is a no-op.
+/// members' repos are theirs and stay. Each service registered at the time
+/// is owed a notifySpaceDeleted, recorded before the tombstone and sent
+/// until it lands ([`crate::space::deletions`]). Deleting a deleted space
+/// finishes its sweep and is a no-op.
 async fn delete_space(State(app): AppState, Auth(creds): Auth, Json(inp): Json<J>) -> XResult<StatusCode> {
     spaces(&app)?;
     let space = req_space(&inp)?;
     let did = assert_owner(&creds, &space, SpaceAccess::Manage("delete"))?;
     assert_space_host(&app, &space).await?;
+    let owed = match space_row_opt(&app, &space).await? {
+        Some(row) if row.live() => {
+            let (regs, _) = crate::space::host::registrations(&app, &did, &space.sid)
+                .await
+                .map_err(|e| XrpcError::unavailable("Unavailable", format!("space registrations unreadable: {e:#}")))?;
+            crate::space::deletions::record(&app, &did, &space.sid, &space.uri, &row.created_at, &regs).await?;
+            !regs.is_empty()
+        }
+        _ => false,
+    };
     let ack =
         submit_space(&app, &did, &space, SpaceOp::DeleteSpace { deleted_at: vlatproto::events::now_rfc3339() }).await?;
-    if let SpaceAck::Deleted { already: false } = ack {
-        match crate::space::host::registrations(&app, &did, &space.sid).await {
-            Ok((regs, _)) if !regs.is_empty() => {
-                let (app, uri) = (app.clone(), space.uri.clone());
-                tokio::spawn(async move { crate::space::host::notify_space_deleted(&app, &did, &uri, regs).await });
-            }
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!(space = %hex::encode(space.sid), "space registrations unreadable, none told of the deletion: {e:#}")
-            }
-        }
+    if owed && matches!(ack, SpaceAck::Deleted { already: false }) {
+        crate::space::deletions::send_now(&app, &did, space.sid);
     }
     delete_space_rows(&app, &space).await?;
     Ok(StatusCode::OK)

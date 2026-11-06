@@ -393,7 +393,7 @@ async fn allow_list_takes_client_attestations() {
         .as_str()
         .unwrap()
         .to_string();
-    let aud = format!("{}#atproto_space_host", owner.did);
+    let aud = format!("{}#atproto_pds", owner.did);
     let now = chrono::Utc::now().timestamp();
     user.try_credential_at(&s.url, &space, None).await.err(400, "AppNotAuthorized");
     let good = attestation(&sk, &client, &aud, now, now + 60);
@@ -404,7 +404,7 @@ async fn allow_list_takes_client_attestations() {
     let forged = attestation(&other_sk, &client, &aud, now, now + 60);
     user.try_credential_at(&s.url, &space, Some(&forged)).await.err(400, "InvalidClientAttestation");
     // for another authority
-    let elsewhere = attestation(&sk, &client, "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa#atproto_space_host", now, now + 60);
+    let elsewhere = attestation(&sk, &client, "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa#atproto_pds", now, now + 60);
     user.try_credential_at(&s.url, &space, Some(&elsewhere)).await.err(400, "InvalidClientAttestation");
     let bare = attestation(&sk, &client, &owner.did, now, now + 60);
     user.try_credential_at(&s.url, &space, Some(&bare)).await.err(400, "InvalidClientAttestation");
@@ -716,15 +716,18 @@ async fn notify_write_from_another_vlpds() {
     assert_eq!((p["iss"].clone(), p["aud"].clone()), (json!(owner.did), json!(service)));
 
     // inbound notifies, one wrong thing at a time
-    let aud = format!("{}#atproto_space_host", owner.did);
+    let aud = format!("{}#atproto_pds", owner.did);
     let body =
-        |repo: &str, rev: &str| json!({"space": space, "repo": repo, "repoRev": rev, "hash": b64_bytes(&[7; 32])});
+        |repo: &str, rev: &str| json!({"space": space, "repo": repo, "repoRev": rev, "data": b64_bytes(&[7; 32])});
     // the same repoRev with the hash held, and an older one: no-ops (the
     // same rev with another hash is a takedown's adjusted view, sequenced
     // again: spaces_side::takedowns)
-    let held = repos().await[0]["hash"].clone();
-    let dup = json!({"space": space, "repo": member.did, "repoRev": rev2, "hash": held});
-    notify(&b, &a, &member.did, &aud, dup).await.ok();
+    let held = repos().await[0]["data"].clone();
+    let dup = json!({"space": space, "repo": member.did, "repoRev": rev2, "data": held});
+    notify(&b, &a, &member.did, &aud, dup.clone()).await.ok();
+    // the October 1 audience is no longer the space host's
+    let old = format!("{}#atproto_space_host", owner.did);
+    notify(&b, &a, &member.did, &old, dup).await.err_status(403);
     notify(&b, &a, &member.did, &owner.did, body(&member.did, &rev1)).await.ok();
     assert_eq!(repos().await[0]["spaceRev"], json!(space_rev2));
     let future = rev_at(vlatproto::tid::now_micros() + 10 * 60 * 1_000_000);
@@ -732,7 +735,7 @@ async fn notify_write_from_another_vlpds() {
     // a writer claimed by someone else's service auth
     notify(&b, &a, &member.did, &aud, body(&stranger.did, &rev2)).await.err_status(403);
     // addressed to another authority
-    notify(&b, &a, &member.did, &format!("{}#atproto_space_host", stranger.did), body(&member.did, &rev2))
+    notify(&b, &a, &member.did, &format!("{}#atproto_pds", stranger.did), body(&member.did, &rev2))
         .await
         .err_status(403);
     // not a member, and a member without write
@@ -745,8 +748,8 @@ async fn notify_write_from_another_vlpds() {
         &b,
         &a,
         &member.did,
-        &format!("{}#atproto_space_host", member.did),
-        json!({"space": foreign, "repo": member.did, "repoRev": now, "hash": b64_bytes(&[7; 32])}),
+        &format!("{}#atproto_pds", member.did),
+        json!({"space": foreign, "repo": member.did, "repoRev": now, "data": b64_bytes(&[7; 32])}),
     )
     .await;
     r.err(400, "SpaceNotFound");
@@ -860,11 +863,12 @@ async fn notify_write_from_another_vlpds() {
     owner.get("com.atproto.space.listRepos", &[("space", &space)]).await.err_status(401);
 }
 
-/// getRepo: the commit and the index as roots, the records in the index's
-/// (dag-cbor key) order, and only the roots with excludeValues.
+/// getRepo: a STAR archive, the commit as its metadata (with its $type),
+/// then each record in bytewise path order; the commit's MAC on request, on
+/// an account's own read too.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn get_repo_car() {
-    use vlpds::space::{commit, lthash::LtHash};
+async fn get_repo_star() {
+    use vlpds::space::{commit, lthash::LtHash, mac, star};
     let s = spawn().await;
     let owner = SpaceClient::new(&s, "shc1", OWNER).await;
     let ml = || policy("memberListPolicy");
@@ -873,55 +877,43 @@ async fn get_repo_car() {
         owner.create_record(&space, COLL, Some(rkey), rec(rkey)).await.ok();
     }
     owner.delete_record(&space, COLL, "c").await.ok();
-    let get = |exclude: bool| {
-        let space = space.clone();
-        let owner = &owner;
-        async move {
-            let mut q = vec![("space", space.as_str()), ("repo", owner.did.as_str())];
-            if exclude {
-                q.push(("excludeValues", "true"));
-            }
-            owner.get_raw("com.atproto.space.getRepo", &q).await
-        }
-    };
-    let (status, ctype, car) = get(false).await;
-    assert_eq!((status, ctype.as_str()), (200, "application/vnd.ipld.car"));
-    let (roots, blocks) = vlatproto::car::read_car(&car).unwrap();
-    assert_eq!(roots.len(), 2);
-    assert_eq!(blocks[0].0, roots[0]);
-    assert_eq!(blocks[1].0, roots[1]);
-    let c = Value::decode(blocks[0].1).unwrap().to_json();
-    let index = Value::decode(blocks[1].1).unwrap();
-    let paths: Vec<String> = match &index {
-        Value::Map(m) => m.iter().map(|(k, _)| k.clone()).collect(),
-        other => panic!("index: {other:?}"),
-    };
-    assert_eq!(paths, vec![format!("{COLL}/a"), format!("{COLL}/b"), format!("{COLL}/aa")]);
-    assert_eq!(blocks.len(), 5, "commit, index, three records");
+    let q = [("space", space.as_str()), ("repo", owner.did.as_str())];
+    let (status, ctype, body) = owner.get_raw("com.atproto.space.getRepo", &q).await;
+    assert_eq!((status, ctype.as_str()), (200, "application/octet-stream"));
+    assert_eq!(body[..4], star::MAGIC);
+    let p = star::parse(&body).unwrap();
+    let paths: Vec<&str> = p.records.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(paths, [format!("{COLL}/a"), format!("{COLL}/aa"), format!("{COLL}/b")]);
     let mut set = LtHash::default();
-    for (i, p) in paths.iter().enumerate() {
-        let (coll, rkey) = p.split_once('/').unwrap();
-        let cid = blocks[2 + i].0;
-        assert!(vlatproto::car::block_matches(&cid, blocks[2 + i].1));
-        set.add(&commit::element(coll, rkey, &cid.to_string()));
+    for (path, b) in &p.records {
+        let (coll, rkey) = path.split_once('/').unwrap();
+        set.add(&commit::element(coll, rkey, &vlatproto::cid::Cid::dag_cbor(b).to_string()));
     }
-    let bytes = |k: &str| {
-        let s = c[k]["$bytes"].as_str().unwrap_or_else(|| panic!("{k}: {c}"));
-        base64::engine::general_purpose::STANDARD_NO_PAD.decode(s.trim_end_matches('=')).unwrap()
-    };
-    let sc = commit::SignedCommit {
-        ver: c["ver"].as_i64().unwrap(),
-        hash: bytes("hash"),
-        ikm: bytes("ikm"),
-        sig: bytes("sig"),
-        mac: bytes("mac"),
-        rev: c["rev"].as_str().unwrap().to_string(),
-    };
-    assert!(commit::matches(&set, &sc), "the index folds to the commit's hash");
-    let (_, _, idx_only) = get(true).await;
-    let (roots2, blocks2) = vlatproto::car::read_car(&idx_only).unwrap();
-    assert_eq!((roots2.len(), blocks2.len()), (2, 2));
-    assert_eq!(roots2[1], roots[1], "the same index");
+    assert!(commit::matches(&set, &p.commit), "the records fold to the commit's data");
+    assert_eq!((p.commit.repo.as_str(), p.commit.space.as_str()), (owner.did.as_str(), space.as_str()));
+    // an own read may ask for the MAC
+    let (want, secret) =
+        crate::common::spaces::want_mac(&owner.srv.http, &s.url, &owner.did, mac::COMMIT_MAC_TYPE).await;
+    let url = crate::common::spaces::xrpc_url(&s.url, "com.atproto.space.getRepo", &q);
+    let r = owner
+        .srv
+        .http
+        .get(&url)
+        .header("dpop", owner.key.proof("GET", &url, Some(&owner.access)))
+        .header("authorization", format!("DPoP {}", owner.access))
+        .header(mac::WANT_MAC_HEADER, want)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let exposed: Vec<&str> =
+        r.headers().get_all("access-control-expose-headers").iter().filter_map(|v| v.to_str().ok()).collect();
+    assert!(exposed.iter().any(|v| v.contains("Atproto-Space-Mac")), "{exposed:?}");
+    assert!(r.headers().get_all("vary").iter().any(|v| v == "Atproto-Space-Want-Mac"));
+    let m =
+        mac::parse_mac(r.headers().get(mac::MAC_HEADER).and_then(|v| v.to_str().ok()), mac::COMMIT_MAC_TYPE).unwrap();
+    let got = star::parse(&r.bytes().await.unwrap()).unwrap();
+    assert!(commit::verify(&got.commit, &space, &owner.did, &secret, &m), "the MAC on an own read");
     let r = owner
         .get(
             "com.atproto.space.getRepo",

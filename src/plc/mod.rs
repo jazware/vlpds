@@ -761,6 +761,18 @@ pub struct Plc {
 /// node, or a user's own key).
 const UPDATE_ATTEMPTS: usize = 4;
 
+/// [`Plc::update_kem_key`]'s outcome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KemPublish {
+    Published,
+    /// Already listed.
+    Already,
+    /// None of our keys can sign its ops.
+    Foreign,
+    /// Its PDS is another.
+    Elsewhere,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyRotation {
     Current,
@@ -959,13 +971,16 @@ impl Plc {
         self.recovery_did_key.iter().cloned().chain([self.did_key.clone()]).collect()
     }
 
-    /// Reference `formatDidAndPlcOp`, including its rotation key order.
+    /// Reference `formatDidAndPlcOp`, including its rotation key order;
+    /// with `kem_did_key`, its `createPlcOp` (the `#atproto_kem` key beside
+    /// `#atproto`).
     pub fn genesis(
         &self,
         signing_did_key: &str,
         handle: &str,
         pds: &str,
         user_recovery_key: Option<&str>,
+        kem_did_key: Option<&str>,
     ) -> Result<(String, J), PlcError> {
         let rotation_keys: Vec<String> = user_recovery_key
             .map(str::to_string)
@@ -973,7 +988,11 @@ impl Plc {
             .chain(self.recovery_did_key.clone())
             .chain([self.did_key.clone()])
             .collect();
-        let op = sign(format_atproto_op(signing_did_key, handle, pds, &rotation_keys, None), &self.key)?;
+        let mut unsigned = format_atproto_op(signing_did_key, handle, pds, &rotation_keys, None);
+        if let Some(k) = kem_did_key {
+            unsigned["verificationMethods"]["atproto_kem"] = J::String(k.to_string());
+        }
+        let op = sign(unsigned, &self.key)?;
         Ok((did_for_genesis(&op)?, op))
     }
 
@@ -1121,6 +1140,38 @@ impl Plc {
             .map(Some)
         })
         .await
+    }
+
+    /// Lists `kem_did_key` as `did`'s `#atproto_kem` (reference
+    /// `kem-key-backfill.ts` `publishKemKey`): only while one of our keys
+    /// is among its rotation keys and its PDS is `pds` (it hasn't migrated
+    /// away).
+    pub async fn update_kem_key(&self, did: &str, kem_did_key: &str, pds: &str) -> Result<KemPublish, PlcError> {
+        let outcome = parking_lot::Mutex::new(KemPublish::Published);
+        self.update(did, "update_kem_key", |last| {
+            let n = normalize(not_tombstone(last)?);
+            if !rotation_keys(last).iter().any(|k| self.is_server_key(k)) {
+                *outcome.lock() = KemPublish::Foreign;
+                return Ok(None);
+            }
+            if n["services"]["atproto_pds"]["endpoint"].as_str() != Some(pds) {
+                *outcome.lock() = KemPublish::Elsewhere;
+                return Ok(None);
+            }
+            if n["verificationMethods"]["atproto_kem"] == kem_did_key {
+                *outcome.lock() = KemPublish::Already;
+                return Ok(None);
+            }
+            *outcome.lock() = KemPublish::Published;
+            self.update_op(last, |m| {
+                let vms = m.entry("verificationMethods").or_insert_with(|| json!({}));
+                vms["atproto_kem"] = J::String(kem_did_key.to_string());
+                Ok(())
+            })
+            .map(Some)
+        })
+        .await?;
+        Ok(outcome.into_inner())
     }
 
     /// Undoes a genesis op whose account creation failed afterwards.
@@ -1274,7 +1325,7 @@ mod tests {
         let plc = Plc::new("http://127.0.0.1:1", rot.clone(), Some(recovery.clone()));
         let user = Keypair::generate().did_key();
         let signing = Keypair::generate().did_key();
-        let (did, op) = plc.genesis(&signing, "alice.test", "https://pds.example", Some(&user)).unwrap();
+        let (did, op) = plc.genesis(&signing, "alice.test", "https://pds.example", Some(&user), None).unwrap();
         assert!(valid_plc_did(&did), "{did}");
         // reference ordering: user recovery key, server recovery key, server rotation key
         assert_eq!(rotation_keys(&op), vec![user.clone(), recovery.clone(), rot.did_key()]);
@@ -1300,7 +1351,7 @@ mod tests {
         let mut log = PlcLog::new(&did);
         log.apply(op.clone(), 1).unwrap();
         // a hedged signature: signing again gives another op and DID
-        let (did2, _) = plc.genesis(&signing, "alice.test", "https://pds.example", Some(&user)).unwrap();
+        let (did2, _) = plc.genesis(&signing, "alice.test", "https://pds.example", Some(&user), None).unwrap();
         assert_ne!(did, did2);
         // update: prev is the CID of the last op
         let upd = plc

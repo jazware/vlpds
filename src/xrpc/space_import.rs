@@ -1,40 +1,40 @@
 //! `vlpds.space.importRepo` (`--spaces`; DESIGN.md "Spaces", Q8): an
-//! account moving in brings its repo in a space as the 2-root CAR its old
+//! account moving in brings its repo in a space as the STAR archive its old
 //! host's space.getRepo serves. There's no upstream import yet; this
 //! follows the plan's proposal and changes when the upstream contract
 //! settles.
 //!
-//! It's OAuth-only like every space write, so an account moving in imports
-//! once it's active here, after its DID points here. The commit is checked
-//! before anything is written: its signature and MAC against the DID's
-//! current `#atproto` key, or the one its PLC history says it held at the
-//! commit's rev (the old host's), and the set hash recomputed from the
-//! index. The
-//! records then stream in, each block's CID checked and the index naming
-//! it, staged in bounded frameless entries; a final entry on the repo's
-//! worker switches the head in at the CAR's rev. The oplog stays empty (the
-//! spec lets a host drop ops: a syncer falls back to getRepo), and the
-//! authority is owed a notify like any write.
+//! It takes a `space:` grant like every space write (OAuth, or a scoped app
+//! password), so an account moving in imports once it's active here, after
+//! its DID points here. The archive's commit
+//! must name the account and the space; a commit carries no signature, so
+//! what's checked is that the records are the repo it describes: they
+//! stream in (paths in order, each record's CID computed from its bytes)
+//! and are staged in bounded frameless entries, folded into a set hash
+//! that must be the commit's `data` at the end. A final entry on the repo's
+//! worker then switches the head in at the commit's rev. The oplog stays
+//! empty (the spec lets a host drop ops: a syncer falls back to getRepo),
+//! and the authority is owed a notify like any write.
 //!
 //! An import over a repo that's there replaces it, as the public importRepo
 //! does: the claim's entry takes the old head away, the old rows are swept
 //! in bounded batches, and the new head goes in at the end. The worker
 //! refuses the account's writes to the space, and other imports of it,
 //! while it imports (`Spaces::begin_import`). An import stopped part way
-//! leaves staged rows no head names, which no read serves; the next import
-//! of the space deletes them first.
+//! (or whose records don't match its commit) leaves staged rows no head
+//! names, which no read serves; they're cleared, and the next import of
+//! the space deletes any left first.
 //!
 //! What a body can cost is bounded before any of it is read: the grant,
 //! the account's rate limit and slots, and a reservation from the import
-//! budget are taken first, and every block is capped from its length.
+//! budget are taken first, and every frame is capped from its length.
 
 use super::repo::check_path;
 use super::space::{spaces, submit_space, Space};
 use super::*;
 use crate::oauth::scopes::SpaceAccess;
-use crate::space::commit::{self, CommitCtx, SignedCommit};
-use crate::space::lthash::LtHash;
 use crate::space::repo::{SpaceAck, SpaceError, SpaceOp};
+use crate::space::star;
 use vlatproto::tid::Tid;
 
 pub fn routes() -> Router<Arc<App>> {
@@ -44,38 +44,22 @@ pub fn routes() -> Router<Arc<App>> {
 /// Rows per staged entry, or fewer at [`BATCH_BYTES`].
 const BATCH_ROWS: usize = 1000;
 const BATCH_BYTES: usize = 4 << 20;
-/// The CAR header (two roots: ~90 bytes).
-const MAX_HEADER: usize = 1 << 10;
-/// A signed commit is ~200 bytes: five fields, four of them 32 or 64 bytes.
-const MAX_COMMIT_BLOCK: usize = 1 << 10;
-/// Index bytes per record allowed: an entry is a path and a 41-byte link,
-/// and most paths are well under 64 bytes (as `EXPORT_RECORD_BYTES`).
-const INDEX_BYTES_PER_RECORD: u64 = 128;
-/// An index this small passes whatever its records' paths.
-const MIN_INDEX_CAP: u64 = 1 << 20;
-/// What a space write accepts (`encode_record`).
-const MAX_RECORD: usize = 1_000_000;
-/// A block's CID ahead of its bytes (36 for every CID vlpds reads).
-const CID_PREFIX: usize = 64;
-/// What an import holds besides its blocks: tasks, the reader, the claim.
+/// The metadata, a commit (~200 bytes) with its `$type`.
+const MAX_META: usize = 4 << 10;
+/// A record path: an NSID and a record key.
+const MAX_PATH: usize = 1 << 10;
+/// What an import holds besides its frames: tasks, the reader, the claim.
 const FIXED: u64 = 256 << 10;
 
-/// The largest index block a node of `max_records` takes.
-fn index_cap(max_records: u64) -> u64 {
-    (max_records * INDEX_BYTES_PER_RECORD).max(MIN_INDEX_CAP)
-}
-
 /// What an import of a `declared`-byte body (None: unknown) holds at most:
-/// the index block twice (the reader's buffer and its copy) and decoded
-/// (a path and a CID per >= 41 bytes), a record block twice, and a staged
-/// batch with its rows' keys while the next one fills. Every block is
-/// capped before it's buffered, and a body declared smaller caps them more.
-fn working_set(max_records: u64, declared: Option<u64>) -> u64 {
+/// a record twice (the reader's buffer and its copy), and a staged batch
+/// with its rows' keys while the next one fills. Every frame is capped
+/// before it's buffered, and a body declared smaller caps them more.
+fn working_set(declared: Option<u64>) -> u64 {
     let body = declared.unwrap_or(u64::MAX);
-    let index = index_cap(max_records).min(body);
-    let record = (MAX_RECORD as u64).min(body);
+    let record = (star::MAX_RECORD_SIZE as u64).min(body);
     let batch = (BATCH_BYTES as u64).min(body) + BATCH_ROWS as u64 * 400;
-    FIXED + 5 * index + 2 * record + 2 * batch
+    FIXED + 2 * record + 2 * batch
 }
 
 fn bad(error: &str, m: impl Into<String>) -> XrpcError {
@@ -86,8 +70,8 @@ fn invalid(m: impl Into<String>) -> XrpcError {
     bad("InvalidRequest", m)
 }
 
-/// A CAR read section by section as the body arrives.
-struct CarReader {
+/// A STAR archive read frame by frame as the body arrives.
+struct StarReader {
     body: super::import_stream::TimedBody,
     buf: Vec<u8>,
     pos: usize,
@@ -96,9 +80,9 @@ struct CarReader {
     eof: bool,
 }
 
-impl CarReader {
-    fn new(body: super::import_stream::TimedBody, max: usize) -> CarReader {
-        CarReader { body, buf: Vec::new(), pos: 0, total: 0, max, eof: false }
+impl StarReader {
+    fn new(body: super::import_stream::TimedBody, max: usize) -> StarReader {
+        StarReader { body, buf: Vec::new(), pos: 0, total: 0, max, eof: false }
     }
 
     /// Whether `n` unread bytes are buffered, reading more as needed.
@@ -126,96 +110,48 @@ impl CarReader {
         Ok(true)
     }
 
-    /// The next length-prefixed section, None at the end. One longer than
-    /// `max` is refused from its length, before any of it is buffered.
-    async fn section(&mut self, max: usize, what: &str) -> XResult<Option<Vec<u8>>> {
+    async fn magic(&mut self) -> XResult<()> {
+        if !self.fill(star::MAGIC.len()).await? || self.buf[self.pos..self.pos + 4] != star::MAGIC {
+            return Err(invalid("invalid STAR archive: invalid magic bytes"));
+        }
+        self.pos += star::MAGIC.len();
+        Ok(())
+    }
+
+    /// The next length-prefixed frame, None at the end (which only a pair
+    /// boundary may be). One longer than `max` is refused from its length,
+    /// before any of it is buffered.
+    async fn frame(&mut self, max: usize, what: &str) -> XResult<Option<Vec<u8>>> {
         if !self.fill(1).await? {
             return Ok(None);
         }
         let (len, n) = loop {
-            if let Some(v) = vlatproto::car::read_varint(&self.buf[self.pos..]) {
-                break v;
+            match star::read_varint(&self.buf[self.pos..]) {
+                Ok(Some(v)) => break v,
+                Ok(None) => {}
+                Err(e) => return Err(invalid(format!("invalid STAR archive: {e}"))),
             }
             let have = self.buf.len() - self.pos;
-            if have >= 10 || !self.fill(have + 1).await? {
-                return Err(invalid("invalid CAR: bad section length"));
+            if !self.fill(have + 1).await? {
+                return Err(invalid("invalid STAR archive: unexpected end of archive"));
             }
         };
         if len > max as u64 {
-            return Err(invalid(format!("invalid CAR: the {what} is over {max} bytes")));
+            return Err(invalid(format!("invalid STAR archive: the {what} is over {max} bytes")));
         }
         self.pos += n;
         if !self.fill(len as usize).await? {
-            return Err(invalid("invalid CAR: truncated"));
+            return Err(invalid("invalid STAR archive: unexpected end of archive"));
         }
         let out = self.buf[self.pos..self.pos + len as usize].to_vec();
         self.pos += len as usize;
         Ok(Some(out))
     }
-
-    /// The next block, its bytes at most `max`.
-    async fn block(&mut self, max: usize, what: &str) -> XResult<Option<(Cid, Vec<u8>)>> {
-        let Some(mut s) = self.section(max + CID_PREFIX, what).await? else { return Ok(None) };
-        let (cid, n) = Cid::read_prefix(&s).map_err(|e| invalid(format!("invalid CAR: block CID: {e}")))?;
-        s.drain(..n);
-        if s.len() > max {
-            return Err(invalid(format!("invalid CAR: the {what} is over {max} bytes")));
-        }
-        if !vlatproto::car::block_matches(&cid, &s) {
-            return Err(invalid(format!("invalid CAR: block {cid} does not match its CID")));
-        }
-        Ok(Some((cid, s)))
-    }
-}
-
-fn decode_commit(b: &[u8]) -> XResult<SignedCommit> {
-    use vlatproto::cbor::ValueRef;
-    let v = ValueRef::decode(b).map_err(|e| invalid(format!("invalid commit block: {e}")))?;
-    let bytes = |k: &str| match v.get(k) {
-        Some(ValueRef::Bytes(b)) => Ok(b.to_vec()),
-        _ => Err(invalid(format!("commit.{k} must be bytes"))),
-    };
-    let ver = match v.get("ver") {
-        Some(ValueRef::Int(n)) => *n,
-        _ => return Err(invalid("commit.ver must be an integer")),
-    };
-    let rev = match v.get("rev") {
-        Some(ValueRef::Text(t)) => t.to_string(),
-        _ => return Err(invalid("commit.rev must be a string")),
-    };
-    Ok(SignedCommit { ver, hash: bytes("hash")?, ikm: bytes("ikm")?, sig: bytes("sig")?, mac: bytes("mac")?, rev })
-}
-
-/// The index block: path -> CID, each path a valid collection/rkey. Read
-/// in place, with the entry count checked before anything is held: a
-/// generic decode would hold ~40 bytes per byte of a block of tiny items.
-fn decode_index(b: &[u8], max: u64) -> XResult<Vec<(String, Cid)>> {
-    let bad_block = || invalid("invalid index block: a canonical map of paths to CIDs");
-    let mut c = vlatproto::cbor::Cursor::new(b);
-    let n = c.head(5).ok_or_else(|| invalid("the index block must be a map"))?;
-    if n > max {
-        return Err(invalid(format!("Space repo record limit reached: at most {max} records")));
-    }
-    // every entry is at least a 1-byte key and a 41-byte link
-    let mut out = Vec::with_capacity((n as usize).min(b.len() / 42));
-    let mut prev: Option<&str> = None;
-    for _ in 0..n {
-        let path = c.map_key(prev).ok_or_else(bad_block)?;
-        let cid = c.link().ok_or_else(|| invalid(format!("index entry {path} is not a CID")))?;
-        let (coll, r) = path.split_once('/').ok_or_else(|| invalid(format!("invalid record path {path}")))?;
-        check_path(coll, Some(r))?;
-        out.push((path.to_string(), cid));
-        prev = Some(path);
-    }
-    if !c.at_end() {
-        return Err(bad_block());
-    }
-    Ok(out)
 }
 
 /// A record's blob refs, once its size and encoding are checked.
 fn record_blobs(path: &str, bytes: &[u8]) -> XResult<Vec<Cid>> {
-    if bytes.len() > MAX_RECORD {
+    if bytes.len() > star::MAX_RECORD_SIZE {
         return Err(invalid(format!("record at '{path}' too large ({} bytes)", bytes.len())));
     }
     vlatproto::cbor::scan_blob_refs(bytes).map_err(|_| invalid(format!("Could not parse record at '{path}'")))
@@ -240,8 +176,7 @@ async fn authority_check(app: &App, space: &Space, did: &str, rev: Tid) -> XResu
         return Err(super::simplespace::space_not_found());
     }
     // a repo from before the space was (re)created belongs to an
-    // incarnation that was deleted: importing it would bring that back,
-    // signed by a key the account held then
+    // incarnation that was deleted: importing it would bring that back
     if rev.micros() + CREATED_SLACK_MICROS < created_micros(&row.created_at)? {
         return Err(invalid("the imported commit predates the space (it was deleted and made again since)"));
     }
@@ -281,62 +216,6 @@ fn created_micros(at: &str) -> XResult<u64> {
         .ok()
         .and_then(|t| u64::try_from(t.timestamp_micros()).ok())
         .ok_or_else(|| XrpcError::internal("bad space createdAt"))
-}
-
-/// A key held a little before and after its PLC operation's `createdAt`,
-/// as the rev and the directory's clock needn't agree.
-const KEY_SLACK_MICROS: u64 = 300_000_000;
-
-/// The `#atproto` keys `did` held at `at` (Unix microseconds) by its PLC
-/// audit log: each operation's key from its `createdAt` until the next
-/// one's (the first from the start). Empty for any other DID method.
-async fn past_keys(app: &App, did: &str, at: u64) -> XResult<Vec<String>> {
-    if !did.starts_with("did:plc:") {
-        return Ok(Vec::new());
-    }
-    let client = match &app.plc {
-        Some(p) => p.client.clone(),
-        None => crate::plc::PlcClient::new(&app.config.plc_url),
-    };
-    let log = client.audit_log(did).await.map_err(|e| {
-        XrpcError::unavailable("PlcUnavailable", format!("Could not read the PLC history of {did}: {e}"))
-    })?;
-    let mut held: Vec<(u64, Option<String>)> = Vec::new();
-    for e in log.as_array().into_iter().flatten() {
-        if e["nullified"].as_bool() == Some(true) {
-            continue;
-        }
-        let Some(from) = e["createdAt"]
-            .as_str()
-            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-            .and_then(|t| u64::try_from(t.timestamp_micros()).ok())
-        else {
-            continue;
-        };
-        let op = &e["operation"];
-        let key = op["verificationMethods"]["atproto"].as_str().or(op["signingKey"].as_str()).map(String::from);
-        held.push((from, key));
-    }
-    let mut out = Vec::new();
-    for (i, (from, key)) in held.iter().enumerate() {
-        let start = if i == 0 { 0 } else { from.saturating_sub(KEY_SLACK_MICROS) };
-        let end = held.get(i + 1).map_or(u64::MAX, |(next, _)| next.saturating_add(KEY_SLACK_MICROS));
-        if let Some(k) = key.as_ref().filter(|_| (start..=end).contains(&at)) {
-            if !out.contains(k) {
-                out.push(k.clone());
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// The DID's current `#atproto` key, as its document says now.
-async fn current_key(app: &App, did: &str) -> XResult<String> {
-    app.did_resolver.invalidate(did);
-    let doc = app.did_resolver.resolve(did).await.map_err(|e| invalid(format!("Could not resolve {did}: {e:?}")))?;
-    let mb = vlatproto::did_resolver::signing_key_multibase(&doc)
-        .ok_or_else(|| invalid(format!("{did} has no #atproto signing key")))?;
-    Ok(format!("did:key:{mb}"))
 }
 
 #[derive(Deserialize)]
@@ -381,7 +260,7 @@ async fn import(app: &Arc<App>, creds: &Credentials, q: &ImportQ, headers: &Head
     // Everything before the body is read: a grant that writes in the space
     // (OAuth, as every space write: need_space refuses anything else), the
     // account's budget and slot, and the import's memory. Which
-    // collections it writes is checked once the index is in.
+    // collections it writes is checked as its records come in.
     creds.need_space(&space.target(), SpaceAccess::WriteAny("create"))?;
     let max = app.config.max_import_bytes;
     let declared =
@@ -396,35 +275,29 @@ async fn import(app: &Arc<App>, creds: &Credentials, q: &ImportQ, headers: &Head
     // no more at once than the budget holds at their largest (what a
     // chunked body reserves): past that they're refused at once, and the
     // ones let in never wait on each other for room
-    let node_cap = app.imports.holds(working_set(sp.limits.max_records, None)) as usize;
+    let node_cap = app.imports.holds(working_set(None)) as usize;
     let _slot = sp.import_slot(&did, node_cap).map_err(|account| match account {
         true => invalid("too many space imports in progress for this account; retry once one is done"),
         false => XrpcError::unavailable("Overloaded", "too many space imports in progress; retry shortly"),
     })?;
-    let _room = app.imports.admit_working_set(working_set(sp.limits.max_records, declared)).await?;
+    let _room = app.imports.admit_working_set(working_set(declared)).await?;
     // (the worker checks again)
     let held = super::space::load_head(sp, &*app.partition(&did)?, &did, &space).await?;
     let body = super::import_stream::TimedBody::new(body, app.config.import_body_idle, app.config.import_body_deadline);
-    let mut car = CarReader::new(body, max);
-    let header = car.section(MAX_HEADER, "header").await?.ok_or_else(|| invalid("invalid CAR: empty"))?;
-    let roots = vlatproto::car::read_header(&header).map_err(|e| invalid(format!("invalid CAR: {e}")))?;
-    let [commit_cid, index_cid] = roots[..] else {
-        return Err(invalid("expected two roots: the signed commit and the index"));
-    };
-    // verifyRepoCarFull's layout: the commit, the index, then one block per
-    // index entry in its order, nothing else
-    let commit_block = root_block(&mut car, commit_cid, MAX_COMMIT_BLOCK, "commit").await?;
-    let index_cap = index_cap(sp.limits.max_records) as usize;
-    let index_block = root_block(&mut car, index_cid, index_cap, "index").await?;
-    let commit = decode_commit(&commit_block)?;
-    let index = decode_index(&index_block, sp.limits.max_records)?;
-    drop(index_block);
-    let collections: std::collections::BTreeSet<&str> =
-        index.iter().filter_map(|(p, _)| p.split_once('/').map(|(c, _)| c)).collect();
-    for c in &collections {
-        creds.need_space(&space.target(), SpaceAccess::Write("create", c))?;
+    let mut star = StarReader::new(body, max);
+    star.magic().await?;
+    let meta =
+        star.frame(MAX_META, "metadata").await?.ok_or_else(|| invalid("invalid STAR archive: missing metadata"))?;
+    let commit = star::parse_meta(&meta).map_err(|e| invalid(format!("invalid STAR archive: {e}")))?;
+    if commit.ver != crate::space::commit::COMMIT_VERSION {
+        return Err(invalid(format!("unsupported commit version {}", commit.ver)));
     }
-    drop(collections);
+    if commit.repo != did || commit.space != space.uri {
+        return Err(invalid("the archive's commit is another repo's"));
+    }
+    if commit.data.len() != 32 {
+        return Err(invalid("commit.data must be 32 bytes"));
+    }
     let rev = Tid::parse(&commit.rev).ok_or_else(|| invalid("commit.rev must be a TID"))?;
     match app.remote_owner(&space.authority) {
         Some(owner) => {
@@ -439,36 +312,21 @@ async fn import(app: &Arc<App>, creds: &Credentials, q: &ImportQ, headers: &Head
         return Err(bad("FutureRev", "The commit's rev is in the future"));
     }
     // an equal rev is let through here only to be checked for the same
-    // content below, once the commit verifies
+    // content below
     if held.as_ref().is_some_and(|h| rev < h.rev) {
         return Err(invalid("the imported commit's rev must be newer than the repo's in the space"));
     }
-    let ctx = CommitCtx { space: &space.uri, author: &did, rev: &commit.rev };
-    let current = current_key(app, &did).await?;
-    if !commit::verify(&commit, &ctx, &current) {
-        let past = past_keys(app, &did, rev.micros()).await?;
-        if !past.iter().any(|k| *k != current && commit::verify(&commit, &ctx, k)) {
-            return Err(bad(
-                "InvalidCommit",
-                "The commit's signature or MAC does not verify against a key the account held at its rev",
-            ));
-        }
-    }
-    let mut set = LtHash::default();
-    for (path, cid) in &index {
-        let (c, r) = path.split_once('/').unwrap_or_default();
-        set.add(&commit::element(c, r, &cid.to_string()));
-    }
-    if !commit::matches(&set, &commit) {
-        return Err(bad("DigestMismatch", "The index's set hash is not the commit's"));
-    }
+    let limits = Limits { max_records: sp.limits.max_records, creds, space: &space };
     if let Some(h) = held.filter(|h| h.rev == rev) {
         // a retried import of the repo as it stands: the set hash covers
-        // every (path, CID), so an equal state and count is the same records
-        if h.records != index.len() as u64 || h.hash.state() != set.state() {
+        // every (path, CID), so an equal digest and count is the same records
+        if h.hash.digest()[..] != commit.data[..] {
             return Err(invalid("the imported commit's rev must be newer than the repo's in the space"));
         }
-        let records = stage(None, &did, &space, &mut car, index, rev).await?;
+        let (records, set) = stage(None, &did, &space, &mut star, commit, rev, &limits).await?;
+        if records != h.records || set.state() != h.hash.state() {
+            return Err(invalid("the imported commit's rev must be newer than the repo's in the space"));
+        }
         return Ok(Json(json!({"rev": rev.to_string(), "records": records})));
     }
 
@@ -477,8 +335,8 @@ async fn import(app: &Arc<App>, creds: &Credentials, q: &ImportQ, headers: &Head
     submit_space(app, &did, &space, SpaceOp::ImportBegin { nonce, rev: Some(rev) }).await?;
     let p = app.partition(&did)?;
     clear_unheaded(&p, &did, &space).await?;
-    let staged = stage(Some(&p), &did, &space, &mut car, index, rev).await;
-    let records = match staged {
+    let staged = stage(Some(&p), &did, &space, &mut star, commit, rev, &limits).await;
+    let (records, set) = match staged {
         Ok(n) => n,
         Err(e) => {
             // rows staged with no head over them are never served, but
@@ -498,35 +356,45 @@ async fn import(app: &Arc<App>, creds: &Credentials, q: &ImportQ, headers: &Head
     Ok(Json(json!({"rev": rev.to_string(), "records": records})))
 }
 
-async fn root_block(car: &mut CarReader, want: Cid, max: usize, what: &str) -> XResult<Vec<u8>> {
-    match car.block(max, &format!("{what} block")).await? {
-        Some((c, b)) if c == want => Ok(b),
-        Some((c, _)) => Err(invalid(format!("expected the {what} block {want}, got {c}"))),
-        None => Err(invalid("the CAR ends before its roots")),
-    }
+/// What an import may hold: the record cap, and the grant's collections.
+struct Limits<'a> {
+    max_records: u64,
+    creds: &'a Credentials,
+    space: &'a Space,
 }
 
-/// Writes the CAR's records (and their blob refs) as rows with no head
-/// over them yet; Ok(the record count). With no partition it only checks
-/// the blocks.
+/// Writes the archive's records (and their blob refs) as rows with no head
+/// over them yet, checking each ([`star::Archive::push`]) and, at the end,
+/// that they're the repo the commit describes; Ok((the record count, their
+/// set)). With no partition it only checks them.
+#[allow(clippy::too_many_arguments)]
 async fn stage(
     p: Option<&crate::partition::Partition>,
     did: &str,
     space: &Space,
-    car: &mut CarReader,
-    index: Vec<(String, Cid)>,
+    star: &mut StarReader,
+    commit: crate::space::commit::Commit,
     rev: Tid,
-) -> XResult<u64> {
-    let records = index.len() as u64;
+    limits: &Limits<'_>,
+) -> XResult<(u64, crate::space::lthash::LtHash)> {
+    let mut archive = star::Archive::new(commit);
+    let mut collections: std::collections::BTreeSet<String> = Default::default();
     let mut muts = Vec::new();
     let mut bytes = 0;
-    let mut want = index.into_iter();
-    while let Some((cid, b)) = car.block(MAX_RECORD, "record block").await? {
-        let Some((path, expected)) = want.next() else {
-            return Err(invalid(format!("the CAR has a block the index doesn't name ({cid})")));
-        };
-        if cid != expected {
-            return Err(invalid(format!("expected block {expected} for {path}, got {cid}")));
+    while let Some(key) = star.frame(MAX_PATH, "record path").await? {
+        let b = star
+            .frame(star::MAX_RECORD_SIZE, "record")
+            .await?
+            .ok_or_else(|| invalid("invalid STAR archive: missing value for key"))?;
+        let (path, cid) = archive.push(&key, &b).map_err(|e| invalid(format!("invalid STAR archive: {e}")))?;
+        let (collection, rkey) = path.split_once('/').unwrap_or_default();
+        check_path(collection, Some(rkey))?;
+        if !collections.contains(collection) {
+            limits.creds.need_space(&limits.space.target(), SpaceAccess::Write("create", collection))?;
+            collections.insert(collection.to_string());
+        }
+        if archive.records > limits.max_records {
+            return Err(invalid(format!("Space repo record limit reached: at most {} records", limits.max_records)));
         }
         let blobs = record_blobs(&path, &b)?;
         let Some(p) = p else { continue };
@@ -542,13 +410,11 @@ async fn stage(
             bytes = 0;
         }
     }
-    if let Some((path, cid)) = want.next() {
-        return Err(invalid(format!("the CAR has no block for {path} ({cid})")));
-    }
+    archive.finish().map_err(|_| bad("DigestMismatch", "The archive's records are not the commit's"))?;
     if let Some(p) = p.filter(|_| !muts.is_empty()) {
         write_private_local(p, muts).await?;
     }
-    Ok(records)
+    Ok((archive.records, archive.set))
 }
 
 fn put(key: Vec<u8>, val: Bytes) -> vlsync_store::segment::Mutation {
@@ -606,47 +472,13 @@ async fn clear_unheaded(p: &crate::partition::Partition, did: &str, space: &Spac
 mod tests {
     use super::*;
 
-    /// A small declared body reserves little; an undeclared one at the
-    /// default record cap stays within one import's largest reservation.
+    /// A small declared body reserves little; an undeclared one stays
+    /// within one import's largest reservation.
     #[test]
     fn working_set_follows_the_caps() {
-        let max = crate::space::DEFAULT_MAX_RECORDS;
-        assert!(working_set(max, Some(10 << 10)) < 2 << 20, "{}", working_set(max, Some(10 << 10)));
-        let full = working_set(max, None);
+        assert!(working_set(Some(10 << 10)) < 2 << 20, "{}", working_set(Some(10 << 10)));
+        let full = working_set(None);
         assert!(full <= super::super::import_budget::MAX_WORKING_SET, "{full}");
-        assert!(full >= 5 * index_cap(max));
-        assert_eq!(index_cap(10), MIN_INDEX_CAP);
-    }
-
-    /// The index's entry count is checked from the map's head, before any
-    /// entry is read.
-    #[test]
-    fn decode_index_checks_the_count_first() {
-        let mut b = Vec::new();
-        vlatproto::cbor::write_map_head(&mut b, 1 << 40);
-        let Err(e) = decode_index(&b, 100) else { panic!("over the count") };
-        assert!(e.message.contains("limit"), "{}", e.message);
-        let cid = Cid::dag_cbor(b"r");
-        let mut b = Vec::new();
-        vlatproto::cbor::write_map_head(&mut b, 2);
-        for p in ["a.b.c/x", "a.b.c/y"] {
-            vlatproto::cbor::write_text(&mut b, p);
-            vlatproto::cbor::write_cid(&mut b, &cid);
-        }
-        assert_eq!(decode_index(&b, 100).ok().map(|i| i.len()), Some(2));
-        // out of order, trailing bytes, a non-link value
-        let mut swapped = Vec::new();
-        vlatproto::cbor::write_map_head(&mut swapped, 2);
-        for p in ["a.b.c/y", "a.b.c/x"] {
-            vlatproto::cbor::write_text(&mut swapped, p);
-            vlatproto::cbor::write_cid(&mut swapped, &cid);
-        }
-        assert!(decode_index(&swapped, 100).is_err());
-        assert!(decode_index(&[&b[..], &[0]].concat(), 100).is_err());
-        let mut v = Vec::new();
-        vlatproto::cbor::write_map_head(&mut v, 1);
-        vlatproto::cbor::write_text(&mut v, "a.b.c/x");
-        vlatproto::cbor::write_int(&mut v, 1);
-        assert!(decode_index(&v, 100).is_err());
+        assert!(full >= 2 * star::MAX_RECORD_SIZE as u64);
     }
 }
