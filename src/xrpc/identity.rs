@@ -909,9 +909,10 @@ async fn submit_plc_operation(
     if crate::plc::op_type(&op, true).ok() != Some(vlatproto::plc::OpType::Operation) {
         return Err(bad("Invalid operation"));
     }
-    if !op["rotationKeys"].as_array().is_some_and(|a| a.iter().any(|k| k == plc.rotation_did_key())) {
-        return Err(bad("Rotation keys do not include server's rotation key"));
-    }
+    // A self-custodied account may submit an op that drops the server's
+    // rotation key entirely - consistent with activateAccount/
+    // checkAccountStatus (assert_valid_did_doc), which no longer requires
+    // the server to hold a rotation key either.
     let pds = &op["services"]["atproto_pds"];
     if pds["type"] != "AtprotoPersonalDataServer" {
         return Err(bad("Incorrect type on atproto_pds service"));

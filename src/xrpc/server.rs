@@ -2448,19 +2448,15 @@ const WRONG_PDS: &str = "DID document atproto_pds service endpoint does not matc
 const WRONG_SIGNING_KEY: &str = "DID document verification method does not match expected signing key";
 
 /// The reference's assertValidDidDocumentForService. With PLC registration
-/// on, a did:plc is checked against the directory, which must also keep the
-/// server rotation key. Without it, a DID minted here is documented by this
-/// server only, so only a migrated-in DID is checked.
+/// on, a did:plc is checked against the directory. A self-custodied account
+/// (the user holds their own rotation key, not the server) is a legitimate
+/// setup, so this no longer requires the server's rotation key to be present
+/// - only that the PDS endpoint and signing key still match. A tombstoned
+/// DID has no `/data` to fetch, so `document_data`'s `?` above already
+/// rejects it.
 async fn assert_valid_did_doc(app: &App, a: &Account) -> XResult<()> {
     if let (Some(plc), true) = (&app.plc, a.did.starts_with("did:plc:")) {
         let data = plc.client.document_data(&a.did).await?;
-        // (a retired server key counts: `vlpds.admin.rotatePlcKeys` moves it)
-        let has_key = data["rotationKeys"]
-            .as_array()
-            .is_some_and(|k| k.iter().any(|k| k.as_str().is_some_and(|k| plc.is_server_key(k))));
-        if !has_key {
-            return Err(invalid_request("Server rotation key not included in PLC DID data"));
-        }
         let pds = data["services"]["atproto_pds"]["endpoint"].as_str();
         if pds != Some(app.public_url.as_str()) {
             return Err(invalid_request(WRONG_PDS));
