@@ -1013,6 +1013,17 @@ impl ScopeSet {
         self.perms.iter().any(|p| matches!(p, Permission::Space(s) if s.matches(t, access)))
     }
 
+    /// Whether some `space:` grant creates records in some space, before a
+    /// request knows which (importRepo, ahead of its archive's metadata).
+    pub fn creates_in_some_space(&self) -> bool {
+        self.perms.iter().any(|p| match p {
+            Permission::Space(s) => {
+                s.action.iter().any(|a| a == "create") && s.collection.as_ref().is_some_and(|c| !c.is_empty())
+            }
+            _ => false,
+        })
+    }
+
     /// Whether a `space:` grant covers a service token for space method
     /// `lxm`, which an app sends to another host as `user`: a revocation
     /// needs authority powers (`manage`, or the user's own spaces), a

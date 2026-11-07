@@ -224,10 +224,12 @@ impl Credentials {
     }
 
     /// Before a request knows which space it writes (importRepo, ahead of
-    /// its archive's metadata): OAuth, the only way into space data.
+    /// its archive's metadata): OAuth, the only way into space data, with a
+    /// grant that creates in some space, so no other grant gets its body read.
     pub fn need_any_space_write(&self) -> XResult<()> {
         match self {
-            Credentials::OAuth { .. } => Ok(()),
+            Credentials::OAuth { scopes, .. } if scopes.creates_in_some_space() => Ok(()),
+            Credentials::OAuth { .. } => Err(scope_refused("oauth", "space:*?authority=*&collection=*&action=create")),
             _ => self.require(false),
         }
     }

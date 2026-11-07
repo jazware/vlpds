@@ -201,6 +201,11 @@ async fn import(app: &Arc<App>, creds: &Credentials, headers: &HeaderMap, body: 
         return Err(super::simplespace::space_not_found());
     }
     let floor = Tid::parse(&c.rev);
+    // the repo's new rev comes after this one: past the authorities'
+    // FutureRev window, every notify of it would be refused
+    if floor.is_some_and(|r| r.micros() > vlatproto::tid::now_micros() + super::space::FUTURE_REV.as_micros() as u64) {
+        return Err(XrpcError::bad("FutureRev", "The archive's rev is in the future"));
+    }
     // (the worker checks again)
     let held = super::space::load_head(sp, &*app.partition(&did)?, &did, &space).await?;
     let prev = held.as_ref().map(|h| h.rev).max(floor);
