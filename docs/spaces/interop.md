@@ -82,7 +82,7 @@ filters as the scope target, so an unfiltered listing needs a wildcard grant.
 | importRepo | no notify | the authority is told of the imported repo's new rev, as after any write |
 | Backlinks | a like of a space URI is recorded as a backlink | public URIs only |
 | `sync.getBlob` with Spaces on | serves only publicly referenced blobs | the same. Without `--spaces`, vlpds still serves an upload before any record names it |
-| Writes during `clearRecords` or `importRepo` | wait for its transaction | refused with `InvalidRequest` (retry) while the clear or import holds the repo; a failed import over a repo leaves none until a retry succeeds |
+| Writes during `clearRecords` or `importRepo` | wait for its transaction | refused with `InvalidRequest` (retry) while the clear or import holds the repo |
 | `managingApp` | must start with `did:` | the part before `#` must be a valid DID |
 
 ## Upstream gaps

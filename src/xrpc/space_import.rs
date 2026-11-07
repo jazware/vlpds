@@ -53,7 +53,7 @@ fn working_set(declared: Option<u64>) -> u64 {
     let body = declared.unwrap_or(u64::MAX);
     let record = ((star::LIMITS.value + star::LIMITS.key) as u64).min(body);
     let batch = (BATCH_BYTES as u64).min(body) + BATCH_ROWS as u64 * 400;
-    FIXED + 3 * record + 2 * batch
+    FIXED + 3 * record + 2 * batch + (KEEP_IN_MEMORY as u64).min(body)
 }
 
 fn invalid(m: impl Into<String>) -> XrpcError {
@@ -61,8 +61,63 @@ fn invalid(m: impl Into<String>) -> XrpcError {
 }
 
 /// A STAR archive read item by item as the body arrives.
+/// Where a [`StarBody`] reads: the request body (kept for a second pass,
+/// in memory up to [`KEEP_IN_MEMORY`], then in a temporary file), or that
+/// copy.
+enum Source {
+    Body { body: super::import_stream::TimedBody, kept: Kept },
+    Mem(Vec<u8>),
+    File { file: tokio::fs::File, _unlink: Unlink },
+}
+
+/// The body as read so far.
+enum Kept {
+    Mem(Vec<u8>),
+    File(tokio::fs::File, Unlink),
+}
+
+/// A body past this is kept on disk for the second pass.
+const KEEP_IN_MEMORY: usize = 8 << 20;
+const REPLAY_CHUNK: usize = 1 << 20;
+
+/// Deletes the temporary file however the import ends.
+struct Unlink(std::path::PathBuf);
+
+impl Drop for Unlink {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+impl Kept {
+    async fn push(&mut self, chunk: &[u8]) -> XResult<()> {
+        use tokio::io::AsyncWriteExt;
+        if let Kept::Mem(v) = self {
+            if v.len() + chunk.len() <= KEEP_IN_MEMORY {
+                v.extend_from_slice(chunk);
+                return Ok(());
+            }
+            let path = std::env::temp_dir().join(format!("vlpds-space-import-{:016x}.star", rand::random::<u64>()));
+            let unlink = Unlink(path.clone());
+            let mut f = tokio::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .await
+                .map_err(|_| XrpcError::internal("could not buffer the import body"))?;
+            f.write_all(v).await.map_err(|_| XrpcError::internal("could not buffer the import body"))?;
+            *self = Kept::File(f, unlink);
+        }
+        if let Kept::File(f, _) = self {
+            f.write_all(chunk).await.map_err(|_| XrpcError::internal("could not buffer the import body"))?;
+        }
+        Ok(())
+    }
+}
+
 struct StarBody {
-    body: super::import_stream::TimedBody,
+    src: Source,
     reader: star::Reader,
     buf: Vec<u8>,
     pos: usize,
@@ -73,7 +128,25 @@ struct StarBody {
 
 impl StarBody {
     fn new(body: super::import_stream::TimedBody, max: usize) -> StarBody {
-        StarBody { body, reader: star::Reader::new(star::LIMITS), buf: Vec::new(), pos: 0, total: 0, max, eof: false }
+        StarBody::over(Source::Body { body, kept: Kept::Mem(Vec::new()) }, max)
+    }
+
+    fn over(src: Source, max: usize) -> StarBody {
+        StarBody { src, reader: star::Reader::new(star::LIMITS), buf: Vec::new(), pos: 0, total: 0, max, eof: false }
+    }
+
+    /// A reader over the body this one read whole, from its start.
+    async fn replay(self) -> XResult<StarBody> {
+        use tokio::io::AsyncSeekExt;
+        let Source::Body { kept, .. } = self.src else { return Err(XrpcError::internal("not a request body")) };
+        let src = match kept {
+            Kept::Mem(v) => Source::Mem(v),
+            Kept::File(mut f, unlink) => {
+                f.seek(std::io::SeekFrom::Start(0)).await.map_err(XrpcError::from_err)?;
+                Source::File { file: f, _unlink: unlink }
+            }
+        };
+        Ok(StarBody::over(src, self.max))
     }
 
     /// The next item, None once the archive has ended cleanly.
@@ -104,17 +177,32 @@ impl StarBody {
             self.buf.drain(..self.pos);
             self.pos = 0;
         }
-        match self.body.next().await {
-            Some(Ok(chunk)) => {
-                self.total += chunk.len();
-                if self.total > self.max {
-                    return Err(super::import_stream::too_large(self.max));
+        let chunk = match &mut self.src {
+            Source::Body { body, kept } => match body.next().await {
+                Some(Ok(chunk)) => {
+                    if self.total + chunk.len() > self.max {
+                        return Err(super::import_stream::too_large(self.max));
+                    }
+                    kept.push(&chunk).await?;
+                    chunk.to_vec()
                 }
-                self.buf.extend_from_slice(&chunk);
+                Some(Err(e)) => return Err(e),
+                None => Vec::new(),
+            },
+            Source::Mem(v) => std::mem::take(v),
+            Source::File { file, .. } => {
+                use tokio::io::AsyncReadExt;
+                let mut c = vec![0; REPLAY_CHUNK];
+                let n = file.read(&mut c).await.map_err(XrpcError::from_err)?;
+                c.truncate(n);
+                c
             }
-            Some(Err(e)) => return Err(e),
-            None => self.eof = true,
+        };
+        if chunk.is_empty() {
+            self.eof = true;
         }
+        self.total += chunk.len();
+        self.buf.extend_from_slice(&chunk);
         Ok(())
     }
 }
@@ -210,15 +298,26 @@ async fn import(app: &Arc<App>, creds: &Credentials, headers: &HeaderMap, body: 
     let held = super::space::load_head(sp, &*app.partition(&did)?, &did, &space).await?;
     let prev = held.as_ref().map(|h| h.rev).max(floor);
 
+    // the whole archive is checked before anything of the repo here is
+    // touched, so a refused import leaves it as it was
+    let (set, _) = stage(None, creds, &did, &space, &mut star, sp.limits.max_records).await?;
+    if !commit::matches(&set, &c) {
+        return Err(invalid("Invalid STAR: the records do not match the commit's data"));
+    }
+    let mut star = star.replay().await?;
+    if !matches!(star.next().await?, Some(star::Item::Meta(_))) {
+        return Err(XrpcError::internal("the kept import body changed"));
+    }
+
     let nonce = rand::random::<u64>();
     let _claim = Claim { sp, did: &did, sid: space.sid, nonce };
     submit_space(app, &did, &space, SpaceOp::ImportBegin { nonce, replace: true }).await?;
     let p = app.partition(&did)?;
     clear_unheaded(&p, &did, &space).await?;
-    let staged = stage(&p, creds, &did, &space, &mut star, sp.limits.max_records).await;
-    let (set, records) = match staged.and_then(|(set, n)| match commit::matches(&set, &c) {
-        true => Ok((set, n)),
-        false => Err(invalid("Invalid STAR: the records do not match the commit's data")),
+    let staged = stage(Some(&p), creds, &did, &space, &mut star, sp.limits.max_records).await;
+    let (set, records) = match staged.and_then(|(again, n)| match again.digest() == set.digest() {
+        true => Ok((again, n)),
+        false => Err(XrpcError::internal("the kept import body changed")),
     }) {
         Ok(v) => v,
         Err(e) => {
@@ -240,9 +339,9 @@ async fn import(app: &Arc<App>, creds: &Credentials, headers: &HeaderMap, body: 
 
 /// Writes the archive's records (and their blob refs) as rows with no head
 /// over them yet, at rev 0 until the head names theirs; Ok(the set they
-/// fold to, the record count).
+/// fold to, the record count). With no partition it only checks them.
 async fn stage(
-    p: &crate::partition::Partition,
+    p: Option<&crate::partition::Partition>,
     creds: &Credentials,
     did: &str,
     space: &Space,
@@ -273,6 +372,10 @@ async fn stage(
         let blobs = record_blobs(path, &value)?;
         let cid = Cid::dag_cbor(&value);
         set.add(&commit::element(collection, rkey, &cid.to_string()));
+        let Some(p) = p else {
+            prev = Some(key);
+            continue;
+        };
         for blob in &blobs {
             muts.push(put(
                 state::space_blob_key(did, &space.sid, blob, path),
@@ -288,7 +391,7 @@ async fn stage(
         }
         prev = Some(key);
     }
-    if !muts.is_empty() {
+    if let Some(p) = p.filter(|_| !muts.is_empty()) {
         write_private_local(p, muts).await?;
     }
     Ok((set, records))

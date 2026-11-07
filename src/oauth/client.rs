@@ -542,7 +542,7 @@ pub const FIRST_PARTY_PATH: &str = "/oauth/client-metadata.json";
 /// default (`self`), so the token can only manage the user's own spaces.
 pub const FIRST_PARTY_SCOPE: &str = "atproto space:*?authority=*&action=read_self \
 space:*?authority=*&collection=*&action=create&action=read_self blob:*/* \
-space:*?action=read_self&manage=update&manage=delete";
+space:*?action=read_self&manage=update&manage=delete space:*?manage=create&manage=update";
 pub const FIRST_PARTY_CALLBACK: &str = "/migrate/oauth/callback";
 /// The account page's "Your spaces" sign-in comes back here.
 pub const FIRST_PARTY_ACCOUNT_CALLBACK: &str = "/account/oauth/callback";

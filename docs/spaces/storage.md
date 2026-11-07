@@ -135,9 +135,10 @@ What the import refuses:
   notify of it.
 - When the space's authority is the importing account itself, its space must exist first
   (`importSpaceMeta`), or the import gets `SpaceNotFound`.
-- When the space's authority is hosted here (on any node of the cluster), the account must be
-  allowed to write in the space (`NotAuthorized` otherwise). An authority elsewhere refuses a
-  non-writer's notify as it would any write's.
+- The whole archive is read and checked before anything of the repo here changes: kept in memory
+  up to 8 MiB, past that in a temporary file, then staged from that copy. So a refused import
+  leaves the repo as it was. An authority refuses a non-writer's notify of the import as it would
+  any write's.
 - An import that fails clears what it staged. If the node dies part way, the rows it left have no
   head over them, so nothing serves them. The next import or the repo's first write clears them
   before it lands.

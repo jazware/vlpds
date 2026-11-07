@@ -862,24 +862,28 @@ async fn import_over_a_repo_replaces_it() {
     check_space_ok(s, &o.bob.did, &o.space).await;
 }
 
-/// An import over a repo that fails part way (here: records that don't
-/// fold to the commit's data, found once the archive has ended) has
-/// already taken the old head away: the repo serves nothing until a retry
-/// with a good archive puts it back. The reference's import is one
-/// transaction and keeps the old repo.
+/// A refused import leaves the repo as it was ("replaces what the new host
+/// holds when imported again", only for an archive that checks out): the
+/// whole archive is checked before the old head goes, whether it's refused
+/// at its end (records that don't fold to the commit's data, or a missing
+/// end byte) or names another account.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_failed_import_over_a_repo_is_retried() {
+async fn a_refused_import_leaves_the_repo() {
     let o = one().await;
     write(&o.bob, &o.space, W::new().rkey("live").text("written here")).await.ok();
+    let before = head(&o.bob, &o.space).await;
     let b = records(RepoBuilder::new(&o.space, &o.bob.did, &rev_ago(Duration::from_secs(10))), 3);
     let mut other = b.set();
     other.add("com.example.x/y/bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm");
     let r = import_repo(&o.bob, &b.build_with(&other).star()).await;
     refused_mentioning(&r, &["do not match the commit"]);
-    let listed_now = all_records(&o.bob, &o.space).await;
-    assert!(listed_now.is_empty(), "a part-way import's rows aren't served: {listed_now:?}");
     let built = b.build();
-    import_repo(&o.bob, &built.star()).await.ok();
+    let star = built.star();
+    import_repo(&o.bob, &star[..star.len() - 1]).await.err(400, "InvalidRequest");
+    import_repo(&o.alice, &star).await.err(400, "InvalidRequest");
+    assert_eq!(head(&o.bob, &o.space).await, before, "the repo is as it was");
+    assert_eq!(all_records(&o.bob, &o.space).await.len(), 1);
+    import_repo(&o.bob, &star).await.ok();
     assert_eq!(all_records(&o.bob, &o.space).await.len(), 3);
     assert_eq!(head(&o.bob, &o.space).await.map(|h| h.1), Some(built.commit.data.to_vec()));
     expect_set_hash_matches_store(&o.bob, &o.space).await;

@@ -913,9 +913,9 @@ Divergences, also in DESIGN.md's Spaces section:
 - **importRepo.** `com.atproto.space.importRepo` takes the getRepo STAR archive as the reference does (no MAC, the commit
   naming the account, the records folding to its `data`, `create` granted per collection). It's OAuth-only like every space
   method, the new rev follows the archive's as well as the one held, an archive whose rev is past the FutureRev window is
-  refused, and the authority's own repo needs its live space. The records stream in as the body arrives, so an import over
-  a repo that fails part way has already taken the old head away: the repo serves nothing until a retry succeeds, where the
-  reference's import is one transaction (`spaces_side::import_repo`). These cases are vlpds's own, not a reference suite's.
+  refused, and the authority's own repo needs its live space. The whole archive is checked before the repo here is touched
+  (kept in memory up to 8 MiB, then in a temporary file), so a refused import leaves the repo as it was, as the reference's
+  one transaction does (`spaces_side::import_repo`). These cases are vlpds's own, not a reference suite's.
 - **1,000,000-byte space records.** A space record's encoding is capped at 1,000,000 bytes, as a public repo record's is.
   The reference caps it at 1 MiB, its STAR value limit, which an import still allows.
 
@@ -926,11 +926,13 @@ minutes-to-hours timing or a mocked clock stay N/A and are covered by the outbox
 
 | | Cases |
 |---|---:|
-| ported | 230 |
+| ported | 245 |
 | ported + divergent | 7 |
 | divergent | 1 |
+| covered | 1 |
 | N/A | 8 |
-| **total** | **246** |
+| GAP | 2 |
+| **total** | **264** |
 
 Counted per `it()` case, with each `it.each` row counted once per value. Three more rows (marked "(vlpds)") are vlpds-only
 tests (the 300 s cap, the old credential scheme) and aren't counted. The sync, records and auth rows follow the reference at
@@ -1207,3 +1209,34 @@ outbox, so these are outbox cases against a remote space host in `ref_space_sync
 | stops at the deadline and allows a later write to start a new retry window | N/A | the 24 h deadline. The outbox's own unit tests |
 | elects one retry worker and allows takeover after its lease expires | ported + divergent | no lease worker: the shard owner sends, and a takeover rescans `sP` (`spaces_side::durability`, and the restart cases above) |
 | defers retries for inactive accounts and resumes after activation | ported | `..::outbox_defers_inactive_accounts_and_resumes_on_activation` (C2) |
+| **space deleted** | | |
+| sends immediately without queueing a successful notification | ported | `spaces_side::space_deleted::deliveries_and_retries` |
+| retries a transient failure until delivered | ported | same, the retry run through `space::deleted::retry_due` with a clock past the backoff |
+| does not retry a permanent failure | ported | same |
+| stops retrying once the registration expires | ported | `..::retries_end_with_the_registration_or_a_new_space` |
+| drops retries once the authority account is gone | covered | account deletion sweeps every space family, `sD` included (`xrpc::space::delete_account_rows`) |
+| defers retries while the authority is inactive | GAP | the code defers (`space::deleted::retry_one`); no test |
+| drops retries once the space is recreated | ported | `..::retries_end_with_the_registration_or_a_new_space` |
+| keeps a newer deletion retry when an older delivery finishes | GAP | a retry clears its row only if it's still the one it read (`clear_if_same`); no test races two deletions |
+
+### space/migration.test.ts
+
+| case | status | vlpds |
+|---|---|---|
+| moves the spaces an account is the authority of, and its repos | ported | `spaces_side::ref_space_migration::the_space_meta_archive_round_trips` (one host), `spaces_side::import_repo` (the repo), and the harness's migrate e2e (reference to vlpds, both hosts) |
+| requires the space before the authority's own repo in it | ported | `spaces_side::import_repo` (SpaceNotFound before the space) |
+| replaces what the new host holds when imported again | ported | `..::the_space_meta_archive_round_trips` (a second import over a changed list), `spaces_side::import_repo` (replace and retry) |
+| keeps the percent-encoded port of a did:web member's DID | ported | `xrpc::space_meta::tests::did_web_ports_round_trip` |
+| rejects a repo with a record that is not canonical DRISL | ported | `spaces_side::import_repo`, `xrpc::space_import::tests::records_must_be_canonical` |
+| imports only the account's own spaces and repos | ported | `..::rejects_an_archive` (NotSpaceOwner), `spaces_side::import_repo` (the commit must name the account) |
+| rejects an archive: with a policy the host does not implement | ported | `..::rejects_an_archive` |
+| rejects an archive: with policy state the policy does not define | ported | same |
+| rejects an archive: with a member list for a policy that keeps none | ported | same |
+| rejects an archive: that does not parse | ported | same |
+
+### space/kem-key-backfill.test.ts
+
+Ported in `kem_keys` (a new account publishes its key and keeps it through rotation and handle updates; a migration carries
+the new host's key; the backfill publishes or stores and logs, retries while PLC is down, runs once, and looks again after a
+restart without Spaces; rewrap moves KEM keys). The backfill's per-shard completion record and node-local passes stand in for
+the reference's lease (ported + divergent).

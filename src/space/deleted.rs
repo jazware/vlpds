@@ -110,17 +110,16 @@ pub fn start(app: &Arc<App>) {
         loop {
             tokio::time::sleep(EVERY.mul_f64(0.8 + 0.4 * rand::random::<f64>())).await;
             let Some(app) = weak.upgrade() else { return };
-            if let Err(e) = retry_due(&app).await {
+            if let Err(e) = retry_due(&app, vlatproto::tid::now_micros()).await {
                 tracing::warn!("space deletion notify retries failed: {e:#}");
             }
         }
     });
 }
 
-/// One pass over the due `sD` rows of the owned shards. Returns how many
-/// rows it settled (delivered, refused or dropped).
-pub async fn retry_due(app: &App) -> anyhow::Result<usize> {
-    let now = vlatproto::tid::now_micros();
+/// One pass over the `sD` rows of the owned shards due at `now` (unix µs).
+/// Returns how many rows it settled (delivered, refused or dropped).
+pub async fn retry_due(app: &App, now: u64) -> anyhow::Result<usize> {
     let mut settled = 0;
     for p in app.partitions.owned() {
         let opts = slatedb::config::ScanOptions::default();
