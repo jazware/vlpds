@@ -4,6 +4,12 @@ Run on 2026-10-05 at `spaces-1` 3ebf852d (C1 through C7 plus the side lane), alo
 benchbox (Ryzen AI Max+ 395, 16C/32T, 62 GB, rustc 1.99.0) between batch pipeline runs,
 under a 16 GB memory cap. Every target is met and nothing needed fixing.
 
+These numbers are from the October 1 Spaces wire. Since the November 5 one, a credential
+read of a commit or record (getLatestCommit, getRepo, listRepoOps, getRecord) derives a
+per-request secret by ECDH against the account's `#atproto_kem` key and answers an HMAC
+instead of a commit signature, getRepo is a STAR archive, and members are managed with
+`com.atproto.memberspace.putMember`. Re-measure before comparing against them.
+
 ## How to run
 
 ```text

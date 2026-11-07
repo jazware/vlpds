@@ -8607,7 +8607,7 @@
      "type": "timeseries",
      "id": 103,
      "title": "notifyWrite by hop and result",
-     "description": "out = this node's writes to their authorities; in = notifies received as an authority; fanout = forwarded to registered syncers. ok = 200; retry = backing off; wait = the writer's account is inactive; refused / gone / expired = the row was dropped. in same_rev_unverified / same_rev_capped = a remote writer's same-rev, new-hash notify (a record takedown) its host didn't confirm, or over 3 per writer and space in 10 min: dropped, left to polls.",
+     "description": "out = this node's writes to their authorities; in = notifies received as an authority; fanout = forwarded to registered syncers. ok = 200; retry = backing off; wait = the writer's account is inactive; refused / gone / expired = the row was dropped. in same_rev_unverified / same_rev_capped = a remote writer's same-rev, new-data notify (a record takedown) its host didn't confirm, or over 3 per writer and space in 10 min: dropped, left to polls.",
      "datasource": {
       "type": "prometheus",
       "uid": "${ds_prometheus}"
@@ -8807,7 +8807,7 @@
      "type": "timeseries",
      "id": 106,
      "title": "listRepoOps server time",
-     "description": "Handler time after auth, the commit signature included. Targets: noop well under 1 ms, a typical delta a few ms.",
+     "description": "Handler time after auth, the commit's MAC (a KEM decapsulation and an HMAC) included. Targets: noop well under 1 ms, a typical delta a few ms.",
      "datasource": {
       "type": "prometheus",
       "uid": "${ds_prometheus}"

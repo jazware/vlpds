@@ -5,14 +5,13 @@ import { useAction, useLoad, useSession } from '../../lib/hooks'
 import { ACCOUNT_CALLBACK_PATH, clientInfo, type OAuthSession } from '../../lib/oauth'
 import { Link, navigate, useSearch } from '../../lib/router'
 import {
-  accessText,
   connect,
   disconnect,
   governance,
   listSpaces,
   myRepo,
-  MEMBERSPACE,
   OWNER_SCOPE,
+  readText,
   pool,
   READ_SCOPE,
   resolveMember,
@@ -23,6 +22,7 @@ import {
   type Governance,
   type MyRepo,
   type SpaceRef,
+  writeText,
 } from '../../lib/spaces'
 import { Nsid, preview } from './Repo'
 
@@ -239,13 +239,13 @@ function Overview({ sess }: { sess: OAuthSession }) {
                       </Link>
                       {r.gov && (
                         <span className="sm-meta small muted">
-                          Read: {accessText(r.gov.policy, 'read')} · write: {accessText(r.gov.policy, 'write')}
+                          Read: {readText(r.gov.policy)} · write: {writeText(r.gov.policy)}
                         </span>
                       )}
                     </td>
-                    <td className="num">{r.gov ? `${fmtNum(r.gov.members.length)}${r.gov.more ? '+' : ''}` : '—'}</td>
+                    <td className="num">{r.gov?.memberList ? `${fmtNum(r.gov.members.length)}${r.gov.more ? '+' : ''}` : '—'}</td>
                     <td className="num">{r.gov ? writers(r.gov) : '—'}</td>
-                    <td className="hide-sm">{r.gov ? `${accessText(r.gov.policy, 'read')} · ${accessText(r.gov.policy, 'write')}` : '—'}</td>
+                    <td className="hide-sm">{r.gov ? `${readText(r.gov.policy)} · ${writeText(r.gov.policy)}` : '—'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -257,10 +257,10 @@ function Overview({ sess }: { sess: OAuthSession }) {
   )
 }
 
-/** Who can write besides the owner: members with write, everyone under public write, or the app's say. */
+/** Who can write besides the owner: members with write, everyone (publicWrite), an app, or no one. */
 function writers(g: Governance): string {
-  const t = accessText(g.policy, 'write')
-  if (g.policy.$type !== MEMBERSPACE || t === 'anyone') return t
+  if (!g.memberList) return g.policy.managingApp ? 'app' : '—'
+  if (g.policy.publicWrite) return 'anyone'
   return `${fmtNum(g.members.filter((m) => m.write).length)}${g.more ? '+' : ''}`
 }
 
@@ -438,12 +438,11 @@ function Governed({ sess, s, gov, reload }: { sess: OAuthSession; s: SpaceRef; g
     reload()
   })
   const controls = manage && granted
-  const listed = gov.policy.$type === MEMBERSPACE
   return (
     <>
       <Panel
         title="Members"
-        desc={`${fmtNum(gov.members.length)}${gov.more ? '+' : ''} ${gov.members.length === 1 ? 'member' : 'members'}. Read: ${accessText(gov.policy, 'read')}. Write: ${accessText(gov.policy, 'write')}.`}
+        desc={`${gov.memberList ? `${fmtNum(gov.members.length)}${gov.more ? '+' : ''} ${gov.members.length === 1 ? 'member' : 'members'}. ` : ''}Read: ${readText(gov.policy)}. Write: ${writeText(gov.policy)}.`}
         actions={
           !manage && (
             <button type="button" className="btn sm" name="spaces-manage" onClick={() => setManage(true)}>
@@ -454,8 +453,10 @@ function Governed({ sess, s, gov, reload }: { sess: OAuthSession; s: SpaceRef; g
         flush
         id="space-members"
       >
-        {!listed ? (
-          <Empty title={`No member list (${gov.policy.$type.split('.')[2] ?? gov.policy.$type})`} />
+        {!gov.memberList ? (
+          <Empty title={gov.policy.managingApp ? 'An app decides who is in this space' : 'No member list'}>
+            {gov.policy.managingApp ? <span className="mono break">{gov.policy.managingApp}</span> : 'Only you can read and write here.'}
+          </Empty>
         ) : gov.members.length === 0 ? (
           <Empty title="No members yet" />
         ) : (
@@ -518,7 +519,7 @@ function Governed({ sess, s, gov, reload }: { sess: OAuthSession; s: SpaceRef; g
           </div>
         </Panel>
       )}
-      {controls && listed && <AddMember sess={sess} s={s} reload={reload} />}
+      {controls && gov.memberList && <AddMember sess={sess} s={s} reload={reload} />}
       {controls && <DeleteSpace sess={sess} s={s} />}
       <Confirm
         open={!!removing}

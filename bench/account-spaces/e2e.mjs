@@ -46,8 +46,7 @@ async function xrpc(base, nsid, { params, body, auth } = {}) {
 // ---------------------------------------------------------------- seed
 
 const RUN = randomBytes(2).toString('hex')
-const MEMBERS = { $type: 'com.atproto.simplespace.defs#memberListPolicy' }
-const OPEN = { $type: 'com.atproto.simplespace.defs#open' }
+const MEMBERS = { $type: 'com.atproto.memberspace.policy' }
 const SEED_SCOPE = `atproto space:${TYPE}?authority=*&collection=*&action=read&action=create&manage=create&manage=update`
 
 async function account(base, name, { oauth = true } = {}) {
@@ -63,7 +62,7 @@ async function account(base, name, { oauth = true } = {}) {
 }
 
 const createSpace = async (a, skey) =>
-  (await a.call('com.atproto.simplespace.createSpace', { body: { spaceType: TYPE, skey, readPolicy: MEMBERS, writePolicy: MEMBERS, appAccess: OPEN } })).uri
+  (await a.call('com.atproto.space.createSpace', { body: { spaceType: TYPE, skey, policy: MEMBERS } })).uri
 
 async function write(a, space, n) {
   for (let i = 0; i < n; i++) {
@@ -79,11 +78,11 @@ async function seed() {
   const carol = await account(VLPDS, 'carol', { oauth: false })
   const club = await createSpace(alice, 'bookclub')
   const garden = await createSpace(alice, 'garden')
-  await alice.call('com.atproto.simplespace.putMember', { body: { space: club, did: bob.did, read: true, write: true } })
+  await alice.call('com.atproto.memberspace.putMember', { body: { space: club, did: bob.did, read: true, write: true } })
   await write(alice, club, 3)
   await write(bob, club, 2)
   const notes = await createSpace(bob, 'notes')
-  await bob.call('com.atproto.simplespace.putMember', { body: { space: notes, did: alice.did, read: true, write: true } })
+  await bob.call('com.atproto.memberspace.putMember', { body: { space: notes, did: alice.did, read: true, write: true } })
   await write(alice, notes, 2)
   log(`  alice runs bookclub (bob writes there) and garden, writes in bob's notes`)
   return { alice, bob, carol, club, garden, notes }
@@ -295,7 +294,7 @@ async function flow(browser, w) {
   check(flat(await dialog.innerText()).includes(`@${carol.handle}`), 'the add confirmation names carol')
   await dialog.locator('button[type=submit]').click()
   await page.locator('#space-add .notice.ok').waitFor()
-  const api = async () => (await alice.call('com.atproto.simplespace.listMembers', { params: { space: club } })).members
+  const api = async () => (await alice.call('com.atproto.memberspace.listMembers', { params: { space: club } })).members
   const afterAdd = await api()
   check(afterAdd.some((m) => m.did === carol.did && m.read && !m.write), 'the API lists carol as a reader', JSON.stringify(afterAdd))
   await page.locator('#space-members', { hasText: carol.handle }).waitFor()
@@ -320,8 +319,8 @@ async function flow(browser, w) {
   check(!(await go.isDisabled()), 'typing the key enables it')
   await go.click()
   await page.waitForURL(`${VLPDS}/account/spaces`)
-  const gone = await alice.call('com.atproto.simplespace.getSpace', { params: { space: garden } }).catch((e) => e)
-  check(/SpaceNotFound/.test(String(gone?.message)), 'the API says garden is gone', String(gone?.message ?? JSON.stringify(gone)))
+  const gone = await alice.call('com.atproto.space.getSpace', { params: { space: garden } }).catch((e) => e)
+  check(/SpaceNotFound|SpaceDeleted/.test(String(gone?.message)), 'the API says garden is gone', String(gone?.message ?? JSON.stringify(gone)))
   await page.locator('#spaces-governed').waitFor()
   check(!/garden/.test(await page.locator('#spaces-governed').innerText()), 'garden is off the list')
 

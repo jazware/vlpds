@@ -229,7 +229,7 @@ export async function discover(pds: string): Promise<AuthServer> {
 
 /** Everything this client can ask for; /oauth/client-metadata.json lists the same. */
 export const CLIENT_SCOPE =
-  'atproto space:*?authority=*&action=read_self space:*?authority=*&collection=*&action=create&action=read_self blob:*/* space:*?action=read_self&manage=update&manage=delete'
+  'atproto space:*?authority=*&action=read_self space:*?authority=*&collection=*&action=create&action=read_self blob:*/* space:*?action=read_self&manage=update&manage=delete space:*?manage=create&manage=update'
 
 /** /migrate's redirect URI. */
 export const CALLBACK_PATH = '/migrate/oauth/callback'

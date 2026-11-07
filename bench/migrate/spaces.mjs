@@ -1,7 +1,8 @@
 // Spaces migration e2e (README.md "Spaces"): accounts with space repos move
 // to a local vlpds through /migrate in headless Chromium, the Spaces step's
 // OAuth sign-ins included, then every moved repo is checked on vlpds with
-// the reference library (@atproto/space verifyRepoCarFull).
+// the reference library (@atproto/space readRepoStar: the records fold to the
+// commit's data). A space the account runs moves too (its meta first).
 //
 //   alice: reference PDS (Spaces alpha) -> vlpds, simple mode
 //   erin:  another vlpds -> vlpds, advanced mode
@@ -12,7 +13,7 @@ import { chromium } from 'playwright'
 import { createHash, randomBytes } from 'node:crypto'
 import { deflateSync } from 'node:zlib'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { verifyRepoCarFull } from '@atproto/space'
+import { readRepoStar } from '@atproto/space'
 import { hostUrl, oauthLogin } from './lib/oauth.mjs'
 
 const REF = process.env.REF_SPACES ?? 'http://localhost:2786'
@@ -130,10 +131,9 @@ const sha = (b) => createHash('sha256').update(b).digest('hex')
 
 const RUN = randomBytes(2).toString('hex')
 const spaceUri = (authority, skey) => `at://${authority}/space/${TYPE}/${skey}`
-const MEMBERS = { $type: 'com.atproto.simplespace.defs#memberListPolicy' }
-const OPEN = { $type: 'com.atproto.simplespace.defs#open' }
+const MEMBERS = { $type: 'com.atproto.memberspace.policy' }
 // what the seed's apps ask of a vlpds: spaces of the test type, managed and written, and blobs
-const SEED_SCOPE = `atproto space:${TYPE}?authority=*&collection=*&action=read&action=create&manage=create&manage=update blob:*/*`
+const SEED_SCOPE = `atproto space:${TYPE}?authority=*&collection=*&action=read&action=read_self&action=create&manage=create&manage=update blob:*/*`
 
 /** An account and the client its space calls go through: a password session on the reference, OAuth on vlpds. */
 async function account(base, name, domain, { oauth }) {
@@ -152,7 +152,7 @@ async function account(base, name, domain, { oauth }) {
 }
 
 async function createSpace(a, skey) {
-  const out = await a.call('com.atproto.simplespace.createSpace', { body: { spaceType: TYPE, skey, readPolicy: MEMBERS, writePolicy: MEMBERS, appAccess: OPEN } })
+  const out = await a.call('com.atproto.space.createSpace', { body: { spaceType: TYPE, skey, policy: MEMBERS } })
   return out.uri
 }
 
@@ -169,15 +169,15 @@ async function writeRecords(a, space, n, withBlob) {
   }
 }
 
-const signingKey = async (did) => {
-  const d = await fetch(`${PLC}/${did}/data`).then((r) => r.json())
-  return d.verificationMethods.atproto
-}
+const didKeys = async (did) => (await fetch(`${PLC}/${did}/data`).then((r) => r.json())).verificationMethods
 
-/** The repo as its host serves it, verified with the reference library. */
-async function verifiedRepo(car, space, did, didKey) {
-  const v = await verifyRepoCarFull([new Uint8Array(car)], { space, author: did, didKey })
-  return { rev: v.commit.rev, records: v.records.map((r) => `${r.collection}/${r.rkey} ${r.cid.toString()}`).sort() }
+/** The account's own repo as its host serves it (an OAuth read: no MAC), its records checked against the commit's data. */
+async function verifiedRepo(star, space, did) {
+  const v = await readRepoStar([new Uint8Array(star)])
+  const records = []
+  for await (const r of v.records) records.push(`${r.collection}/${r.rkey} ${r.cid.toString()}`)
+  if (v.commit.repo !== did || v.commit.space !== space) throw new Error(`getRepo answered ${v.commit.repo} in ${v.commit.space}`)
+  return { rev: v.commit.rev, data: Buffer.from(v.commit.data).toString('hex'), records: records.sort() }
 }
 
 async function seed() {
@@ -194,7 +194,7 @@ async function seed() {
   ]) {
     member.blobs = {}
     const club = await createSpace(gov, 'club')
-    await gov.call('com.atproto.simplespace.putMember', { body: { space: club, did: member.did, read: true, write: true } })
+    await gov.call('com.atproto.memberspace.putMember', { body: { space: club, did: member.did, read: true, write: true } })
     const notes = await createSpace(member, 'notes')
     await writeRecords(member, club, 3, false)
     await writeRecords(member, notes, 4, true)
@@ -204,12 +204,13 @@ async function seed() {
       body: { repo: member.did, collection: 'app.bsky.feed.post', record: { $type: 'app.bsky.feed.post', text: 'moving soon', createdAt: new Date().toISOString() } },
     })
     member.spaces = [club, notes]
-    member.oldKey = await signingKey(member.did)
+    member.oldKeys = await didKeys(member.did)
     member.before = {}
     for (const s of member.spaces) {
-      const car = await member.call('com.atproto.space.getRepo', { params: { space: s, repo: member.did }, raw: true })
-      member.before[s] = await verifiedRepo(car, s, member.did, member.oldKey)
+      const star = await member.call('com.atproto.space.getRepo', { params: { space: s, repo: member.did }, raw: true })
+      member.before[s] = await verifiedRepo(star, s, member.did)
     }
+    member.members = (await member.call('com.atproto.memberspace.listMembers', { params: { space: notes } })).members
     log(`  ${member.handle}: ${member.spaces.length} spaces, ${Object.values(member.before).reduce((n, r) => n + r.records.length, 0)} records, ${Object.keys(member.blobs).length} blob`)
   }
   return { alice, erin }
@@ -261,7 +262,11 @@ async function drive(ctx, a, oldBase, { advanced, loseImport }) {
   page.on('pageerror', (e) => log(`  [pageerror] ${e.message}`))
   page.on('console', (m) => m.type() === 'error' && log(`  [console] ${m.text()}`))
   const imports = []
-  page.on('request', (r) => r.url().includes('/xrpc/vlpds.space.importRepo') && imports.push(new URL(r.url()).searchParams.get('space')))
+  const metaImports = []
+  page.on('request', (r) => {
+    if (r.url().includes('/xrpc/com.atproto.space.importRepo')) imports.push(r.url())
+    if (r.url().includes('/xrpc/com.atproto.space.importSpaceMeta')) metaImports.push(r.url())
+  })
   await page.goto(`${VLPDS}/migrate`)
   await heading(page, /Move your account here/)
   if (advanced) await page.check('input[name=advanced]')
@@ -317,8 +322,8 @@ async function drive(ctx, a, oldBase, { advanced, loseImport }) {
   await shot(page, `${a.name}-spaces-sign-in-new`)
   let lost = false
   if (loseImport) {
-    // the first import lands but its answer never arrives: the retry re-imports the same rev
-    await page.route('**/xrpc/vlpds.space.importRepo*', async (route) => {
+    // the first import lands but its answer never arrives: the retry imports it again
+    await page.route('**/xrpc/com.atproto.space.importRepo*', async (route) => {
       if (lost) return route.continue()
       lost = true
       await route.fetch()
@@ -337,10 +342,9 @@ async function drive(ctx, a, oldBase, { advanced, loseImport }) {
   }
   check(/All 2 Spaces copied/.test(result), `${a.name}: the summary says all copied`, result)
   check(new RegExp(`notes\\)?: copied \\(4 records, 1 ${advanced ? 'blob' : 'file'}\\)`).test(result), `${a.name}: the space blob came too`, result)
-  if (loseImport) {
-    const first = imports[0]
-    check(lost && imports.filter((x) => x === first).length === 2, `${a.name}: a lost import answer was retried (same rev re-imported)`, JSON.stringify(imports))
-  } else check(imports.length === a.spaces.length, `${a.name}: one import per space`, JSON.stringify(imports))
+  if (loseImport) check(lost && imports.length === a.spaces.length + 1, `${a.name}: a lost import answer was retried`, JSON.stringify(imports))
+  else check(imports.length === a.spaces.length, `${a.name}: one import per space`, JSON.stringify(imports))
+  check(metaImports.length === 1, `${a.name}: the space it runs (notes) moved with importSpaceMeta`, JSON.stringify(metaImports))
   await page.click('button[name=spaces-continue]')
   await heading(page, /Welcome to your new home/, 120_000)
   await shot(page, `${a.name}-done`)
@@ -405,8 +409,9 @@ async function keyCheck(ctx) {
 
 async function verify(a) {
   log(`verify: ${a.handle} on vlpds`)
-  const newKey = await signingKey(a.did)
-  check(newKey !== a.oldKey, `${a.name}: the DID's signing key is vlpds's now`)
+  const keys = await didKeys(a.did)
+  check(keys.atproto !== a.oldKeys.atproto, `${a.name}: the DID's signing key is vlpds's now`)
+  check(!!keys.atproto_kem && keys.atproto_kem !== a.oldKeys.atproto_kem, `${a.name}: and so is its #atproto_kem key (the PLC op carried vlpds's recommended keys)`, JSON.stringify(keys))
   const s = await oauthLogin(VLPDS, {
     handle: a.newHandle,
     did: a.did,
@@ -414,26 +419,30 @@ async function verify(a) {
     scope: `atproto space:${TYPE}?authority=*&collection=*&action=read_self&action=create`,
   })
   for (const space of a.spaces) {
-    const car = await s.xrpc('com.atproto.space.getRepo', { params: { space, repo: a.did }, raw: true })
-    // vlpds signs each served commit afresh, with the key the DID names now
-    const got = await verifiedRepo(car, space, a.did, newKey)
+    const star = await s.xrpc('com.atproto.space.getRepo', { params: { space, repo: a.did }, raw: true })
+    // an import gives the repo a new rev with the same data
+    const got = await verifiedRepo(star, space, a.did)
     const want = a.before[space]
-    check(got.rev === want.rev && JSON.stringify(got.records) === JSON.stringify(want.records), `${a.name}: ${space.split('/').pop()} verifies with the same ${want.records.length} records at rev ${want.rev}`)
-    // a re-run of the import is a no-op: same rev, same records, same head
-    const again = await s.xrpc('vlpds.space.importRepo', { params: { space }, bytes: car, type: 'application/vnd.ipld.car' }).catch((e) => ({ error: e.message }))
-    check(again.rev === want.rev && again.records === want.records.length, `${a.name}: re-importing ${space.split('/').pop()} is idempotent`, JSON.stringify(again))
+    check(got.data === want.data && JSON.stringify(got.records) === JSON.stringify(want.records), `${a.name}: ${space.split('/').pop()} has the same ${want.records.length} records and data`)
+    check(got.rev > want.rev, `${a.name}: at a new rev`, `${want.rev} -> ${got.rev}`)
+    // importing it again replaces it with the same records
+    const again = await s.xrpc('com.atproto.space.importRepo', { bytes: star, type: 'application/octet-stream' }).then(() => null, (e) => e.message)
+    const after = await verifiedRepo(await s.xrpc('com.atproto.space.getRepo', { params: { space, repo: a.did }, raw: true }), space, a.did)
+    check(!again && after.data === want.data && JSON.stringify(after.records) === JSON.stringify(want.records), `${a.name}: re-importing ${space.split('/').pop()} changes nothing`, again ?? '')
   }
+  const members = (await s.xrpc('com.atproto.memberspace.listMembers', { params: { space: a.spaces[1] } }).catch((e) => ({ error: e.message }))).members
+  check(JSON.stringify(members) === JSON.stringify(a.members), `${a.name}: the space it runs kept its member list`, JSON.stringify(members))
   for (const [cid, hash] of Object.entries(a.blobs)) {
     const space = a.spaces[1]
     const bytes = await s.xrpc('com.atproto.space.getBlob', { params: { space, repo: a.did, cid }, raw: true }).catch((e) => Buffer.from(e.message))
     check(sha(bytes) === hash, `${a.name}: space blob ${cid.slice(0, 12)}… has the same bytes`)
   }
-  // a new write on vlpds goes on from the imported head, signed with vlpds's key
+  // a new write on vlpds goes on from the imported repo
   const notes = a.spaces[1]
   await s.xrpc('com.atproto.space.createRecord', { body: { space: notes, repo: a.did, collection: COLL, record: { $type: COLL, text: 'after the move', createdAt: new Date().toISOString() } } })
-  const car = await s.xrpc('com.atproto.space.getRepo', { params: { space: notes, repo: a.did }, raw: true })
-  const after = await verifiedRepo(car, notes, a.did, newKey).catch((e) => ({ error: e.message }))
-  check(after.records?.length === a.before[notes].records.length + 1 && after.rev > a.before[notes].rev, `${a.name}: a write after the move verifies with the new key`, JSON.stringify(after).slice(0, 200))
+  const star = await s.xrpc('com.atproto.space.getRepo', { params: { space: notes, repo: a.did }, raw: true })
+  const after = await verifiedRepo(star, notes, a.did).catch((e) => ({ error: e.message }))
+  check(after.records?.length === a.before[notes].records.length + 1 && after.rev > a.before[notes].rev, `${a.name}: a write after the move goes on from the imported repo`, JSON.stringify(after).slice(0, 200))
   const old = await xrpc(a.base, 'com.atproto.server.checkAccountStatus', {
     auth: (await xrpc(a.base, 'com.atproto.server.createSession', { body: { identifier: a.did, password: a.password } })).accessJwt,
   })
