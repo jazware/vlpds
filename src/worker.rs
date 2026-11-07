@@ -2633,6 +2633,7 @@ fn process_space(st: &mut RepoState, r: crate::space::repo::SpaceReq, clock_id: 
         // the space host's management ops are the authority's own: refused
         // while its account is inactive
         SpaceOp::CreateSpace { .. }
+        | SpaceOp::ImportSpaceMeta { .. }
         | SpaceOp::UpdateSpace { .. }
         | SpaceOp::PutMember { .. }
         | SpaceOp::RemoveMember { .. }
@@ -2694,6 +2695,9 @@ fn process_space(st: &mut RepoState, r: crate::space::repo::SpaceReq, clock_id: 
             let r = match op {
                 SpaceOp::RemoveWriter { writer } => {
                     sr::remove_writer(ss, &did, sid, &writer).map(|m| (m, SpaceAck::Host))
+                }
+                SpaceOp::ImportSpaceMeta { row, max_space_rev } => {
+                    sr::import_space_meta(ss, &did, sid, row, max_space_rev).map(|m| (m, SpaceAck::Host))
                 }
                 SpaceOp::RegisterNotify { service, row } => {
                     sr::set_registration(ss, &did, sid, &service, Some(row), None)

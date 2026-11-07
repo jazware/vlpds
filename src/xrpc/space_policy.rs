@@ -283,17 +283,27 @@ const SWEEP_BATCH: usize = 500;
 /// own repo, in bounded entries. Idempotent; rerun by a createSpace over
 /// the tombstone in case a sweep stopped part way.
 pub(super) async fn delete_space_rows(app: &App, space: &Space) -> XResult<()> {
+    sweep_space_rows(
+        app,
+        space,
+        &[
+            state::SPACE_MEMBER_FAMILY,
+            state::SPACE_WRITER_FAMILY,
+            state::SPACE_SEQ_FAMILY,
+            state::SPACE_NOTIFY_FAMILY,
+            state::SPACE_BLOB_FAMILY,
+            state::SPACE_RECORD_FAMILY,
+            state::SPACE_OPLOG_FAMILY,
+            state::SPACE_HEAD_FAMILY,
+        ],
+    )
+    .await
+}
+
+/// The space's rows of `fams` at its authority, in bounded entries.
+pub(super) async fn sweep_space_rows(app: &App, space: &Space, fams: &[&[u8]]) -> XResult<()> {
     let p = app.partition(&space.authority)?;
-    for fam in [
-        state::SPACE_MEMBER_FAMILY,
-        state::SPACE_WRITER_FAMILY,
-        state::SPACE_SEQ_FAMILY,
-        state::SPACE_NOTIFY_FAMILY,
-        state::SPACE_BLOB_FAMILY,
-        state::SPACE_RECORD_FAMILY,
-        state::SPACE_OPLOG_FAMILY,
-        state::SPACE_HEAD_FAMILY,
-    ] {
+    for &fam in fams {
         let prefix = state::space_prefix(fam, &space.authority, &space.sid);
         let end = vlsync_store::keys::prefix_end(&prefix);
         loop {

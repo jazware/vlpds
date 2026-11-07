@@ -767,9 +767,9 @@ async fn notify_write_from_another_vlpds() {
     let listed = repos().await;
     assert_eq!(listed.len(), 1, "{listed:?}");
 
-    // a removed member stays at its last repoRev
+    // a removed member leaves the writer set
     owner.post("com.atproto.memberspace.removeMember", json!({"space": space, "did": member.did})).await.ok();
-    assert_eq!(repos().await[0]["repoRev"], json!(rev2));
+    assert_eq!(repos().await, Vec::<J>::new());
 
     // unregistered: forwards stop
     put_member(&owner, &space, &member.did, true, true).await.ok();

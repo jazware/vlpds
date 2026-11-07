@@ -30,6 +30,7 @@ mod phase3;
 mod ref_client_attestation;
 mod ref_net;
 mod ref_space_auth;
+mod ref_space_migration;
 mod ref_space_policy;
 mod ref_space_records;
 mod ref_space_scope;

@@ -43,6 +43,7 @@ pub mod space;
 mod space_admin;
 mod space_clear;
 mod space_import;
+mod space_meta;
 mod space_ops;
 mod space_policy;
 pub mod staged_import;
@@ -309,6 +310,7 @@ pub fn router(app: Arc<App>) -> Router {
                         .merge(space_admin::routes())
                         .merge(space_clear::routes())
                         .merge(space_import::routes())
+                        .merge(space_meta::routes())
                         .merge(admin_tools::space_routes()),
                     false => Router::new(),
                 }),

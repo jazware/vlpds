@@ -99,6 +99,13 @@ pub enum SpaceOp {
     CreateSpace {
         row: SpaceRow,
     },
+    /// space.importSpaceMeta: the space's row put in over whatever is held,
+    /// once its member list, writer states and sequence are in `sM`, `sW`
+    /// and `sQ`; the host state cached here is read again from them.
+    ImportSpaceMeta {
+        row: SpaceRow,
+        max_space_rev: Option<Tid>,
+    },
     /// space.updateSpace: the policy replaced wholesale.
     UpdateSpace {
         policy: Policy,
@@ -513,6 +520,7 @@ impl SpaceNeed {
                 self.host(st, sid, uri);
                 self.head(st, sid, uri);
             }
+            SpaceOp::ImportSpaceMeta { .. } => self.host(st, sid, uri),
             SpaceOp::ImportBegin { .. } | SpaceOp::Claim { .. } => self.head(st, sid, uri),
             SpaceOp::ImportCommit { .. } | SpaceOp::Clear { .. } => {
                 self.head(st, sid, uri);
@@ -1334,6 +1342,28 @@ pub fn set_member(
 }
 
 /// space.removeWriter. Idempotent: Ok(empty) if it isn't one.
+/// importSpaceMeta's row, live, and the host state reset to what the
+/// import wrote: members and writers are read again as they're needed.
+pub fn import_space_meta(
+    st: &mut SpaceStates,
+    authority: &str,
+    sid: SpaceId,
+    row: SpaceRow,
+    max_space_rev: Option<Tid>,
+) -> Result<Vec<Mutation>, SpaceError> {
+    let host = st.hosts.get_mut(&sid).ok_or_else(|| internal("space host state not loaded"))?;
+    host.members.clear();
+    host.members_complete = false;
+    host.writers.clear();
+    host.max_space_rev = max_space_rev;
+    let muts = vec![
+        put(state::space_key(authority, &sid), row.encode()),
+        put(state::space_list_key(authority, &row.uri, SpaceListed::Governs), Bytes::new()),
+    ];
+    host.space = Some(row);
+    Ok(muts)
+}
+
 pub fn remove_writer(
     st: &mut SpaceStates,
     authority: &str,
