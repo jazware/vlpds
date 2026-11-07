@@ -159,7 +159,6 @@ const SPACES_AT_ZERO: &[&str] = &[
     "vlpds_space_revocations_saturated",
     r#"vlpds_space_revocation_blocks{kind="space"}"#,
     r#"vlpds_space_revocation_blocks{kind="authority"}"#,
-    "vlpds_space_sign_seconds_count",
     r#"vlpds_space_imports_total{result="refused"}"#,
 ];
 

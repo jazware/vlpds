@@ -622,7 +622,7 @@ lazy!(SPACE_FANOUT_DEPTH: IntGauge = register_int_gauge!("vlpds_space_fanout_que
 lazy!(SPACE_FANOUT_DROPPED: IntCounterVec = register_int_counter_vec!("vlpds_space_fanout_dropped_total", "Write notifications not forwarded to a registered service, by reason (queue_full: the dispatcher's queue; lane_full: the oldest of a (space, service) lane; host_full: the service host's queue; all_full: every lane's queues together; lanes_full: no room for another lane; gave_up: retries ran out; expired: the registration expired while failing; takendown: the space is taken down). The service sees a prevSpaceRev gap and catches up with listRepos", &["reason"]));
 lazy!(SPACE_FANOUT_COALESCED: IntCounter = register_int_counter!("vlpds_space_fanout_coalesced_total", "Write notifications replaced before they were sent by a newer one of the same writer to the same service"));
 lazy!(SPACE_OUTBOX_OVERFLOW: IntCounter = register_int_counter!("vlpds_space_outbox_overflow_total", "notifyWrite outbox rows left in the bucket because the in-memory outbox was full (picked up by a rescan once it drains)"));
-lazy!(SPACE_EXPORT_BYTES: Histogram = register_histogram!("vlpds_space_export_bytes", "Memory a space getRepo export holds: its paths and CIDs (pass 1) and the chunk it fills", exponential_buckets(65536.0, 2.0, 16).unwrap()));
+lazy!(SPACE_EXPORT_BYTES: Histogram = register_histogram!("vlpds_space_export_bytes", "Memory a space getRepo export holds: the chunk it fills", exponential_buckets(65536.0, 2.0, 16).unwrap()));
 lazy!(SPACE_OPLOG_PRUNED: IntCounter = register_int_counter!("vlpds_space_oplog_pruned_total", "Space oplog ops deleted past --space-oplog-retention"));
 lazy!(SPACE_CREDENTIALS_ISSUED: IntCounterVec = register_int_counter_vec!("vlpds_space_credentials_issued_total", "getSpaceCredential answers as a space authority, by result", &["result"]));
 
@@ -702,15 +702,10 @@ pub fn space_credential_issued(result: &str) {
     SPACE_CREDENTIALS_ISSUED.with_label_values(&[result]).inc();
 }
 
-lazy!(SPACE_SIGN_SECONDS: Histogram = register_histogram!("vlpds_space_sign_seconds", "Signing one space commit for a reader (getLatestCommit, listRepoOps, getRepo: a fresh ikm per response)", exponential_buckets(0.000_005, 2.0, 16).unwrap()));
 lazy!(SPACE_DIGEST_MISMATCH: IntCounter = register_int_counter!("vlpds_space_digest_mismatch_total", "Space repos whose stored head disagreed with the set hash recomputed from their records (vlpds.admin.checkSpace): an integrity bug, never load"));
 lazy!(SPACE_REPOS: IntGauge = register_int_gauge!("vlpds_space_repos", "Space repos (an account's repo in one space) in the shards this node owns, counted by the oplog retention sweep (every ~6 h)"));
-lazy!(SPACE_IMPORTS: IntCounterVec = register_int_counter_vec!("vlpds_space_imports_total", "vlpds.space.importRepo calls by result (ok; refused: a bad CAR, signature, MAC or set hash, or a repo already there; error)", &["result"]));
+lazy!(SPACE_IMPORTS: IntCounterVec = register_int_counter_vec!("vlpds_space_imports_total", "com.atproto.space.importRepo calls by result (ok; refused: a bad archive or grant; error)", &["result"]));
 lazy!(SPACE_OPERATOR_READS: IntCounterVec = register_int_counter_vec!("vlpds_space_operator_reads_total", "Audited operator reads of space data (vlpds.admin.getSpaceRepo, listSpaceRecords, getSpaceRecord) by method", &["method"]));
-
-pub fn space_sign(took: std::time::Duration) {
-    SPACE_SIGN_SECONDS.observe(took.as_secs_f64());
-}
 
 pub fn space_digest_mismatch() {
     SPACE_DIGEST_MISMATCH.inc();
@@ -777,7 +772,6 @@ pub fn init_space_counters() {
     }
     LazyLock::force(&SPACE_OUTBOX_OLDEST);
     LazyLock::force(&SPACE_NOTIFY_ACK);
-    LazyLock::force(&SPACE_SIGN_SECONDS);
 }
 
 pub fn init_reshard_gc_counters() {

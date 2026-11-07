@@ -198,7 +198,7 @@ account page. Details: [Keys and security](keys-security.md#plc-rotation-key-and
 When both servers run Spaces, the switch-over copies the account's space repos too. Space data is
 OAuth-only on vlpds (password sessions and app passwords never touch it), so this step signs in
 again on each side with OAuth. It runs after `activateAccount` here and before `deactivateAccount`
-there, because `vlpds.space.importRepo` needs the account live here and the old server has to serve
+there, because `com.atproto.space.importRepo` needs the account live here and the old server has to serve
 the repos while the account is still active there.
 
 ```steps
@@ -209,16 +209,18 @@ the repos while the account is still active there.
 - title: Sign in here
   body: "OAuth with `atproto space:*?authority=*&collection=*&action=create&action=read_self`, what `importRepo` checks, plus `blob:*/*` only when a repo names blobs."
 - title: Copy each space
-  body: "`space.getRepo` there, then `vlpds.space.importRepo` here, then each blob with `space.getBlob` there and `repo.uploadBlob` here (checked against its CID). 429s and dropped connections are retried as in the copy step."
+  body: "`space.getRepo` there, then `com.atproto.space.importRepo` here with that STAR archive (the space comes from its metadata), then each blob with `space.getBlob` there and `repo.uploadBlob` here (checked against its CID). 429s and dropped connections are retried as in the copy step."
 - title: Show what moved
   body: "Each space is listed as copied (with its record and blob counts), as having nothing of the account's in it (a space it governs but never wrote in), or as not copied with the reason. The user can retry the failures or go on without them. Then the page revokes both sessions and deactivates the old account."
 ```
 
-A retried import of the same rev answers 200 and writes nothing
-([Moving a repo in](spaces/storage.md#moving-a-repo-in)). So a reload, a Retry or a lost answer
-just runs the import again, and the page keeps each space's outcome (no secrets) with the rest of
+An import over a repo that's already here replaces it with the archive's records and gives it a
+new rev ([Moving a repo in](spaces/storage.md#moving-a-repo-in)). So a reload, a Retry or a lost
+answer just runs the import again, and the page keeps each space's outcome (no secrets) with the rest of
 its progress so it only redoes what didn't move. Only the member repos move. A space the account
-governs keeps its members and policy on the old server, since nothing here moves a space's host state yet.
+governs keeps its members and policy on the old server unless its host state is carried over with
+`com.atproto.space.exportSpaceMeta` and `importSpaceMeta`, which the page doesn't call. The
+authority's own repo needs its space here first, so it imports after `importSpaceMeta`.
 
 Syncers see none of the account's space data between activation and the import, so the step runs
 right away. It's seconds for a few spaces. If the user skips it or a space fails, that data stays in
@@ -291,9 +293,9 @@ be accepted. `KEEP=1` leaves the stack running, and the details are in `bench/mi
 `just migrate-spaces-e2e` covers the Spaces step. Two accounts with two spaces each (one record
 with a blob) move here, one from the reference PDS at the Spaces alpha and one from a second vlpds,
 through the real authorization pages on both sides. One import's answer is dropped, so the retry
-re-imports the same rev. Then each space repo has to verify on this server with
-`@atproto/space`'s `verifyRepoCarFull` with the same records at the same rev, a second import has
-to change nothing, the blob has to have the same bytes, and a new write has to verify.
+imports the archive again. Then each space repo has to hold the same records on this server and
+verify there with `@atproto/space`, the blob has to have the same bytes, and a new write has to
+verify.
 
 Before migrating real accounts to a new server, migrate one test account and check it from outside
 (the last steps of [Verify](operations/deploy.md#verify)).

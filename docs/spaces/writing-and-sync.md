@@ -34,7 +34,7 @@ timeline:
     - { from: host, to: ob, at: 13.2, label: "200" }
     - { from: fan, to: sync, at: 13.8, label: "notifyWrite · spaceRev", tone: blue }
     - { from: sync, to: w, at: 16.1, side: left, label: listRepoOps, tone: blue }
-    - { from: w, to: sync, at: 19.8, side: left, label: ops · signed commit, tone: blue }
+    - { from: w, to: sync, at: 19.8, side: left, label: ops · commit · MAC, tone: blue }
   marks:
     - { at: 5.6, label: durable, tone: amber }
     - { at: 7.8, label: 200 sent }
@@ -97,6 +97,13 @@ edges:
 - The space host's changes to a space (`createSpace`, `updateSpace`, `putMember`, `removeMember`)
   write the config and the records it publishes in one entry on the authority's worker, as the
   authority's own write to its repo there.
+- An authority writing to its own space before it exists, or after it's deleted, gets
+  `SpaceNotFound`. Its writer rows are written only for a live space.
+- `deleteSpace` tells each registered service with `notifySpaceDeleted`. A send that fails for a
+  reason worth retrying leaves an `sD` row, and the shard's owner retries it from 1 min, backing off
+  to 1 h, until it's delivered, refused for good, or the service's registration expires. A retry is
+  dropped once the space is created again or the authority's account is gone, and it waits while
+  the authority is inactive.
 - Space writes share segments the way public commits do. The in-tree bench measured 0.50 segment
   PUTs per write with 4 writers on one repo and 0.125 with 16, the same for space and public writes
   ([Operating](operating.md#server-cost-on-one-node)).
@@ -104,7 +111,7 @@ edges:
 ## The outbox
 
 ```timeline
-caption: "Single-flight per (repo, space). Revs 2 and 3 are acked while rev 1's notify is in flight, so they only move the row. The next send carries rev 3, whose hash covers rev 2."
+caption: "Single-flight per (repo, space). Revs 2 and 3 are acked while rev 1's notify is in flight, so they only move the row. The next send carries rev 3, whose `data` covers rev 2."
 scale: 46
 lanes:
   - { id: w, label: Author's writes, tone: accent }
@@ -132,7 +139,7 @@ or a takeover. The sending side lives in memory on the shard's owner.
 | | Behaviour |
 |---|---|
 | When it sends | as soon as nothing is in flight for that (repo, space), with no linger |
-| Where it sends | a local authority is told on its own worker with no HTTP. One on another cluster node gets `/internal/v1/space/notify`. When that node says the cluster doesn't host the authority, the sender remembers it for 5 min and goes straight to HTTP. Anything else gets `notifyWrite` at its `#atproto_space_host` (or `#atproto_pds`) with the writer's service auth, a 10 s timeout and the SSRF-guarded client |
+| Where it sends | a local authority is told on its own worker with no HTTP. One on another cluster node gets `/internal/v1/space/notify`. When that node says the cluster doesn't host the authority, the sender remembers it for 5 min and goes straight to HTTP. Anything else gets `notifyWrite` at its `#atproto_pds` with the writer's service auth, a 10 s timeout and the SSRF-guarded client |
 | Retries | from 1 min, doubling to 1 h with 50–100% jitter, until 24 h after the rev was owed (written, renotified after a takedown, or found when its shard opened), not 24 h after the rev's own time, so an old rev (an import, a writer back from deactivation) gets its retries too. A permanent refusal drops the row |
 | Inactive writers | a taken-down or deactivated account's rows wait and resume on reactivation |
 | Cleanup | a delivered row's `sP` delete rides the author's next space write, so delivery costs no PUT |
@@ -144,7 +151,7 @@ or a takeover. The sending side lives in memory on the shard's owner.
 - title: Check the rev
   body: "`repoRev` more than 5 min in the future gets `FutureRev`. The writer must pass the space's policy: under `memberspace` `publicWrite` or a member with `write`, under `managedspace` the managing app (`checkUserAccess` with `access=write`, no `clientId`), under `personalspace` only the authority."
 - title: Sequence it on the authority's worker
-  body: "A `repoRev` below the writer's last one is a no-op, and so is the same `repoRev` with the same hash, so a resent notify is harmless. The same `repoRev` with another hash is a record takedown or its reversal changing what the writer serves ([Privacy](privacy.md#takedowns)), so it's sequenced again. From another host, it's sequenced only once the writer's PDS serves a signed commit with that hash at that rev, and at most 3 times per writer and space in 10 min. The rest are dropped and left to polls. The push isn't logged either, so if the author's host crashes before it goes, syncers find out on their next poll. Otherwise the worker assigns the next `spaceRev` (a TID) and writes `sW` plus the `sQ` swap as one private entry. One worker per authority means no lock."
+  body: "A `repoRev` below the writer's last one is a no-op, and so is the same `repoRev` with the same `data`, so a resent notify is harmless. The same `repoRev` with other `data` is a record takedown or its reversal changing what the writer serves ([Privacy](privacy.md#takedowns)), so it's sequenced again. From another host, it's sequenced only once the writer's PDS serves a commit with that `data` at that rev, its MAC verified against the writer's `#atproto_kem` key (the authority reads `getLatestCommit` with a credential it issues itself), and at most 3 times per writer and space in 10 min. The rest are dropped and left to polls. The push isn't logged either, so if the author's host crashes before it goes, syncers find out on their next poll. Otherwise the worker assigns the next `spaceRev` (a TID) and writes `sW` plus the `sQ` swap as one private entry. One worker per authority means no lock."
 - title: Leave the writer set
   body: "`removeWriter`, `removeMember` and a `putMember` without write delete the writer's `sW` row and its `sQ` entry on the same worker. Nothing tells syncers, and the writer's records stay where they are. Its next write the policy allows puts it back. `updateSpace` leaves the writer set as it is."
 - title: Answer 200 once it's durable
@@ -204,11 +211,12 @@ The reference sends each forward as it's sequenced, with no order. Its syncers s
 |---|---|---|---|
 | `listRepoOps`, `since` = head | the in-memory head, no state read | 0.28 ms p50 · 0.54 ms p99 · 0.12 ms server · 0 bucket ops | 6.7 ms p50 |
 | `listRepoOps`, a delta | a range scan of `sO` from `since`, values joined from `sR` | 0.41 ms p50 · 1.9 ms p99 · 0.17 ms server | 8.3 ms |
-| `getRepo` | two streamed passes over one snapshot, under an export slot | bounded by the 100k record cap | |
+| `getRepo` | one streamed pass over one snapshot, under an export slot, as a STAR archive | bounded by the 100k record cap | |
 | `listRepos` (at the authority) | a cursor scan of `sQ` joined to `sW` | | |
 
-When a page of `listRepoOps` reaches the head it includes the commit, signed for this response. The
-syncer checks its running LtHash against the commit's hash. If they differ it falls back to
+When a page of `listRepoOps` reaches the head it includes the commit, and the response carries an
+`Atproto-Space-Mac` header for the syncer's `key_share`. The syncer checks the MAC, then its
+running LtHash against the commit's `data`. If they differ it falls back to
 `getRepo`. That's also what happens when `since` is older than the 7-day oplog window, since vlpds
 answers from the window's start and the replayed hash can't match. Numbers are client-side from the
 interop harness at `8f837fa8` (one node, MinIO).

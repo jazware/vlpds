@@ -148,29 +148,29 @@ a block fails open ([Revocation](reading.md#revocation)).
 
 No credential names a taken-down account either. A taken-down account mints no delegation tokens,
 and `getSpaceCredential` refuses a taken-down member (`AccountTakedown`) and a space whose authority
-is taken down (`RepoTakendown`). The authority's host methods (`listRepos`, `registerNotify`,
-`unregisterNotify`) refuse a credential it issued before its takedown with `RepoTakendown`. The
-reference admits all of these.
+is taken down (`RepoTakendown`) or deactivated (`RepoDeactivated`). `listRepos` answers the same for
+such an authority, a credential it issued before its takedown included. Notifies and registrations
+still land, so its writer state stays current.
 
 The reference has no record takedown for space data at all, so record takedowns are a vlpds
 extension. The record stays in sR, and the LtHash stored with the head keeps it, the way a
 taken-down public record stays in the signed repo.
 
 ```timeline
-caption: "The takedown-adjusted view. While a takedown lasts, every read signs a commit over the repo without the record, so a syncer that held it sees a mismatch at the same rev, refetches and converges. A reversal flips it back the same way."
+caption: "The takedown-adjusted view. While a takedown lasts, every read MACs a commit over the repo without the record, so a syncer that held it sees a mismatch at the same rev, refetches and converges. A reversal flips it back the same way."
 scale: 46
 lanes:
   - { id: op, label: Operator, tone: muted }
   - { id: pds, label: Author's PDS, sub: vlpds, tone: accent }
   - { id: s, label: Syncer, sub: held the record, tone: blue }
 spans:
-  - { lane: pds, from: 1.4, to: 5.0, label: adjusted commit, dur: "set hash − the record" }
+  - { lane: pds, from: 1.4, to: 5.0, label: adjusted commit, dur: "data − the record" }
   - { lane: s, from: 5.6, to: 7.4, label: mismatch, tone: danger }
   - { lane: pds, from: 9.6, to: 13.4, label: getRepo without it }
 arrows:
   - { from: op, to: pds, at: 0.6, label: take down record }
   - { from: s, to: pds, at: 1.2, side: left, label: listRepoOps, tone: blue }
-  - { from: pds, to: s, at: 5.3, label: "same rev, new hash", tone: blue }
+  - { from: pds, to: s, at: 5.3, label: "same rev, new data", tone: blue }
   - { from: s, to: pds, at: 8.8, label: getRepo, tone: blue }
   - { from: pds, to: s, at: 13.6, side: left, label: verified repo, tone: blue }
 marks:
@@ -178,15 +178,15 @@ marks:
 ```
 
 The adjusted view is cheap because a repo's taken-down set is tiny. The set hash is the LtHash state
-minus the taken-down records' elements, and the commit is signed at serve time like every other one.
+minus the taken-down records' elements, and the commit is built and MACed at serve time like every other one.
 `listRepoOps` leaves the record's ops out while the takedown lasts, so the incremental and the full
 views agree.
 
 A syncer doesn't have to poll to find out. When a record is taken down or the takedown is reversed,
-the author's host sends its authority a notify at the same rev with the hash it now serves, and the
-authority sequences it like any other. So `listRepos` shows the new hash within a few milliseconds
+the author's host sends its authority a notify at the same rev with the `data` it now serves, and the
+authority sequences it like any other. So `listRepos` shows the new `data` within a few milliseconds
 (~1 ms for a takedown in the tests), and every registered syncer gets a forward with the same rev
-and a different hash. That's the spec's signal to fall back to `getRepo`. The rev doesn't move,
+and different `data`. That's the spec's signal to fall back to `getRepo`. The rev doesn't move,
 since nothing was written. The push isn't logged, so if the author's host crashes before it goes,
 syncers find out on their next poll instead. Every notify works out the served hash when it's sent,
 so a resent row never puts the old hash back at the authority. An authority's own records work the
@@ -196,8 +196,8 @@ Every such forward sends each syncer to a full `getRepo`, and any writer's host 
 its own accounts. So a host could repeat its current rev with made-up hashes and make every syncer
 of the space refetch the whole repo, again and again. An authority checks a same-rev notify from
 another host before it sequences one. It reads the writer's `getLatestCommit` from the writer's PDS
-with a credential it issues itself, and sequences the notify only if that commit verifies against
-the writer's key at that rev with the notified hash. A notify it can't confirm (a made-up hash, or a
+with a credential it issues itself, and sequences the notify only if that commit's MAC verifies against
+the writer's `#atproto_kem` key and it names that rev and the notified `data`. A notify it can't confirm (a made-up hash, or a
 host that doesn't answer within 5 s) is acknowledged and dropped, and polls catch a real one up. It
 also checks at most 3 of them per writer and space in 10 min and drops the rest unchecked, so a
 host can't make it fetch at will either. Both show up in `vlpds_space_notify_total{hop="in"}` as
