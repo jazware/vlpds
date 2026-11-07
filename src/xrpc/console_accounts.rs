@@ -34,6 +34,7 @@ async fn get_account_keys(State(app): AppState, Auth(creds): Auth, Query(q): Que
     let mut out = json!({
         "did": did,
         "signingKey": acct.signing_pubkey,
+        "kemKey": acct.kem_pubkey,
         "pendingSigningKey": acct.pending_signing_key.as_ref().map(|p| p.pubkey.clone()),
     });
     match app.did_resolver.resolve(did).await {
@@ -44,12 +45,16 @@ async fn get_account_keys(State(app): AppState, Auth(creds): Auth, Query(q): Que
                 .flatten()
                 .map(|m| {
                     let key = m["publicKeyMultibase"].as_str();
+                    let held = match m["id"].as_str().is_some_and(|id| id.ends_with("#atproto_kem")) {
+                        true => acct.kem_pubkey.as_deref(),
+                        false => Some(acct.signing_pubkey.as_str()),
+                    };
                     json!({
                         "id": m["id"],
                         "type": m["type"],
                         "controller": m["controller"],
                         "publicKeyMultibase": key,
-                        "matchesAccount": key == Some(acct.signing_pubkey.as_str()),
+                        "matchesAccount": key.is_some() && key == held,
                     })
                 })
                 .collect();

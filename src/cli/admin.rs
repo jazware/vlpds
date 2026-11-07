@@ -80,8 +80,8 @@ pub enum Cmd {
         #[arg(long)]
         file: Option<PathBuf>,
     },
-    /// Make each DID's PLC `atproto` key the signing key this PDS holds,
-    /// then re-sign the repo and emit #identity + #sync (script
+    /// Make each DID's PLC `atproto` key the signing key this PDS holds
+    /// (and `atproto_kem` its KEM key, if it has one), then re-sign the repo and emit #identity + #sync (script
     /// rotate-keys). `--generate`: rotate to a fresh signing key instead
     /// (admin updateAccountSigningKey, which re-signs too).
     RotateKeys {
@@ -572,8 +572,8 @@ pub async fn run(cmd: Cmd, opts: &Opts, out: &mut dyn Write) -> Result<()> {
                     }
                     let r = c.post("vlpds.admin.publishIdentity", &json!({"did": did, "syncPlc": true})).await?;
                     let what = match r["plcUpdated"].as_bool() {
-                        Some(true) => "PLC signing key updated, repo re-signed, identity published",
-                        Some(false) => "PLC signing key already current, repo re-signed, identity published",
+                        Some(true) => "PLC keys updated, repo re-signed, identity published",
+                        Some(false) => "PLC keys already current, repo re-signed, identity published",
                         None => "not a did:plc (nothing to update), repo re-signed, identity published",
                     };
                     Ok((format!("{did}: {what}"), r))
@@ -591,7 +591,7 @@ pub async fn run(cmd: Cmd, opts: &Opts, out: &mut dyn Write) -> Result<()> {
             per_node(&c, node_only, opts, out, "vlpds.admin.ensureRecoveryKey", body, &cols).await
         }
         Cmd::RewrapSecrets { dry_run, check_versions, node_only } => {
-            let cols = ["accounts", "stale", "signingKeys", "totpSecrets", "reservedKeys", "failed"];
+            let cols = ["accounts", "stale", "signingKeys", "kemKeys", "totpSecrets", "reservedKeys", "failed"];
             let body = json!({"dryRun": dry_run, "checkVersions": check_versions});
             per_node(&c, node_only, opts, out, "vlpds.admin.rewrapSecrets", body, &cols).await
         }

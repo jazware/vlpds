@@ -1715,6 +1715,26 @@ fn with_coverage(coverage: J, mut res: J) -> J {
     res
 }
 
+/// Whether `blob` is stale, and its rewrap unless a dry run. With
+/// `check` false a blob under the current kid counts as current unopened.
+async fn rewrap_blob(
+    app: &App,
+    purpose: crate::secrets::Purpose,
+    did: &str,
+    blob: &str,
+    check: bool,
+    dry: bool,
+) -> XResult<(bool, Option<String>)> {
+    if !check && app.secrets.is_current(blob) {
+        return Ok((false, None));
+    }
+    if dry {
+        return Ok((app.secrets.unwrap(purpose, did, blob).await?.stale, None));
+    }
+    let new = app.secrets.rewrap(purpose, did, blob).await?;
+    Ok((new.is_some(), new))
+}
+
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct RewrapIn {
@@ -1729,7 +1749,7 @@ struct RewrapIn {
     actor: Option<String>,
 }
 
-/// Rewraps this node's secrets at rest (signing keys, reserved keys, TOTP)
+/// Rewraps this node's secrets at rest (signing and KEM keys, reserved keys, TOTP)
 /// under the current KEK (DESIGN.md "Secrets at rest"). Idempotent. Audited
 /// per node with the counts and the KEK's id unless a dry run.
 async fn rewrap_secrets(
@@ -1746,49 +1766,56 @@ async fn rewrap_secrets(
     app.secrets.refresh_versions().await?;
     let started = std::time::Instant::now();
     let (parts, coverage) = scan_set(&app, &inp.shards);
-    let dids: Vec<(String, String)> =
-        accounts_of(&parts).await?.into_iter().map(|a| (a.did, a.wrapped_signing_key)).collect();
+    let dids: Vec<(String, String, Option<String>)> =
+        accounts_of(&parts).await?.into_iter().map(|a| (a.did, a.wrapped_signing_key, a.wrapped_kem_key)).collect();
     let (accounts, check, dry) = (dids.len(), inp.check_versions, inp.dry_run);
     let app2 = app.clone();
-    // (stale signing key, stale TOTP, error, blobs stored afterwards)
-    let results: Vec<(bool, bool, Option<String>, Vec<String>)> = futures::stream::iter(dids)
-        .map(|(did, blob)| {
+    // (stale signing key, stale KEM key, stale TOTP, error, blobs stored afterwards)
+    let results: Vec<(bool, bool, bool, Option<String>, Vec<String>)> = futures::stream::iter(dids)
+        .map(|(did, blob, kem_blob)| {
             let app = app2.clone();
             async move {
                 let mut kept = vec![blob.clone()];
-                let r: XResult<(bool, bool)> = async {
-                    let key_stale = if !check && app.secrets.is_current(&blob) {
-                        false
-                    } else if dry {
-                        app.secrets.unwrap(Purpose::SigningKey, &did, &blob).await?.stale
-                    } else {
-                        match app.secrets.rewrap(Purpose::SigningKey, &did, &blob).await? {
-                            None => false,
-                            Some(new) => {
-                                kept = vec![new.clone()];
-                                update_account(&app, &did, false, false, move |a| {
-                                    // unless rotated meanwhile
-                                    if a.wrapped_signing_key == blob {
-                                        a.wrapped_signing_key = new;
-                                    }
-                                    Ok(())
-                                })
-                                .await?;
-                                true
+                kept.extend(kem_blob.clone());
+                let r: XResult<(bool, bool, bool)> = async {
+                    let (key_stale, new) = rewrap_blob(&app, Purpose::SigningKey, &did, &blob, check, dry).await?;
+                    if let Some(new) = new {
+                        kept[0] = new.clone();
+                        update_account(&app, &did, false, false, move |a| {
+                            // unless rotated meanwhile
+                            if a.wrapped_signing_key == blob {
+                                a.wrapped_signing_key = new;
                             }
+                            Ok(())
+                        })
+                        .await?;
+                    }
+                    let mut kem_stale = false;
+                    if let Some(kem_blob) = kem_blob {
+                        let (stale, new) = rewrap_blob(&app, Purpose::KemKey, &did, &kem_blob, check, dry).await?;
+                        kem_stale = stale;
+                        if let Some(new) = new {
+                            kept[1] = new.clone();
+                            update_account(&app, &did, false, false, move |a| {
+                                if a.wrapped_kem_key.as_ref() == Some(&kem_blob) {
+                                    a.wrapped_kem_key = Some(new);
+                                }
+                                Ok(())
+                            })
+                            .await?;
                         }
-                    };
+                    }
                     let (totp_stale, totp_blobs) = crate::totp::rewrap(&app, &did, check, dry).await?;
                     // rewritten ones are under the latest version
                     if !totp_stale || dry {
                         kept.extend(totp_blobs);
                     }
-                    Ok((key_stale, totp_stale))
+                    Ok((key_stale, kem_stale, totp_stale))
                 }
                 .await;
                 match r {
-                    Ok((k, t)) => (k, t, None, kept),
-                    Err(e) => (false, false, Some(format!("{did}: {}", e.message)), kept),
+                    Ok((k, m, t)) => (k, m, t, None, kept),
+                    Err(e) => (false, false, false, Some(format!("{did}: {}", e.message)), kept),
                 }
             }
         })
@@ -1796,7 +1823,7 @@ async fn rewrap_secrets(
         .collect()
         .await;
     let mut errors: Vec<String> = Vec::new();
-    let (mut keys, mut totp) = (0u64, 0u64);
+    let (mut keys, mut kem_keys, mut totp) = (0u64, 0u64, 0u64);
     // kid -> the lowest key version still stored, for min_decryption_version
     let mut min_versions: std::collections::BTreeMap<String, u64> = Default::default();
     let mut note_version = |blob: &str| {
@@ -1804,8 +1831,9 @@ async fn rewrap_secrets(
             min_versions.entry(kid).and_modify(|m| *m = (*m).min(v)).or_insert(v);
         }
     };
-    for (k, t, e, kept) in results {
+    for (k, m, t, e, kept) in results {
         keys += k as u64;
+        kem_keys += m as u64;
         totp += t as u64;
         errors.extend(e);
         kept.iter().for_each(|b| note_version(b));
@@ -1849,10 +1877,11 @@ async fn rewrap_secrets(
         super::federated::rewrap_provider_secrets(&app, check, dry).await;
     provider_blobs.iter().for_each(|b| note_version(b));
     errors.extend(provider_errors);
-    let stale = keys + totp + reserved + providers;
+    let stale = keys + kem_keys + totp + reserved + providers;
     tracing::info!(
         accounts,
         signing_keys = keys,
+        kem_keys,
         totp,
         reserved,
         providers,
@@ -1866,7 +1895,7 @@ async fn rewrap_secrets(
     errors.truncate(20);
     if !dry {
         let detail = json!({
-            "kek": app.secrets.current_kid(), "accounts": accounts, "signingKeys": keys, "totpSecrets": totp,
+            "kek": app.secrets.current_kid(), "accounts": accounts, "signingKeys": keys, "kemKeys": kem_keys, "totpSecrets": totp,
             "reservedKeys": reserved, "providerSecrets": providers, "failed": failed, "shards": coverage["scanned"].as_array().map_or(0, Vec::len),
         });
         let who = Who::of(&creds, inp.actor.as_deref(), ip);
@@ -1881,6 +1910,7 @@ async fn rewrap_secrets(
             // stale secrets found (dry run) or rewrapped
             "stale": stale,
             "signingKeys": keys,
+            "kemKeys": kem_keys,
             "totpSecrets": totp,
             "reservedKeys": reserved,
             "providerSecrets": providers,

@@ -208,6 +208,8 @@ fn account() -> vlpds::state::Account {
         email_confirmed: true,
         repo_gen: 2,
         pending_signing_key: None,
+        wrapped_kem_key: None,
+        kem_pubkey: None,
         extra: Default::default(),
     };
     a.extra.insert(

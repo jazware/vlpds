@@ -3608,7 +3608,7 @@ $0.02/GB): verify before relying on them. Restore times assume
 server-side clones and replay at bench rates; none of it is measured.
 
 ### Signing keys
-Signing keys, reserved keys and TOTP secrets are stored only wrapped under
+Signing keys, KEM keys, reserved keys and TOTP secrets are stored only wrapped under
 the KEK ("Secrets at rest"), in account rows (`a/{did}`) and private state,
 and so in log segments, SSTs and every backup copy of them. A backup alone
 no longer lets its reader sign as any user. What it still holds: argon2id
@@ -5168,6 +5168,7 @@ effect at the next segment). Not built yet: everything under "Later".
 | Writer claim | `writers/{w:03}` | none | n/a |
 | Retention report | `retain/{log_id}`, `retention::Report` | none | **(built)** `#[serde(default)]` (written by its log's owner only; no `extra`) |
 | Global claims | `handle/{h}`, `email/{sha256}`, `fedid/{sha256}` (level 2) | none (existence + small body) | n/a |
+| KEM backfill records | `kem-backfill/{id:010}` (`kem_backfill.rs`) | none (existence; `completedAt` for operators) | n/a |
 | Sign-in providers | `config/signin-providers.json`, `federated::config::Doc` (level 2) | `version` = CAS revision | serde drops unknown fields on read; the save endpoint is strict |
 | Blobs | `blob/{did}/{cid}`, `blob-gc/`, `blob-tmp/` | content-addressed | n/a |
 | Rate-limit config | `config/ratelimits.json`, `ratelimit/config.rs` `Doc` | `version` = CAS revision; `deny_unknown_fields` on save | **(built)** the stored object is read with `parse_stored`: unknown fields dropped with a warning, the rest applies; the save endpoint stays strict |

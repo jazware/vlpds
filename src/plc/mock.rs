@@ -206,7 +206,7 @@ mod tests {
         let m = MockPlc::start().await;
         let plc = Plc::new(&m.url, Arc::new(Keypair::generate()), None);
         let signing = Keypair::generate().did_key();
-        let (did, op) = plc.genesis(&signing, "alice.test", "https://pds.example", None).unwrap();
+        let (did, op) = plc.genesis(&signing, None, "alice.test", "https://pds.example", None).unwrap();
         // a genesis op posted under another DID is refused
         let other = vlatproto::crypto::random_plc_did();
         assert!(matches!(
@@ -246,7 +246,8 @@ mod tests {
     async fn prev_race_is_rebuilt_not_lost() {
         let m = MockPlc::start().await;
         let plc = Plc::new(&m.url, Arc::new(Keypair::generate()), None);
-        let (did, op) = plc.genesis(&Keypair::generate().did_key(), "alice.test", "https://pds.example", None).unwrap();
+        let (did, op) =
+            plc.genesis(&Keypair::generate().did_key(), None, "alice.test", "https://pds.example", None).unwrap();
         plc.create(&did, &op).await.unwrap();
         let new_key = Keypair::generate().did_key();
         let raced = plc
@@ -265,5 +266,41 @@ mod tests {
         // a refusal with the log unchanged is final
         m.fail_posts(1, 400);
         assert!(matches!(plc.update_handle(&did, "carol.test").await, Err(crate::plc::PlcError::Rejected { .. })));
+    }
+    /// The `#atproto_kem` key: in the genesis op, kept by every update this
+    /// PDS builds, published only where this PDS may.
+    #[tokio::test]
+    async fn kem_key_is_kept_and_published_only_where_ours() {
+        let m = MockPlc::start().await;
+        let plc = Plc::new(&m.url, Arc::new(Keypair::generate()), None);
+        let kem =
+            || format!("did:key:{}", crate::secrets::kem_multibase(&crate::secrets::generate_kem_key().public_key()));
+        let (k1, k2) = (kem(), kem());
+        assert!(crate::plc::valid_did_key(&k1), "{k1}");
+        assert!(k1.starts_with("did:key:zDn"), "{k1}");
+        let pds = "https://pds.example";
+        let (did, op) = plc.genesis(&Keypair::generate().did_key(), Some(&k1), "alice.test", pds, None).unwrap();
+        assert_eq!(op["verificationMethods"]["atproto_kem"], json!(k1));
+        plc.create(&did, &op).await.unwrap();
+        assert!(plc.update_handle(&did, "bob.test").await.unwrap());
+        assert!(plc.update_signing_key(&did, &Keypair::generate().did_key()).await.unwrap());
+        assert_eq!(m.data(&did).unwrap()["verificationMethods"]["atproto_kem"], json!(k1), "kept");
+        let doc = crate::plc::format_did_doc(&m.data(&did).unwrap());
+        assert!(doc["verificationMethod"].as_array().unwrap().iter().any(|v| v["id"] == format!("{did}#atproto_kem")
+            && v["publicKeyMultibase"] == k1.strip_prefix("did:key:").unwrap()));
+        assert!(plc.publish_kem_key(&did, &k2, pds).await.unwrap());
+        assert_eq!(m.data(&did).unwrap()["verificationMethods"]["atproto_kem"], json!(k2));
+        let n = m.ops(&did).len();
+        assert!(plc.publish_kem_key(&did, &k2, pds).await.unwrap(), "already so");
+        assert_eq!(m.ops(&did).len(), n, "nothing submitted");
+        // migrated to another PDS, not ours, unregistered, not a did:plc
+        assert!(!plc.publish_kem_key(&did, &k1, "https://elsewhere.example").await.unwrap());
+        let stranger = Plc::new(&m.url, Arc::new(Keypair::generate()), None);
+        assert!(!stranger.publish_kem_key(&did, &k1, pds).await.unwrap());
+        assert!(!plc.publish_kem_key(&vlatproto::crypto::random_plc_did(), &k1, pds).await.unwrap());
+        assert!(!plc.publish_kem_key("did:web:alice.example", &k1, pds).await.unwrap());
+        assert_eq!(m.ops(&did).len(), n);
+        plc.tombstone(&did).await.unwrap();
+        assert!(!plc.publish_kem_key(&did, &k1, pds).await.unwrap());
     }
 }

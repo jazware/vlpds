@@ -26,8 +26,8 @@ fn not_found(did: &str) -> XrpcError {
 #[serde(rename_all = "camelCase")]
 struct PublishIdentityIn {
     did: String,
-    /// First make the DID's PLC `atproto` key the signing key held here (the
-    /// reference's rotate-keys).
+    /// First make the DID's PLC `atproto` key the signing key held here, and
+    /// `atproto_kem` its KEM key if it has one (the reference's rotate-keys).
     #[serde(default)]
     sync_plc: bool,
     actor: Option<String>,
@@ -67,7 +67,13 @@ async fn publish_identity(
     let mut plc_updated = J::Null;
     if did.starts_with("did:plc:") {
         let plc = app.plc.as_ref().ok_or_else(|| invalid("PLC registration is off on this PDS"))?;
-        plc_updated = json!(plc.update_signing_key(&did, &format!("did:key:{}", acct.signing_pubkey)).await?);
+        let signing = format!("did:key:{}", acct.signing_pubkey);
+        let kem = acct.kem_pubkey.as_ref().map(|k| format!("did:key:{k}"));
+        let keys: Vec<(&str, &str)> = [("atproto", Some(signing.as_str())), (crate::plc::KEM_METHOD, kem.as_deref())]
+            .into_iter()
+            .filter_map(|(id, k)| Some((id, k?)))
+            .collect();
+        plc_updated = json!(plc.update_keys(&did, "update_signing_key", &keys).await?);
     }
     let key = app.secrets.account_signing_key(&acct).await?;
     let head =

@@ -19,6 +19,7 @@ pub mod handle_domains;
 pub mod handle_policy;
 pub mod handle_resolver;
 pub mod http;
+pub mod kem_backfill;
 pub mod lexicon;
 pub mod mail;
 pub mod memory;

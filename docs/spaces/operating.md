@@ -115,6 +115,37 @@ approves the writes on the consent screen.
 A digest mismatch only counts once `vlpds admin check-space` runs, so run it on a space or two at the
 end of the day.
 
+### KEM keys
+
+Syncers derive each MAC secret from the author's `#atproto_kem` key, a P-256 key in the DID
+document next to `#atproto`. With `--spaces`, a new account gets one in its genesis PLC op, and an
+account moving in gets its own at `createAccount`. `getRecommendedDidCredentials` carries it into
+the migration's PLC op, and `submitPlcOperation` refuses an op that names another key ("Incorrect
+KEM key"). The key is wrapped under the KEK like the signing key, so `rewrap-secrets` covers it,
+and `rotate-keys` republishes it with the signing key.
+
+Accounts made before have none. About 30 s after a node starts with `--spaces`, it backfills the
+shards it owns, once:
+
+| Account | What the node does |
+|---|---|
+| A did:plc that lists one of this server's rotation keys and names this node as its PDS | Publishes the key in one PLC op and sequences `#identity` |
+| A did:web, a did:plc without our rotation key, or one that moved to another PDS | Stores the key and logs `cannot publish kem key, account must update its did doc` with the DID |
+
+Expect one PLC op and one `#identity` per account in the first row. A shard is recorded done in
+`kem-backfill/<shard>` in the bucket once a pass over it has no failures, and no node scans it
+again. Failures, like a PLC outage, are retried after 30 s, backing off to every 10 min. The node
+logs `kem key backfill complete` once its shards are done, and
+`vlpds_kem_backfill_accounts_total{result}` counts `published`, `unpublished` and `failed`. Until
+an account's key is published, syncers can't verify its space repos.
+
+For an account in the second row, the owner adds the key to the DID document as a `Multikey`
+method with id `#atproto_kem`, using `verificationMethods.atproto_kem` from
+`getRecommendedDidCredentials`.
+
+A node without `--spaces` makes no KEM keys and deletes the `kem-backfill/` records when it starts,
+so the next start with the flag looks for accounts without a key again. Published keys stay.
+
 ### Turning it back off
 
 Set `vlpds_spaces: false` and deploy again. That's another graceful restart, and it's safe on the
@@ -208,6 +239,7 @@ also takes that much room from the memory plan's space exports. The room fits 4 
 | `vlpds_space_repos` | space repos in this node's shards, counted by the oplog retention sweep every ~6 h |
 | `vlpds_space_imports_total{result}` | `vlpds.space.importRepo` calls: `ok`, `refused` (a bad CAR, signature or hash), `error` |
 | `vlpds_space_operator_reads_total{method}` | audited operator reads of space data |
+| `vlpds_kem_backfill_accounts_total{result}` | accounts the KEM key backfill gave a key: `published`, `unpublished` (the owner must publish it), `failed` (retried) |
 
 The internals dashboard has a Spaces row built from these: writes, write → notify ack, outbox rows and
 oldest row per node, notifies by hop and their failure ratio, `listRepoOps` noop vs scan and its

@@ -1407,7 +1407,7 @@ pub(super) struct CreateAccountIn {
 /// generate; activation and checkAccountStatus check the resolved one.
 pub(super) const EXTERNAL_DID: &str = "externalDid";
 
-pub(super) fn has_external_did(a: &Account) -> bool {
+pub(crate) fn has_external_did(a: &Account) -> bool {
     a.extra.get(EXTERNAL_DID).and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
@@ -1536,6 +1536,9 @@ async fn create_account_checked(
         }
     }
     let key = Arc::new(Keypair::generate());
+    // with --spaces only, so a node without Spaces publishes no Spaces key
+    let kem = app.config.spaces.then(crate::secrets::generate_kem_key);
+    let kem_did_key = kem.as_ref().map(|k| format!("did:key:{}", crate::secrets::kem_multibase(&k.public_key())));
     let mut genesis: Option<(Arc<crate::plc::Plc>, J)> = None;
     let (did, external) = match inp.did.as_deref() {
         Some(d) => {
@@ -1556,7 +1559,8 @@ async fn create_account_checked(
             ensure_service_handle(app, &handle, false)?;
             match &app.plc {
                 Some(plc) => {
-                    let (did, op) = app.mint_plc_did(plc, &key.did_key(), &handle, recovery_key)?;
+                    let (did, op) =
+                        app.mint_plc_did(plc, &key.did_key(), kem_did_key.as_deref(), &handle, recovery_key)?;
                     genesis = Some((plc.clone(), op));
                     (did, false)
                 }
@@ -1599,13 +1603,17 @@ async fn create_account_checked(
             None => Ok(true),
         }
     };
-    let (h, e, password_hash, wrapped, f) = tokio::join!(
-        claim_handle(app, &handle, &did),
-        claim_email(app, &email, &did),
-        hash,
-        app.secrets.wrap_signing_key(&did, &key),
-        fed_claim
-    );
+    let wrap_keys = async {
+        let (signing, kem) = tokio::join!(app.secrets.wrap_signing_key(&did, &key), async {
+            match &kem {
+                Some(k) => app.secrets.wrap_kem_key(&did, k).await.map(Some),
+                None => Ok(None),
+            }
+        });
+        Ok::<_, crate::secrets::SecretError>((signing?, kem?))
+    };
+    let (h, e, password_hash, wrapped, f) =
+        tokio::join!(claim_handle(app, &handle, &did), claim_email(app, &email, &did), hash, wrap_keys, fed_claim);
     let (h_ok, e_ok) = (matches!(h, Ok(true)), matches!(e, Ok(true)));
     match f {
         Ok(true) => {}
@@ -1623,7 +1631,7 @@ async fn create_account_checked(
         // Argon2 saturated: 503 Overloaded, the claims released below
         Err(_) => Err(XrpcError::from(state::Argon2Busy)),
     };
-    let (wrapped_signing_key, signing_pubkey) = match wrapped {
+    let ((wrapped_signing_key, signing_pubkey), kem_wrapped) = match wrapped {
         Ok(w) => w,
         Err(err) => {
             release(h_ok, e_ok, claim).await;
@@ -1668,6 +1676,8 @@ async fn create_account_checked(
         handle: handle.clone(),
         wrapped_signing_key,
         signing_pubkey,
+        wrapped_kem_key: kem_wrapped.as_ref().map(|k| k.0.clone()),
+        kem_pubkey: kem_wrapped.map(|k| k.1),
         created_at: vlatproto::events::now_rfc3339(),
         email: Some(email.clone()),
         email_confirmed: inp.email_confirmed && federated.is_some(),

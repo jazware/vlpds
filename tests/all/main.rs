@@ -92,6 +92,7 @@ mod invertible_ops;
 mod invite_codes;
 mod invites_optional;
 mod join_follow;
+mod kem_keys;
 mod key_rotation;
 mod lexicons;
 mod link_previews;

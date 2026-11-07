@@ -94,6 +94,8 @@ pub enum Purpose {
     PlcRotationKey,
     /// A sign-in provider's client secret or key. Subject: the provider id.
     SignInProviderSecret,
+    /// An account's `#atproto_kem` key. Subject: the DID.
+    KemKey,
 }
 
 impl Purpose {
@@ -104,6 +106,7 @@ impl Purpose {
             Purpose::Totp => "totp-secret",
             Purpose::PlcRotationKey => "plc-rotation-key",
             Purpose::SignInProviderSecret => "sign-in-provider-secret",
+            Purpose::KemKey => "space-kem-key",
         }
     }
 }
@@ -672,23 +675,23 @@ const CACHE_SHARDS: usize = 16;
 
 /// An entry is valid only for the public key it was validated against, so a
 /// key rotation misses.
-struct KeyCache {
-    shards: Vec<KeyShard>,
+struct KeyCache<K = Keypair> {
+    shards: Vec<KeyShard<K>>,
 }
 
 /// DID -> (public multibase, unwrapped key).
-type KeyShard = parking_lot::Mutex<lru::LruCache<Arc<str>, (Arc<str>, Arc<Keypair>)>>;
+type KeyShard<K> = parking_lot::Mutex<lru::LruCache<Arc<str>, (Arc<str>, Arc<K>)>>;
 
-impl KeyCache {
-    fn new() -> KeyCache {
+impl<K> KeyCache<K> {
+    fn new() -> KeyCache<K> {
         KeyCache { shards: (0..CACHE_SHARDS).map(|_| parking_lot::Mutex::new(lru::LruCache::unbounded())).collect() }
     }
 
-    fn shard(&self, did: &str) -> &KeyShard {
+    fn shard(&self, did: &str) -> &KeyShard<K> {
         &self.shards[(crate::state::did_hash(did) % CACHE_SHARDS as u64) as usize]
     }
 
-    fn get(&self, did: &str, pubkey: &str) -> Option<Arc<Keypair>> {
+    fn get(&self, did: &str, pubkey: &str) -> Option<Arc<K>> {
         let mut s = self.shard(did).lock();
         match s.get(did) {
             Some((pk, k)) if &**pk == pubkey => Some(k.clone()),
@@ -696,7 +699,9 @@ impl KeyCache {
         }
     }
 
-    fn put(&self, did: &str, pubkey: &str, key: Arc<Keypair>) {
+    /// The KEM cache shares the signing keys' cap: an account has at most
+    /// one of each.
+    fn put(&self, did: &str, pubkey: &str, key: Arc<K>) {
         let cap = (crate::caches::cap(crate::caches::Cache::SigningKeys) / CACHE_SHARDS).max(1);
         let mut s = self.shard(did).lock();
         s.put(did.into(), (pubkey.into(), key));
@@ -717,7 +722,7 @@ impl KeyCache {
     }
 }
 
-impl crate::caches::Len for KeyCache {
+impl<K: Send + Sync> crate::caches::Len for KeyCache<K> {
     fn len(&self) -> usize {
         self.shards.iter().map(|s| s.lock().len()).sum()
     }
@@ -728,6 +733,7 @@ pub struct Secrets {
     wrappers: Vec<Arc<dyn KeyWrapper>>,
     dev_kek: bool,
     keys: Arc<KeyCache>,
+    kem_keys: KeyCache<p256::SecretKey>,
     permits: tokio::sync::Semaphore,
     wrap_permits: tokio::sync::Semaphore,
     /// Coalesce concurrent cold unwraps of one DID.
@@ -761,6 +767,7 @@ impl Secrets {
             wrappers,
             dev_kek: false,
             keys,
+            kem_keys: KeyCache::new(),
             permits: tokio::sync::Semaphore::new(n),
             wrap_permits: tokio::sync::Semaphore::new(wrap_concurrency(n)),
             stripes: (0..256).map(|_| tokio::sync::Mutex::new(())).collect(),
@@ -1021,9 +1028,61 @@ impl Secrets {
         self.signing_key(&a.did, &a.wrapped_signing_key, &a.signing_pubkey).await
     }
 
+    /// Also caches it. Returns (wrapped, public multibase).
+    pub async fn wrap_kem_key(&self, did: &str, key: &p256::SecretKey) -> Result<(String, String), SecretError> {
+        let raw = Zeroizing::new(key.to_bytes().to_vec());
+        let wrapped = self.wrap(Purpose::KemKey, did, &raw).await?;
+        let pubkey = kem_multibase(&key.public_key());
+        self.kem_keys.put(did, &pubkey, Arc::new(key.clone()));
+        Ok((wrapped, pubkey))
+    }
+
+    /// None when the account has no KEM key. Unwrapped at most once per DID
+    /// at a time, and checked against the row's public key.
+    pub async fn account_kem_key(
+        &self,
+        a: &crate::state::Account,
+    ) -> Result<Option<Arc<p256::SecretKey>>, SecretError> {
+        let (Some(wrapped), Some(pubkey)) = (&a.wrapped_kem_key, &a.kem_pubkey) else { return Ok(None) };
+        let did = a.did.as_str();
+        if let Some(k) = self.kem_keys.get(did, pubkey) {
+            return Ok(Some(k));
+        }
+        let _g = self.stripes[(crate::state::did_hash(did) % self.stripes.len() as u64) as usize].lock().await;
+        if let Some(k) = self.kem_keys.get(did, pubkey) {
+            return Ok(Some(k));
+        }
+        let u = self.unwrap(Purpose::KemKey, did, wrapped).await?;
+        let key = p256::SecretKey::from_slice(&u.plaintext)
+            .map_err(|e| SecretError::Rejected(format!("KEM key of {did}: {e}")))?;
+        if kem_multibase(&key.public_key()) != *pubkey {
+            return Err(SecretError::Rejected(format!("KEM key of {did} does not match its public key")));
+        }
+        let key = Arc::new(key);
+        self.kem_keys.put(did, pubkey, key.clone());
+        Ok(Some(key))
+    }
+
     pub fn forget(&self, did: &str) {
         self.keys.remove(did);
+        self.kem_keys.remove(did);
     }
+}
+
+/// A fresh `#atproto_kem` key: a dedicated P-256 keypair, never the signing
+/// key.
+pub fn generate_kem_key() -> p256::SecretKey {
+    use p256::elliptic_curve::Generate;
+    p256::SecretKey::generate()
+}
+
+/// The atproto multikey of a P-256 public key: `z` + base58btc of the
+/// p256-pub multicodec and the compressed point.
+pub fn kem_multibase(pk: &p256::PublicKey) -> String {
+    use p256::elliptic_curve::sec1::ToSec1Point;
+    let mut mk = vec![0x80, 0x24];
+    mk.extend_from_slice(pk.to_sec1_point(true).as_bytes());
+    format!("z{}", bs58::encode(mk).into_string())
 }
 
 fn parse_blob(blob: &str) -> Result<(&str, Vec<u8>), SecretError> {
@@ -1121,6 +1180,34 @@ mod tests {
         // a cached key isn't served for another public key (rotated)
         let _ = s.signing_key("did:plc:c", &w, &pk).await.unwrap();
         assert!(s.keys.get("did:plc:c", &other).is_none());
+    }
+
+    #[tokio::test]
+    async fn kem_key_wrap_cache_and_binding() {
+        let s = ring(&[&KekBytes::random()]);
+        let key = generate_kem_key();
+        let (w, pk) = s.wrap_kem_key("did:plc:k", &key).await.unwrap();
+        assert!(pk.starts_with("zDn"), "{pk}");
+        let mut a = crate::state::Account { did: "did:plc:k".into(), ..Default::default() };
+        assert!(s.account_kem_key(&a).await.unwrap().is_none(), "no key");
+        a.wrapped_kem_key = Some(w.clone());
+        a.kem_pubkey = Some(pk.clone());
+        let k1 = s.account_kem_key(&a).await.unwrap().unwrap();
+        assert_eq!(k1.to_bytes(), key.to_bytes());
+        s.kem_keys.clear();
+        let k2 = s.account_kem_key(&a).await.unwrap().unwrap();
+        assert_eq!(k2.to_bytes(), key.to_bytes(), "unwrapped");
+        assert!(Arc::ptr_eq(&k2, &s.account_kem_key(&a).await.unwrap().unwrap()), "then cached");
+        // bound to its purpose and DID, and to the row's public key
+        assert!(matches!(s.unwrap(Purpose::SigningKey, "did:plc:k", &w).await, Err(SecretError::Rejected(_))));
+        s.forget("did:plc:k");
+        let mut other = a.clone();
+        other.did = "did:plc:other".into();
+        assert!(matches!(s.account_kem_key(&other).await, Err(SecretError::Rejected(_))));
+        a.kem_pubkey = Some(kem_multibase(&generate_kem_key().public_key()));
+        assert!(matches!(s.account_kem_key(&a).await, Err(SecretError::Rejected(_))));
+        // the signing key's cache is another
+        assert!(s.keys.get("did:plc:k", &pk).is_none());
     }
 
     #[test]

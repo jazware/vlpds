@@ -105,7 +105,7 @@ async fn well_known_atproto_did(State(app): AppState, headers: HeaderMap) -> Res
 }
 
 pub(super) fn did_doc(app: &App, acct: &Account) -> J {
-    json!({
+    let mut doc = json!({
         "@context": ["https://www.w3.org/ns/did/v1", "https://w3id.org/security/multikey/v1", "https://w3id.org/security/suites/secp256k1-2019/v1"],
         "id": acct.did,
         "alsoKnownAs": [format!("at://{}", acct.handle)],
@@ -116,7 +116,17 @@ pub(super) fn did_doc(app: &App, acct: &Account) -> J {
             "publicKeyMultibase": acct.signing_pubkey,
         }],
         "service": [{"id": "#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": app.public_url}],
-    })
+    });
+    if let Some(kem) = &acct.kem_pubkey {
+        doc["@context"].as_array_mut().expect("an array").push(json!("https://w3id.org/security/suites/ecdsa-2019/v1"));
+        doc["verificationMethod"].as_array_mut().expect("an array").push(json!({
+            "id": format!("{}#{}", acct.did, crate::plc::KEM_METHOD),
+            "type": "Multikey",
+            "controller": acct.did,
+            "publicKeyMultibase": kem,
+        }));
+    }
+    doc
 }
 
 /// Whether the document generated here is the account's current one. It is
@@ -719,9 +729,13 @@ async fn update_did_doc_handle(app: &App, did: &str, handle: &str) -> XResult<()
 
 async fn get_recommended_did_credentials(State(app): AppState, Auth(creds): Auth) -> XResult<Json<J>> {
     let acct = app.account(creds.user_did()?).await?;
+    let mut methods = json!({"atproto": format!("did:key:{}", acct.signing_pubkey)});
+    if let Some(kem) = &acct.kem_pubkey {
+        methods[crate::plc::KEM_METHOD] = json!(format!("did:key:{kem}"));
+    }
     Ok(Json(json!({
         "alsoKnownAs": [format!("at://{}", acct.handle)],
-        "verificationMethods": {"atproto": format!("did:key:{}", acct.signing_pubkey)},
+        "verificationMethods": methods,
         // [server recovery key?, server rotation key]; none when PLC
         // registration is off (no rotation key here)
         "rotationKeys": app.plc.as_ref().map(|p| p.recommended_rotation_keys()).unwrap_or_default(),
@@ -928,6 +942,11 @@ async fn submit_plc_operation(
     }
     if op["verificationMethods"]["atproto"] != format!("did:key:{}", acct.signing_pubkey).as_str() {
         return Err(bad("Incorrect signing key"));
+    }
+    if let Some(kem) = &acct.kem_pubkey {
+        if op["verificationMethods"][crate::plc::KEM_METHOD] != format!("did:key:{kem}").as_str() {
+            return Err(bad("Incorrect KEM key"));
+        }
     }
     if !acct.handle.is_empty() && op["alsoKnownAs"].get(0) != Some(&J::String(format!("at://{}", acct.handle))) {
         return Err(bad("Incorrect handle in alsoKnownAs"));

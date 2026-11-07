@@ -20,6 +20,8 @@ pub const DEFAULT_PLC_URL: &str = "https://plc.directory";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// Of the wrapped rotation key.
 pub const ROTATION_KEY_SUBJECT: &str = "pds";
+/// The verification method syncers derive Spaces MAC secrets against.
+pub const KEM_METHOD: &str = "atproto_kem";
 /// The PLC directory's limits on an incoming operation (did-method-plc
 /// server constraints.ts).
 const MAX_OP_BYTES: usize = 4000;
@@ -42,7 +44,7 @@ const MAX_AUDIT_LOG_BYTES: usize = 4 << 20;
 static PLC_REQUESTS: LazyLock<IntCounterVec> = LazyLock::new(|| {
     register_int_counter_vec!(
         "vlpds_plc_requests_total",
-        "PLC directory requests by op (create, update_handle, update_signing_key, submit, tombstone, rotate_key, get_last_op, get_data, get_audit_log) and result (ok, rejected: 4xx; unavailable: 5xx, timeout, connection; not_found)",
+        "PLC directory requests by op (create, update_handle, update_signing_key, update_kem_key, submit, tombstone, rotate_key, get_last_op, get_data, get_audit_log) and result (ok, rejected: 4xx; unavailable: 5xx, timeout, connection; not_found)",
         &["op", "result"]
     )
     .unwrap()
@@ -58,7 +60,8 @@ static PLC_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
 });
 
 /// Ops that write to the directory: their failures alert.
-const WRITE_OPS: [&str; 6] = ["create", "update_handle", "update_signing_key", "submit", "tombstone", "rotate_key"];
+const WRITE_OPS: [&str; 7] =
+    ["create", "update_handle", "update_signing_key", "update_kem_key", "submit", "tombstone", "rotate_key"];
 
 /// Exports the write ops' counters at 0 so `increase()` sees the first failure.
 pub fn touch_metrics() {
@@ -959,10 +962,12 @@ impl Plc {
         self.recovery_did_key.iter().cloned().chain([self.did_key.clone()]).collect()
     }
 
-    /// Reference `formatDidAndPlcOp`, including its rotation key order.
+    /// Reference `formatDidAndPlcOp`, including its rotation key order, and
+    /// its `createPlcOp`: the `#atproto_kem` key beside `atproto`.
     pub fn genesis(
         &self,
         signing_did_key: &str,
+        kem_did_key: Option<&str>,
         handle: &str,
         pds: &str,
         user_recovery_key: Option<&str>,
@@ -973,7 +978,11 @@ impl Plc {
             .chain(self.recovery_did_key.clone())
             .chain([self.did_key.clone()])
             .collect();
-        let op = sign(format_atproto_op(signing_did_key, handle, pds, &rotation_keys, None), &self.key)?;
+        let mut unsigned = format_atproto_op(signing_did_key, handle, pds, &rotation_keys, None);
+        if let Some(k) = kem_did_key {
+            unsigned["verificationMethods"][KEM_METHOD] = J::String(k.to_string());
+        }
+        let op = sign(unsigned, &self.key)?;
         Ok((did_for_genesis(&op)?, op))
     }
 
@@ -1109,18 +1118,66 @@ impl Plc {
 
     /// `updateAtprotoKeyOp`. Ok(false): already that key.
     pub async fn update_signing_key(&self, did: &str, signing_did_key: &str) -> Result<bool, PlcError> {
-        self.update(did, "update_signing_key", |last| {
-            if normalize(not_tombstone(last)?)["verificationMethods"]["atproto"] == signing_did_key {
+        self.update_keys(did, "update_signing_key", &[("atproto", signing_did_key)]).await
+    }
+
+    /// Sets each (verification method id, did:key), keeping the others.
+    /// Ok(false): already so, nothing submitted.
+    pub async fn update_keys(&self, did: &str, label: &'static str, keys: &[(&str, &str)]) -> Result<bool, PlcError> {
+        self.update(did, label, |last| {
+            let vms = &normalize(not_tombstone(last)?)["verificationMethods"];
+            if keys.iter().all(|(id, k)| vms[*id] == *k) {
                 return Ok(None);
             }
             self.update_op(last, |m| {
                 let vms = m.entry("verificationMethods").or_insert_with(|| json!({}));
-                vms["atproto"] = J::String(signing_did_key.to_string());
+                for (id, k) in keys {
+                    vms[*id] = J::String(k.to_string());
+                }
                 Ok(())
             })
             .map(Some)
         })
         .await
+    }
+
+    /// Publishes `kem_did_key` as `did`'s `#atproto_kem` key when this PDS
+    /// may: a did:plc that lists one of this server's rotation keys and
+    /// names `pds` as its PDS (the reference backfill's checks). Ok(false):
+    /// it may not, and the owner must publish the key.
+    pub async fn publish_kem_key(&self, did: &str, kem_did_key: &str, pds: &str) -> Result<bool, PlcError> {
+        if !did.starts_with("did:plc:") {
+            return Ok(false);
+        }
+        let publishable = |last: &J| {
+            let n = normalize(last);
+            rotation_keys(&n).iter().any(|k| self.is_server_key(k))
+                && n["services"]["atproto_pds"]["endpoint"].as_str() == Some(pds)
+        };
+        match self.client.last_op(did).await {
+            Err(PlcError::NotFound(_)) => return Ok(false),
+            Ok(last) if last["type"] == "plc_tombstone" || !publishable(&last) => return Ok(false),
+            Ok(_) => {}
+            Err(e) => return Err(e),
+        }
+        let refused = std::sync::atomic::AtomicBool::new(false);
+        self.update(did, "update_kem_key", |last| {
+            if last["type"] == "plc_tombstone" || !publishable(last) {
+                refused.store(true, std::sync::atomic::Ordering::Relaxed);
+                return Ok(None);
+            }
+            if normalize(last)["verificationMethods"][KEM_METHOD] == kem_did_key {
+                return Ok(None);
+            }
+            self.update_op(last, |m| {
+                let vms = m.entry("verificationMethods").or_insert_with(|| json!({}));
+                vms[KEM_METHOD] = J::String(kem_did_key.to_string());
+                Ok(())
+            })
+            .map(Some)
+        })
+        .await?;
+        Ok(!refused.into_inner())
     }
 
     /// Undoes a genesis op whose account creation failed afterwards.
@@ -1274,7 +1331,7 @@ mod tests {
         let plc = Plc::new("http://127.0.0.1:1", rot.clone(), Some(recovery.clone()));
         let user = Keypair::generate().did_key();
         let signing = Keypair::generate().did_key();
-        let (did, op) = plc.genesis(&signing, "alice.test", "https://pds.example", Some(&user)).unwrap();
+        let (did, op) = plc.genesis(&signing, None, "alice.test", "https://pds.example", Some(&user)).unwrap();
         assert!(valid_plc_did(&did), "{did}");
         // reference ordering: user recovery key, server recovery key, server rotation key
         assert_eq!(rotation_keys(&op), vec![user.clone(), recovery.clone(), rot.did_key()]);
@@ -1300,7 +1357,7 @@ mod tests {
         let mut log = PlcLog::new(&did);
         log.apply(op.clone(), 1).unwrap();
         // a hedged signature: signing again gives another op and DID
-        let (did2, _) = plc.genesis(&signing, "alice.test", "https://pds.example", Some(&user)).unwrap();
+        let (did2, _) = plc.genesis(&signing, None, "alice.test", "https://pds.example", Some(&user)).unwrap();
         assert_ne!(did, did2);
         // update: prev is the CID of the last op
         let upd = plc

@@ -657,6 +657,14 @@ pub struct Account {
     /// refused meanwhile (DESIGN.md "Signing-key rotation").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_signing_key: Option<PendingSigningKey>,
+    /// The account's P-256 `#atproto_kem` key, for Spaces MACs: wrapped like
+    /// the signing key (`secrets::Purpose::KemKey`), unwrapped through
+    /// `Secrets::account_kem_key`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrapped_kem_key: Option<String>,
+    /// Multibase multikey (compressed P-256, `zDn…`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kem_pubkey: Option<String>,
     #[serde(default, flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }

@@ -37,7 +37,7 @@ pub(crate) mod proxy;
 mod ratelimits;
 mod repo;
 pub mod scheduled_deletion;
-mod server;
+pub(crate) mod server;
 mod signin;
 mod simplespace;
 pub mod space;
@@ -552,11 +552,12 @@ impl App {
         &self,
         plc: &crate::plc::Plc,
         signing_did_key: &str,
+        kem_did_key: Option<&str>,
         handle: &str,
         recovery_key: Option<&str>,
     ) -> Result<(String, serde_json::Value), XrpcError> {
         for _ in 0..10_000 {
-            let (did, op) = plc.genesis(signing_did_key, handle, &self.public_url, recovery_key)?;
+            let (did, op) = plc.genesis(signing_did_key, kem_did_key, handle, &self.public_url, recovery_key)?;
             if self.cluster.is_none() || self.partitions.for_key(&did).is_some() {
                 return Ok((did, op));
             }

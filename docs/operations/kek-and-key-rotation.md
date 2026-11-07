@@ -236,7 +236,7 @@ Runbook: "KEK provisioning", "Key service (KMS) outage".
 - title: Roll the new KEK out as current
   body: "Inside one CryptoKey, create a new version and make it primary (on Vault, `rotate` the Transit key). There's nothing to configure, since the key service still decrypts old versions. To move to another key, or from local to a key service, set `--gcp-kms-key NEW` with `--gcp-kms-old-key OLD` (or `--kek-file old.bin`). Vault works the same way with `--vault-transit-key` and `--vault-transit-old-key`. For local to local, set `--kek-file new.bin --kek-old-file old.bin`."
 - title: Rewrap
-  body: "`vlpds admin rewrap-secrets` runs `vlpds.admin.rewrapSecrets` on every node, each over the shards it owns. It covers signing keys, reserved keys and TOTP secrets. Add `--check-versions` for a version rotation inside one CryptoKey or Transit key (one decrypt per secret). It emits no events and evicts nothing. Re-run it until `failed` is 0."
+  body: "`vlpds admin rewrap-secrets` runs `vlpds.admin.rewrapSecrets` on every node, each over the shards it owns. It covers signing keys, KEM keys, reserved keys and TOTP secrets. Add `--check-versions` for a version rotation inside one CryptoKey or Transit key (one decrypt per secret). It emits no events and evicts nothing. Re-run it until `failed` is 0."
 - title: Verify
   body: "Run it with `--dry-run` until `stale` is 0 on every node. Shards that moved during the rewrap show up here."
 - title: Rewrap the PLC rotation key file
@@ -359,7 +359,8 @@ Runbook: "Operator recovery key".
 ```
 
 `vlpds admin rotate-keys --generate <did>` (admin `updateAccountSigningKey`) rotates to a fresh key. Without
-`--generate`, it re-publishes the current key to PLC and re-signs the head, like the reference's rotate-keys script.
+`--generate`, it re-publishes the current key to PLC (and the account's `#atproto_kem` key, if it has one) and re-signs
+the head, like the reference's rotate-keys script.
 Relays see commits signed with the old key, then `#identity` and `#sync`, then commits signed with the new key.
 
 A rotation interrupted between Begin and Finish (a directory or KMS outage, a crash, a shard move) stays pending with

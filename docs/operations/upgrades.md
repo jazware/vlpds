@@ -200,6 +200,15 @@ a rolling upgrade under load and check every acked write, roll upgraded nodes ba
 that vX refuses to start after a finalize. Skipping releases is fine within one major version.
 Across a major one, upgrade to each major's last release first.
 
+## Upgrading a node with `--spaces`
+
+The first start of this build with `--spaces` gives every existing account a `#atproto_kem` key,
+which syncers need for Spaces MACs. Where this node may change the account's did:plc, it publishes
+the key in one PLC op and sequences `#identity`. Expect one of each per account. It stores the key
+for the rest and logs the DIDs whose owners must publish it ([Operating Spaces](../spaces/operating.md)).
+It runs once, in the background, and needs no feature level. An older build keeps the new account
+fields, so rolling back is a redeploy.
+
 ## Upgrading from builds before 2026-10-06
 
 Builds from 2026-10-06 on store more in each repo's stats row (40 bytes, up from 24) and keep

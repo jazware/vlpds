@@ -200,7 +200,7 @@ async fn publish_identity_and_key_rotation() {
     let direct = vlpds::plc::Plc::new(&plc.url, rot.clone(), None);
     assert!(direct.update_signing_key(&a.did, &other).await.unwrap(), "diverged");
     let out = ok(admin_cli(&s.url, &["rotate-keys", &a.did]).await);
-    assert!(out.contains("PLC signing key updated"), "{out}");
+    assert!(out.contains("PLC keys updated"), "{out}");
     assert_eq!(plc.last_op(&a.did).unwrap()["verificationMethods"]["atproto"], json!(local_key(a.did.clone()).await));
     let out = ok(admin_cli(&s.url, &["rotate-keys", &a.did]).await);
     assert!(out.contains("already current"), "{out}");
