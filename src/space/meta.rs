@@ -176,7 +176,9 @@ pub fn read(bytes: &[u8]) -> Result<Archive, MetaError> {
                 }
                 let Value::Map(w) = &v else { unreachable!() };
                 let data = match get(w, "data") {
-                    Some(Value::Bytes(b)) => <[u8; 32]>::try_from(&b[..]).map_err(|_| MetaError("invalid writer: data".into()))?,
+                    Some(Value::Bytes(b)) => {
+                        <[u8; 32]>::try_from(&b[..]).map_err(|_| MetaError("invalid writer: data".into()))?
+                    }
                     _ => return err("invalid writer: data"),
                 };
                 writers.push(Writer {
@@ -215,7 +217,10 @@ mod tests {
         Archive {
             space: "at://did:plc:x/space/com.example.group/self".into(),
             policy: map(&[("$type", Value::Text("com.atproto.personalspace.policy".into()))]),
-            policy_state: vec![("com.atproto.memberspace.member/did:plc:b".into(), map(&[("read", Value::Bool(true))]))],
+            policy_state: vec![(
+                "com.atproto.memberspace.member/did:plc:b".into(),
+                map(&[("read", Value::Bool(true))]),
+            )],
             writers: vec![Writer {
                 did: "did:plc:a".into(),
                 rev: Tid::from_parts(1_790_000_000_000_000, 1),

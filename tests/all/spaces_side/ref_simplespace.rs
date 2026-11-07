@@ -83,22 +83,18 @@ async fn filters_spaces_by_space_type() {
     assert_eq!(listed, [other]);
 }
 
-/// lifecycle: "governs a space written to before createSpace"
+/// records: "refuses an authority write to its own deleted space", and
+/// one before createSpace (the reference dropped "governs a space written
+/// to before createSpace": an authority's own repo needs its space)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn governs_a_space_written_to_before_create_space() {
+async fn refuses_an_authority_write_before_create_space() {
     let net = Net::new(1).await;
-    let (alice, bob) = (net.actor("alice", 0).await, net.actor("bob", 1).await);
+    let alice = net.actor("alice", 0).await;
     let space = format!("at://{}/space/{TEST_SPACE_TYPE}/lazy", alice.did);
-    write(&alice, &space, W::new().text("lazy space")).await.ok();
-    get_space(&alice, &space).await.err(400, "SpaceNotFound");
-    put_member(&alice, &space, &bob, true, true).await.err(400, "SpaceNotFound");
-
+    write(&alice, &space, W::new().text("lazy space")).await.err(400, "SpaceNotFound");
     net.create_space(&alice, SpaceOpts { skey: Some("lazy"), ..Default::default() }).await;
-    put_member(&alice, &space, &bob, true, true).await.ok();
-    let got = get_space(&alice, &space).await.ok();
-    assert_eq!(got["readPolicy"]["$type"], json!(MEMBER_LIST));
-    assert_eq!(got["writePolicy"]["$type"], json!(MEMBER_LIST));
-    assert_eq!(all_records(&alice, &space).await.len(), 1, "the records already there stay put");
+    write(&alice, &space, W::new().text("now it exists")).await.ok();
+    assert_eq!(all_records(&alice, &space).await.len(), 1);
 }
 
 // ---------------------------------------------------------------------------

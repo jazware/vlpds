@@ -229,10 +229,6 @@ pub async fn forward(app: &App, f: &Forward, prev: Option<Tid>) -> &'static str 
     }
 }
 
-/// Reference deleteSpace's notifySpaceDeleted: best effort, one service at a
-/// time; one that misses it learns of it from `SpaceDeleted` on its next
-/// credential renewal.
-
 /// How long the authority waits on a writer's host to confirm a same-rev
 /// hash: well inside the writer's own 10 s notify timeout.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5);

@@ -365,11 +365,20 @@ mod tests {
         vlatproto::cbor::write_text(&mut b, "a");
         vlatproto::cbor::write_int(&mut b, 1);
         assert!(record_blobs("a.b.c/x", &b).is_ok());
-        // the same map with a non-minimal integer
+        // the same map with a non-minimal integer, and with its keys out of
+        // canonical order: refused whether the decoder or the re-encoding
+        // catches it
         let mut nc = Vec::new();
         vlatproto::cbor::write_map_head(&mut nc, 1);
         vlatproto::cbor::write_text(&mut nc, "a");
         nc.extend_from_slice(&[0x18, 0x01]);
-        assert!(record_blobs("a.b.c/x", &nc).unwrap_err().message.contains("canonical"));
+        assert!(record_blobs("a.b.c/x", &nc).is_err());
+        let mut unsorted = Vec::new();
+        vlatproto::cbor::write_map_head(&mut unsorted, 2);
+        for k in ["bb", "a"] {
+            vlatproto::cbor::write_text(&mut unsorted, k);
+            vlatproto::cbor::write_int(&mut unsorted, 1);
+        }
+        assert!(record_blobs("a.b.c/x", &unsorted).is_err());
     }
 }

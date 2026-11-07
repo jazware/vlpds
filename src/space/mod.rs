@@ -4,9 +4,9 @@
 //! pure, no I/O, each checked against vectors from the reference.
 //!
 //! - [`lthash`]: the space repo's homomorphic set hash.
-//! - [`commit`]: the deniable commit (ctx, MAC, signature).
-//! - [`httpsig`]: the RFC 9421 subset requests carry with a delegation
-//!   token or a space credential.
+//! - [`commit`]: the commit and its MACs.
+//! - [`httpsig`]: the RFC 9421 subset requests with a space credential
+//!   carry.
 //! - [`token`]: delegation tokens, space credentials, client attestations.
 //!
 //! Serving is behind `--spaces` (`Config::spaces`), off by default; with it
@@ -19,7 +19,10 @@
 //! - [`outbox`]: delivery of notifyWrite to space authorities.
 //! - [`host`]: the space host role (simplespace policies, notifyWrite).
 //! - [`fanout`]: forwarding of sequenced writes to registered services.
-//! - [`car`]: getRepo's streamed export.
+//! - [`star`]: STAR archives (getRepo, importRepo).
+//! - [`meta`]: the space meta archive (exportSpaceMeta, importSpaceMeta).
+//! - [`mac`]: the KEM shared secret and the MAC headers.
+//! - [`deleted`]: notifySpaceDeleted retries.
 //! - [`retention`]: pruning of oplogs past the retention window.
 //! - [`attestation`]: client attestations for `appAccess` allow lists.
 //! - [`revocations`]: revoked credentials.
@@ -48,28 +51,8 @@ pub mod token;
 
 use std::sync::Arc;
 
-/// `--space-repo-max-records`: a 100k-record repo's index block is ~6 MB.
+/// `--space-repo-max-records`.
 pub const DEFAULT_MAX_RECORDS: u64 = 100_000;
-
-/// A space getRepo's pass 1 per record: its path (most are well under 64
-/// bytes), end offset and CID, with room for the vectors' growth.
-pub const EXPORT_RECORD_BYTES: u64 = 128;
-/// Full-size space exports the memory plan holds room for at once. A
-/// smaller export takes room in proportion, so only a pile-up of the
-/// biggest repos waits for it.
-pub const EXPORTS_PLANNED: u64 = 4;
-const EXPORT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// What a space getRepo of `records` records holds: pass 1 and the chunk
-/// being filled.
-pub fn export_bytes(records: u64) -> u64 {
-    records * EXPORT_RECORD_BYTES + crate::xrpc::EXPORT_CHUNK as u64
-}
-
-/// The memory plan's room for space exports (`memory.rs` "space_exports").
-pub fn export_budget_bytes(max_records: u64) -> u64 {
-    EXPORTS_PLANNED * export_bytes(max_records)
-}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -118,9 +101,6 @@ pub struct Spaces {
     /// (writer, space) -> when its same-rev notifies were checked, within
     /// [`SAME_REV_WINDOW`].
     same_rev: parking_lot::Mutex<std::collections::HashMap<(String, crate::state::SpaceId), Vec<std::time::Instant>>>,
-    /// [`export_budget_bytes`] in KiB, which space exports reserve from.
-    exports: Arc<tokio::sync::Semaphore>,
-    export_kib: u32,
 }
 
 /// Live spaces one account governs. Each fans out to its own registrations,
@@ -176,10 +156,7 @@ fn now_secs() -> i64 {
 
 impl Spaces {
     pub fn new(limits: Limits) -> Spaces {
-        let export_kib = export_budget_bytes(limits.max_records).div_ceil(1024).min(u32::MAX as u64) as u32;
         Spaces {
-            exports: Arc::new(tokio::sync::Semaphore::new(export_kib as usize)),
-            export_kib,
             limits,
             peer_notifies: Default::default(),
             cache_fills: Default::default(),
@@ -228,18 +205,6 @@ impl Spaces {
     #[doc(hidden)]
     pub fn set_account_caps(&self, spaces: usize, registrations: usize) {
         *self.account_caps.lock() = (spaces, registrations);
-    }
-
-    /// Room for `bytes` of a space export, waited for up to 10 s.
-    pub async fn reserve_export(&self, bytes: u64) -> Option<tokio::sync::OwnedSemaphorePermit> {
-        let kib = bytes.div_ceil(1024).clamp(1, self.export_kib as u64) as u32;
-        let wait = self.exports.clone().acquire_many_owned(kib);
-        tokio::time::timeout(EXPORT_WAIT, wait).await.ok()?.ok()
-    }
-
-    /// Tests: KiB of the export room free now.
-    pub fn export_room_free(&self) -> (usize, usize) {
-        (self.exports.available_permits(), self.export_kib as usize)
     }
 
     /// Whether a peer said lately that the cluster doesn't host `authority`.

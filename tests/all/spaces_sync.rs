@@ -275,11 +275,6 @@ async fn a_full_repo_streams_under_a_memory_bound() {
     assert_eq!(scraped(&after, count), bucket(&after, BOUND), "an export held more than 32 MiB");
     // STAR streams in one pass: an export holds its chunk, not the repo's paths
     assert_eq!(bucket(&after, "1048576"), scraped(&after, count), "an export held more than a chunk");
-    // it fit the memory plan's estimate for a full repo, and gave its room back
-    let planned = vlpds::space::export_bytes(max as u64);
-    assert!(planned < 32 << 20 && planned > 8 << 20, "{planned}");
-    let sp = s.app.spaces.as_ref().unwrap();
-    assert!(eventually(Duration::from_secs(5), || async { sp.export_room_free().0 == sp.export_room_free().1 }).await);
 }
 
 /// listRepoOps pages one big rev without losing an op, holds the commit

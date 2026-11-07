@@ -107,9 +107,6 @@ pub struct Fixed {
     pub max_exports: u64,
     /// None: [`crate::xrpc::import_budget::budget_share`] of the budget.
     pub import_memory: Option<u64>,
-    /// With `--spaces`: the room space getRepo exports reserve from
-    /// ([`crate::space::export_budget_bytes`]).
-    pub space_exports: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -171,9 +168,6 @@ pub fn plan(s: &Settings, f: &Fixed, limit: Option<u64>) -> anyhow::Result<Plan>
         ("exports", crate::xrpc::export_memory_bytes(f.max_exports as usize)),
         ("import", f.import_memory.unwrap_or(crate::xrpc::import_budget::budget_share(budget))),
     ];
-    if f.space_exports > 0 {
-        parts.push(("space_exports", f.space_exports));
-    }
     parts.push(("headroom", headroom(budget)));
     let fixed: u64 = parts.iter().map(|(_, b)| b).sum();
     let explicit = s.block.unwrap_or(0) + s.meta.unwrap_or(0) + s.repo.unwrap_or(0);
@@ -586,7 +580,6 @@ mod tests {
             max_backfills: 16,
             max_exports: 32,
             import_memory: None,
-            space_exports: 0,
         }
     }
 
@@ -638,13 +631,6 @@ mod tests {
         assert_eq!(p.part("import"), 192 * MIB);
         // a tiny node still gets ~1 GB of caches
         assert!(p.pool > 768 * MIB && p.pool < 1280 * MIB, "{}", p.pool >> 20);
-
-        // --spaces adds its exports' room; without it there's no such part
-        assert_eq!(p.parts.iter().find(|(k, _)| *k == "space_exports"), None);
-        let with = plan(&small, &Fixed { space_exports: 54 * MIB, ..tiny.clone() }, Some(5 * GIB)).unwrap();
-        assert_eq!(with.part("space_exports"), 54 * MIB);
-        assert_eq!(with.pool, p.pool - 54 * MIB);
-        assert_eq!(with.parts.last().map(|(k, _)| *k), Some("headroom"));
 
         // explicit caches keep their sizes; the automatic one gets the rest
         let s = Settings { block: Some(GIB), meta: Some(512 * MIB), ..Default::default() };

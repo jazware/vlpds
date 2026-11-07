@@ -61,7 +61,6 @@ pub use server::{
 pub use server::{LogMailer, Mail, Mailer};
 pub use signin::{trust_expired, ALERTS_PER_DAY, DEFAULT_TRUST_DAYS, TRUST as TRUST_PREFIX};
 pub use staged_import::import_rows;
-pub(crate) use sync::EXPORT_CHUNK;
 pub use sync::{
     export_memory_bytes, find_record, set_export_prefetch_max_bytes, size_export_prefetch_pool, stream_export,
     ExportChunkTx, DEFAULT_EXPORT_STALL, DEFAULT_MAX_EXPORTS,
