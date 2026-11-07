@@ -174,7 +174,7 @@ async fn credential_cache_hits_still_check_signatures() {
     r.err(401, "BadSpaceSignature");
     // cached, signed for one audience and sent with another
     let mut rb = a.srv.http.get(&get);
-    for (k, v) in a.holder.headers(&format!("Atproto-Space {cred}"), Some(&a.did)) {
+    for (k, v) in a.holder.headers(&format!("Atproto-Space-Credential {cred}"), &a.did) {
         let v = if k == "atproto-space-audience" { "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa".to_string() } else { v };
         rb = rb.header(k, v);
     }

@@ -133,7 +133,7 @@ async fn refuses_a_credential_without_a_signature() {
     let space = net.create_space(&alice, SpaceOpts::default()).await;
     let cred = net.credential_for(&alice, &space).await;
     let q = [("space", space.as_str()), ("repo", alice.did.as_str())];
-    let unsigned = vec![("authorization".to_string(), format!("Atproto-Space {}", cred.credential))];
+    let unsigned = vec![("authorization".to_string(), format!("Atproto-Space-Credential {}", cred.credential))];
     raw_get(&net.pds[0].url, "com.atproto.space.getLatestCommit", &q, &unsigned).await.err(401, "BadSpaceSignature");
 }
 
@@ -423,24 +423,9 @@ async fn delegation_tokens_are_useless_at_a_host_that_does_not_govern_the_space(
     r.err(400, "SpaceNotFound");
 }
 
-/// delegation tokens: "requires proof of possession when exchanging a
-/// delegation token"
+/// delegation tokens: "binds the credential to the requested key"
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn exchange_requires_proof_of_possession() {
-    let net = Net::new(2).await;
-    let (alice, carol) = (net.actor("alice", 0).await, net.actor("carol", 2).await);
-    let space = net.create_space(&alice, SpaceOpts::default()).await;
-    let token = delegation_token(&carol, &space).await;
-    let h = vec![("authorization".to_string(), format!("Bearer {token}"))];
-    raw_post(&net.pds[0].url, "com.atproto.space.getSpaceCredential", json!({"space": space}), &h)
-        .await
-        .err(401, "BadSpaceSignature");
-}
-
-/// delegation tokens: "binds the credential to the key that signed the
-/// exchange"
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn binds_the_credential_to_the_exchange_key() {
+async fn binds_the_credential_to_the_requested_key() {
     let net = Net::new(2).await;
     let (alice, carol) = (net.actor("alice", 0).await, net.actor("carol", 2).await);
     let space = net.create_space(&alice, SpaceOpts { members: &[&carol], ..Default::default() }).await;
@@ -450,32 +435,32 @@ async fn binds_the_credential_to_the_exchange_key() {
     assert_eq!(jwt_claims(&cred)["cnf"], json!({"kid": holder.did}));
 }
 
-/// delegation tokens: "binds the exchange signature to the delegation token"
+/// delegation tokens: "refuses to bind the credential to a key that is not
+/// P-256"
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn binds_the_exchange_signature_to_the_delegation_token() {
-    let net = Net::new(2).await;
-    let (alice, carol) = (net.actor("alice", 0).await, net.actor("carol", 2).await);
-    let space = net.create_space(&alice, SpaceOpts::default()).await;
-    let token = delegation_token(&carol, &space).await;
-    let other_token = delegation_token(&carol, &space).await;
-    let mut h = Holder::new().headers(&format!("Bearer {token}"), None);
-    h.iter_mut().find(|(k, _)| k == "authorization").unwrap().1 = format!("Bearer {other_token}");
-    raw_post(&net.pds[0].url, "com.atproto.space.getSpaceCredential", json!({"space": space}), &h)
-        .await
-        .err(401, "BadSpaceSignature");
-}
-
-/// delegation tokens: "refuses a replayed credential exchange"
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn refuses_a_replayed_credential_exchange() {
+async fn refuses_to_bind_the_credential_to_a_key_that_is_not_p256() {
     let net = Net::new(2).await;
     let (alice, carol) = (net.actor("alice", 0).await, net.actor("carol", 2).await);
     let space = net.create_space(&alice, SpaceOpts { members: &[&carol], ..Default::default() }).await;
     let token = delegation_token(&carol, &space).await;
-    let h = Holder::new().headers(&format!("Bearer {token}"), None);
-    let go = || raw_post(&net.pds[0].url, "com.atproto.space.getSpaceCredential", json!({"space": space}), &h);
-    go().await.ok();
-    go().await.err(401, "JwtReplayed");
+    let k256 = vlatproto::crypto::Keypair::generate().did_key();
+    let body = json!({"space": space, "credentialKid": k256, "delegationToken": token});
+    let r = raw_post(&net.pds[0].url, "com.atproto.space.getSpaceCredential", body, &[]).await;
+    r.err(400, "InvalidRequest");
+    assert!(r.json["message"].as_str().unwrap().contains("P-256"), "{r:?}");
+}
+
+/// delegation tokens: "are single-use — a replayed jti is refused"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delegation_tokens_are_single_use() {
+    let net = Net::new(2).await;
+    let (alice, carol) = (net.actor("alice", 0).await, net.actor("carol", 2).await);
+    let space = net.create_space(&alice, SpaceOpts { members: &[&carol], ..Default::default() }).await;
+    let token = delegation_token(&carol, &space).await;
+    net.mint_credential(&space, &token, None).await.0.ok();
+    let r = net.mint_credential(&space, &token, None).await.0;
+    r.err(400, "InvalidDelegationToken");
+    assert!(r.json["message"].as_str().unwrap().contains("already been used"), "{r:?}");
 }
 
 /// delegation tokens: "are refused when the audience names another
@@ -490,19 +475,8 @@ async fn delegation_tokens_are_refused_when_the_audience_names_another_authority
     let misaddressed =
         user.token(TokenType::Delegation, Mint { iss: &user.did, sub: &space, aud: Some(&aud), ..Default::default() });
     let r = net.mint_credential(&space, &misaddressed, None).await.0;
-    refused_mentioning(&r, &["aud"]);
-}
-
-/// delegation tokens: "are single-use — a replayed jti is refused"
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn delegation_tokens_are_single_use() {
-    let net = Net::new(2).await;
-    let (alice, carol) = (net.actor("alice", 0).await, net.actor("carol", 2).await);
-    let space = net.create_space(&alice, SpaceOpts { members: &[&carol], ..Default::default() }).await;
-    let token = delegation_token(&carol, &space).await;
-    net.mint_credential(&space, &token, None).await.0.ok();
-    let r = net.mint_credential(&space, &token, None).await.0;
-    refused_mentioning(&r, &["already been used", "JwtReplayed"]);
+    r.err(400, "InvalidDelegationToken");
+    assert!(r.json["message"].as_str().unwrap().contains("audience does not match the space authority"), "{r:?}");
 }
 
 /// delegation tokens: "are refused for a space other than their subject"

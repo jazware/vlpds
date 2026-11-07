@@ -288,7 +288,7 @@ struct Reader {
 impl Reader {
     fn new(http: &reqwest::Client, base: &str, holder: &Holder, credential: &str, audience: &str) -> Reader {
         let mut headers = reqwest::header::HeaderMap::new();
-        for (k, v) in holder.headers(&format!("Atproto-Space {credential}"), Some(audience)) {
+        for (k, v) in holder.headers(&format!("Atproto-Space-Credential {credential}"), audience) {
             headers.insert(
                 reqwest::header::HeaderName::from_bytes(k.as_bytes()).unwrap(),
                 reqwest::header::HeaderValue::from_str(&v).unwrap(),

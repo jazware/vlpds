@@ -317,7 +317,7 @@ fn car(roots: &[Cid], blocks: &[(Cid, Vec<u8>)]) -> Vec<u8> {
     out
 }
 
-fn commit_block(c: &vlpds::space::commit::SignedCommit) -> Vec<u8> {
+fn commit_block(c: &vlpds::space::commit::Commit) -> Vec<u8> {
     use vlatproto::cbor::*;
     let mut b = Vec::new();
     write_map_head(&mut b, 6);
@@ -332,11 +332,11 @@ fn commit_block(c: &vlpds::space::commit::SignedCommit) -> Vec<u8> {
     write_text(&mut b, "ver");
     write_int(&mut b, c.ver);
     write_text(&mut b, "hash");
-    write_bytes(&mut b, &c.hash);
+    write_bytes(&mut b, &c.data.to_vec());
     b
 }
 
-fn decode_commit(b: &[u8]) -> vlpds::space::commit::SignedCommit {
+fn decode_commit(b: &[u8]) -> vlpds::space::commit::Commit {
     let v = Value::decode(b).unwrap();
     let bytes = |k: &str| match v.get(k) {
         Some(Value::Bytes(b)) => b.clone(),
@@ -346,7 +346,7 @@ fn decode_commit(b: &[u8]) -> vlpds::space::commit::SignedCommit {
         Some(Value::Text(t)) => t.clone(),
         _ => panic!("commit.rev"),
     };
-    vlpds::space::commit::SignedCommit {
+    vlpds::space::commit::Commit {
         ver: 1,
         hash: bytes("hash"),
         ikm: bytes("ikm"),
@@ -444,7 +444,7 @@ async fn import_repo_round_trip_and_refusals() {
     let index = Value::decode(&blocks.iter().find(|(c, _)| *c == index_cid).unwrap().1).unwrap();
     let records: Vec<(Cid, Vec<u8>)> =
         blocks.iter().filter(|(c, _)| *c != commit_cid && *c != index_cid).cloned().collect();
-    let with_commit = |c: &vlpds::space::commit::SignedCommit| {
+    let with_commit = |c: &vlpds::space::commit::Commit| {
         let cb = commit_block(c);
         let cc = Cid::dag_cbor(&cb);
         let mut all = vec![(cc, cb), blocks.iter().find(|(c, _)| *c == index_cid).unwrap().clone()];

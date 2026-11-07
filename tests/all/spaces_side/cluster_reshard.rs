@@ -251,7 +251,7 @@ impl World {
                 let ctx = format!("{ctx}: {} in {space}", w.did);
                 let replay = space == self.local;
                 let (records, c) = consistent(&self.nodes[0], w, space, replay, &ctx).await;
-                out.insert((w.did.clone(), space.to_string()), View { records, rev: c.rev, hash: c.hash });
+                out.insert((w.did.clone(), space.to_string()), View { records, rev: c.rev, hash: c.data.to_vec() });
             }
         }
         out
@@ -264,7 +264,7 @@ impl World {
         let rows = by_did(&repos);
         assert_eq!(rows.len(), repos.len(), "listRepos repeats a repo: {repos:?}");
         rows.into_iter()
-            .map(|(d, r)| (d, (r["repoRev"].clone(), r["spaceRev"].clone(), bytes_field(&r["hash"]))))
+            .map(|(d, r)| (d, (r["repoRev"].clone(), r["spaceRev"].clone(), bytes_field(&r["data"]))))
             .collect()
     }
 

@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use vlpds::space::commit::{self, SignedCommit};
+use vlpds::space::commit::{self, Commit};
 use vlpds::space::lthash::LtHash;
 use vlpds::space::token::{self, Mint, TokenType};
 
@@ -289,14 +289,11 @@ pub async fn exchange(
     token: &str,
     attestation: Option<&str>,
 ) -> Resp {
-    let mut body = json!({"space": space});
+    let mut body = json!({"space": space, "credentialKid": holder.did, "delegationToken": token});
     if let Some(a) = attestation {
         body["clientAttestation"] = json!(a);
     }
-    let mut rb = http.post(format!("{host}/xrpc/com.atproto.space.getSpaceCredential"));
-    for (k, v) in holder.headers(&format!("Bearer {token}"), None) {
-        rb = rb.header(k, v);
-    }
+    let rb = http.post(format!("{host}/xrpc/com.atproto.space.getSpaceCredential"));
     resp(rb.json(&body).send().await.unwrap()).await
 }
 
@@ -381,7 +378,7 @@ pub async fn repo_state(actor: &SpaceClient, space: &str) -> Option<(String, Vec
         return None;
     }
     let c = &r.ok()["commit"];
-    Some((c["rev"].as_str().unwrap().to_string(), bytes_field(&c["hash"])))
+    Some((c["rev"].as_str().unwrap().to_string(), bytes_field(&c["data"])))
 }
 
 /// Every record of the actor's repo in `space`, paged as its owner.
@@ -428,7 +425,7 @@ pub fn replay(ops: &[J]) -> LtHash {
 }
 
 pub fn commit_matches(set: &LtHash, c: &J) -> bool {
-    let sc: SignedCommit = signed_commit(c);
+    let sc: Commit = signed_commit(c);
     assert_eq!(sc.ver, 1, "commit ver");
     commit::matches(set, &sc)
 }
@@ -548,7 +545,7 @@ impl Cred {
     pub async fn post(&self, base: &str, nsid: &str, body: J) -> Resp {
         let aud = body["repo"].as_str().unwrap_or_else(|| authority_of(body["space"].as_str().unwrap())).to_string();
         let mut rb = self.http.post(format!("{base}/xrpc/{nsid}"));
-        for (k, v) in self.holder.headers(&format!("Atproto-Space {}", self.credential), Some(&aud)) {
+        for (k, v) in self.holder.credential_headers(&self.credential, &aud) {
             rb = rb.header(k, v);
         }
         resp(rb.json(&body).send().await.unwrap()).await
@@ -556,7 +553,7 @@ impl Cred {
 
     /// The signed headers for `aud` (`createSpaceSigHeaders`).
     pub fn headers(&self, aud: &str) -> Vec<(String, String)> {
-        self.holder.headers(&format!("Atproto-Space {}", self.credential), Some(aud))
+        self.holder.credential_headers(&self.credential, aud)
     }
 }
 

@@ -170,9 +170,8 @@ async fn record_takedown_serves_a_consistent_signed_view() {
     let latest = cred.get(&base, "com.atproto.space.getLatestCommit", &q).await.ok();
     let c = super::fuzz::signed_commit(&latest["commit"]);
     assert_eq!(c.rev, head_rev, "the takedown moves no rev");
-    assert_eq!(c.hash, set_hash(&visible), "getLatestCommit's hash is the remaining records' LtHash");
-    let ctx = vlpds::space::commit::CommitCtx { space: &t.space, author: &t.bob.did, rev: &c.rev };
-    assert!(vlpds::space::commit::verify(&c, &ctx, &key), "the adjusted commit is signed");
+    assert_eq!(c.data.to_vec(), set_hash(&visible), "getLatestCommit's hash is the remaining records' LtHash");
+    assert!(c.space == *&t.space && c.repo == *&t.bob.did, "the adjusted commit is signed");
 
     let r = cred.get(&base, "com.atproto.space.getRepo", &q).await;
     assert_eq!(r.status, 200, "{}", r.text());
@@ -192,7 +191,7 @@ async fn record_takedown_serves_a_consistent_signed_view() {
     assert!(!ops.to_string().contains("zqoptiontext"));
     let noop = cred.get(&base, "com.atproto.space.listRepoOps", &[q[0], q[1], ("since", &head_rev)]).await.ok();
     assert_eq!(noop["ops"], json!([]));
-    assert_eq!(super::fuzz::signed_commit(&noop["commit"]).hash, set_hash(&visible));
+    assert_eq!(super::fuzz::signed_commit(&noop["commit"]).data.to_vec(), set_hash(&visible));
     assert_eq!(listed(&base, &cred, &t.space, &t.bob.did).await, visible);
 
     let pulls = syncer.full_pulls;
@@ -209,7 +208,7 @@ async fn record_takedown_serves_a_consistent_signed_view() {
     let mut restored = all.clone();
     restored.insert(path("more"), more);
     let latest = cred.get(&base, "com.atproto.space.getLatestCommit", &q).await.ok();
-    assert_eq!(super::fuzz::signed_commit(&latest["commit"]).hash, set_hash(&restored));
+    assert_eq!(super::fuzz::signed_commit(&latest["commit"]).data.to_vec(), set_hash(&restored));
     let r = cred.get(&base, "com.atproto.space.getRepo", &q).await;
     assert_eq!(verify_repo_car(&r.body, &t.space, &t.bob.did, &key, true).unwrap().set(), restored);
     let ops = cred.get(&base, "com.atproto.space.listRepoOps", &[q[0], q[1], ("limit", "100")]).await.ok();
@@ -352,7 +351,7 @@ async fn space_takedown_closes_the_space_at_its_host() {
 async fn row_at_authority(t: &Td, cred: &Cred, repo: &str) -> Option<(String, Vec<u8>)> {
     let r = cred.get(&t.net.pds[0].url, "com.atproto.space.listRepos", &[("space", &t.space)]).await.ok();
     let row = r["repos"].as_array()?.iter().find(|r| r["did"] == json!(repo))?.clone();
-    Some((row["repoRev"].as_str()?.to_string(), super::fuzz::bytes_field(&row["hash"])))
+    Some((row["repoRev"].as_str()?.to_string(), super::fuzz::bytes_field(&row["data"])))
 }
 
 /// Waits (5 s at most) for the authority to list `repo` at `rev` with `hash`.
@@ -374,7 +373,7 @@ async fn forwarded(syncer: &super::hooks::StubDid, repo: &str, rev: &str, hash: 
         syncer.seen().iter().any(|n| {
             n.body["repo"] == json!(repo)
                 && n.body["repoRev"] == json!(rev)
-                && super::fuzz::bytes_field(&n.body["hash"]) == hash
+                && super::fuzz::bytes_field(&n.body["data"]) == hash
         })
     };
     for _ in 0..500 {

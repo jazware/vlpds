@@ -1,41 +1,67 @@
-//! Space repo commits (@atproto/space `repo-commit.ts`). The signature
-//! covers a context naming the space, author, rev and a fresh per-reader
-//! `ikm`, never the digest; the digest is bound to that context by a MAC
-//! keyed from the `ikm`. A reader gets integrity, while a leaked commit
-//! proves nothing about what the author wrote to a third party.
+//! Space repo commits and their MACs (@atproto/space `repo-commit.ts`,
+//! `mac.ts`). A commit names the repo, space and rev, and carries the
+//! LtHash digest as `data`. It has no signature: the repo host
+//! authenticates it to one syncer at a time with an HMAC keyed by that
+//! request's shared secret ([`super::mac`]), sent in a response header. A
+//! leaked response proves nothing about what the author wrote to a third
+//! party.
 //!
 //! ```text
-//! ctx = "atproto-space-v1" || u16be(len) || space || u16be(len) || author
-//!       || u16be(len) || rev || u16be(len) || ikm
-//! mac = HMAC-SHA256(HKDF-Expand-SHA256(prk = ikm, info = ctx, L = 32), hash)
-//! sig = sign(ctx)
+//! commit mac = HMAC-SHA256(secret, "atproto-space-repo-v1"
+//!     || u16be(len) || space || u16be(len) || repo || u16be(len) || rev || data)
+//! record mac = HMAC-SHA256(secret, "atproto-space-record-v1"
+//!     || u16be(len) || uri || cid bytes)
 //! ```
 
 use super::lthash::LtHash;
 use hmac::{Hmac, KeyInit, Mac};
+use serde_json::{json, Value as J};
 use sha2::Sha256;
 
 pub const COMMIT_VERSION: i64 = 1;
-const DOMAIN: &[u8] = b"atproto-space-v1";
+pub const RECORD_MAC_VERSION: i64 = 1;
+const COMMIT_DOMAIN: &[u8] = b"atproto-space-repo-v1";
+const RECORD_DOMAIN: &[u8] = b"atproto-space-record-v1";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CommitCtx<'a> {
-    /// The space URI (`at://{authority}/space/{type}/{skey}`).
-    pub space: &'a str,
-    pub author: &'a str,
-    pub rev: &'a str,
+/// The reference's `Commit`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Commit {
+    pub ver: i64,
+    pub repo: String,
+    pub space: String,
+    pub rev: String,
+    pub data: [u8; 32],
 }
 
-/// The fields are bytes as in the reference's `SignedCommit`, whose
-/// lengths only the version fixes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SignedCommit {
-    pub ver: i64,
-    pub hash: Vec<u8>,
-    pub ikm: Vec<u8>,
-    pub sig: Vec<u8>,
-    pub mac: Vec<u8>,
-    pub rev: String,
+impl Commit {
+    pub fn new(set: &LtHash, space: &str, repo: &str, rev: &str) -> Commit {
+        Commit { ver: COMMIT_VERSION, repo: repo.into(), space: space.into(), rev: rev.into(), data: set.digest() }
+    }
+
+    /// `com.atproto.space.defs#commit` as JSON.
+    pub fn to_json(&self) -> J {
+        use base64::Engine;
+        json!({
+            "ver": self.ver,
+            "repo": self.repo,
+            "space": self.space,
+            "rev": self.rev,
+            "data": {"$bytes": base64::engine::general_purpose::STANDARD_NO_PAD.encode(self.data)},
+        })
+    }
+
+    pub fn from_json(v: &J) -> Option<Commit> {
+        use base64::Engine;
+        let data = v["data"]["$bytes"].as_str()?;
+        let data = base64::engine::general_purpose::STANDARD_NO_PAD.decode(data.trim_end_matches('=')).ok()?;
+        Some(Commit {
+            ver: v["ver"].as_i64()?,
+            repo: v["repo"].as_str()?.into(),
+            space: v["space"].as_str()?.into(),
+            rev: v["rev"].as_str()?.into(),
+            data: data.try_into().ok()?,
+        })
+    }
 }
 
 /// The set hash element of a record. Injective without length prefixes:
@@ -47,105 +73,73 @@ pub fn element(collection: &str, rkey: &str, cid: &str) -> String {
 }
 
 /// None when a field is longer than its u16 length prefix allows.
-pub fn encode_ctx(ctx: &CommitCtx, ikm: &[u8]) -> Option<Vec<u8>> {
-    let fields = [ctx.space.as_bytes(), ctx.author.as_bytes(), ctx.rev.as_bytes(), ikm];
-    let mut out = Vec::with_capacity(DOMAIN.len() + fields.iter().map(|f| 2 + f.len()).sum::<usize>());
-    out.extend_from_slice(DOMAIN);
+fn keyed(secret: &[u8; 32], domain: &[u8], fields: &[&str]) -> Option<Hmac<Sha256>> {
+    let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(secret).expect("HMAC takes any key length");
+    m.update(domain);
     for f in fields {
-        out.extend_from_slice(&u16::try_from(f.len()).ok()?.to_be_bytes());
-        out.extend_from_slice(f);
+        m.update(&u16::try_from(f.len()).ok()?.to_be_bytes());
+        m.update(f.as_bytes());
     }
-    Some(out)
+    Some(m)
 }
 
-fn mac_of(ikm: &[u8], ctx_bytes: &[u8], hash: &[u8]) -> Hmac<Sha256> {
-    // HKDF-Expand to 32 bytes is its first block: T(1) = HMAC(prk, info || 0x01)
-    let mut t = <Hmac<Sha256> as KeyInit>::new_from_slice(ikm).expect("HMAC takes any key length");
-    t.update(ctx_bytes);
-    t.update(&[1]);
-    let key = t.finalize().into_bytes();
-    let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(&key).expect("HMAC takes any key length");
-    m.update(hash);
-    m
+fn commit_state(secret: &[u8; 32], c: &Commit) -> Option<Hmac<Sha256>> {
+    let mut m = keyed(secret, COMMIT_DOMAIN, &[&c.space, &c.repo, &c.rev])?;
+    m.update(&c.data);
+    Some(m)
 }
 
-pub fn mac(ikm: &[u8], ctx_bytes: &[u8], hash: &[u8]) -> [u8; 32] {
-    mac_of(ikm, ctx_bytes, hash).finalize().into_bytes().into()
+/// None when a field is longer than its u16 length prefix allows.
+pub fn commit_mac(secret: &[u8; 32], c: &Commit) -> Option<[u8; 32]> {
+    Some(commit_state(secret, c)?.finalize().into_bytes().into())
 }
 
-/// Signs `set`'s current digest for one reader. `ikm` must be fresh
-/// random bytes per call (32 in the reference): reusing one across readers
-/// gives them the same MAC key. `sign` is the author's signing key over
-/// the ctx (low-S compact, as for repo commits).
-pub fn sign<E>(
-    set: &LtHash,
-    ctx: &CommitCtx,
-    ikm: [u8; 32],
-    sign: impl FnOnce(&[u8]) -> Result<[u8; 64], E>,
-) -> Result<SignedCommit, SignError<E>> {
-    let hash = set.digest();
-    let ctx_bytes = encode_ctx(ctx, &ikm).ok_or(SignError::FieldTooLong)?;
-    let sig = sign(&ctx_bytes).map_err(SignError::Sign)?;
-    Ok(SignedCommit {
-        ver: COMMIT_VERSION,
-        hash: hash.to_vec(),
-        mac: mac(&ikm, &ctx_bytes, &hash).to_vec(),
-        ikm: ikm.to_vec(),
-        sig: sig.to_vec(),
-        rev: ctx.rev.to_string(),
+/// `cid`: the record's binary CID.
+pub fn record_mac(secret: &[u8; 32], uri: &str, cid: &[u8]) -> Option<[u8; 32]> {
+    let mut m = keyed(secret, RECORD_DOMAIN, &[uri])?;
+    m.update(cid);
+    Some(m.finalize().into_bytes().into())
+}
+
+/// The reference's `verifyCommit`: the commit is for the repo and space
+/// asked for, and its MAC verifies (in constant time). Only then is `data`
+/// the author's claim.
+pub fn verify(c: &Commit, space: &str, repo: &str, secret: &[u8; 32], mac: &[u8]) -> bool {
+    if c.ver != COMMIT_VERSION || c.repo != repo || c.space != space {
+        return false;
+    }
+    commit_state(secret, c).is_some_and(|m| m.verify_slice(mac).is_ok())
+}
+
+/// The reference's `verifyRecordMac`.
+pub fn verify_record(secret: &[u8; 32], uri: &str, cid: &[u8], mac: &[u8]) -> bool {
+    keyed(secret, RECORD_DOMAIN, &[uri]).is_some_and(|mut m| {
+        m.update(cid);
+        m.verify_slice(mac).is_ok()
     })
-}
-
-#[derive(Debug)]
-pub enum SignError<E> {
-    FieldTooLong,
-    Sign(E),
-}
-
-/// The signature by `did_key` over `ctx` and the MAC over the hash. The
-/// MAC key travels in the commit, so whoever holds a commit can rebind it
-/// to another hash: `commit.hash` is the author's claim only when the
-/// commit came from the author's host over an authenticated channel, never
-/// when relayed or stored. That is the deniability the design wants. Low-S compact signatures only, as the reference's default
-/// verification. Every failure, a malformed key included, is false.
-pub fn verify(commit: &SignedCommit, ctx: &CommitCtx, did_key: &str) -> bool {
-    if commit.ver != COMMIT_VERSION || commit.rev != ctx.rev {
-        return false;
-    }
-    let Some(ctx_bytes) = encode_ctx(ctx, &commit.ikm) else {
-        return false;
-    };
-    if mac_of(&commit.ikm, &ctx_bytes, &commit.hash).verify_slice(&commit.mac).is_err() {
-        return false;
-    }
-    super::verify_did_key(did_key, &ctx_bytes, &commit.sig, false) == Ok(true)
 }
 
 /// Whether `set` is the repo `commit` describes. Verify the commit first:
 /// on its own this says nothing about authenticity.
-pub fn matches(set: &LtHash, commit: &SignedCommit) -> bool {
-    set.digest()[..] == commit.hash[..]
+pub fn matches(set: &LtHash, commit: &Commit) -> bool {
+    set.digest() == commit.data
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use crate::space::vectors::VECTORS;
-    use sha2::Digest;
+    use vlatproto::cid::Cid;
 
-    fn h(v: &serde_json::Value) -> Vec<u8> {
+    fn h(v: &J) -> Vec<u8> {
         hex::decode(v.as_str().unwrap()).unwrap()
     }
 
-    fn ctx_of(c: &serde_json::Value) -> CommitCtx<'_> {
-        CommitCtx {
-            space: c["ctx"]["space"].as_str().unwrap(),
-            author: c["ctx"]["author"].as_str().unwrap(),
-            rev: c["ctx"]["rev"].as_str().unwrap(),
-        }
+    fn h32(v: &J) -> [u8; 32] {
+        h(v).try_into().unwrap()
     }
 
-    fn set_of(c: &serde_json::Value) -> LtHash {
+    fn set_of(c: &J) -> LtHash {
         let mut set = LtHash::default();
         for r in c["records"].as_array().unwrap() {
             let el =
@@ -156,145 +150,79 @@ pub(crate) mod tests {
         set
     }
 
-    /// testdata/spaces-alpha/vectors.json `commits`: ctx encoding, digest,
-    /// MAC and the reference's signature (secp256k1 and P-256 authors).
+    /// testdata/spaces-alpha/vectors.json `commits` and `recordMacs`: the
+    /// digest and MACs the reference computes for a fixed shared secret.
     #[test]
     fn generated_vectors() {
         let cases = VECTORS["commits"].as_array().unwrap();
         assert_eq!(cases.len(), 3);
         for c in cases {
-            let ctx = ctx_of(c);
-            let ikm = h(&c["ikm"]);
-            let ctx_bytes = encode_ctx(&ctx, &ikm).unwrap();
-            assert_eq!(ctx_bytes, h(&c["ctxBytes"]));
-            let set = set_of(c);
-            assert_eq!(set.digest().to_vec(), h(&c["hash"]));
-            assert_eq!(mac(&ikm, &ctx_bytes, &set.digest()).to_vec(), h(&c["mac"]));
-            let commit = SignedCommit {
-                ver: 1,
-                hash: h(&c["hash"]),
-                ikm,
-                sig: h(&c["sig"]),
-                mac: h(&c["mac"]),
-                rev: ctx.rev.into(),
-            };
-            let did_key = c["didKey"].as_str().unwrap();
-            assert!(verify(&commit, &ctx, did_key));
-            assert!(matches(&set, &commit));
-            // high-S is refused on either curve
-            let n = match crate::space::did_key_alg(did_key) {
-                Some("ES256") => "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551",
-                _ => "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141",
-            };
-            let mut high = commit.sig[..32].to_vec();
-            high.extend(sub_be(&hex::decode(n).unwrap(), &commit.sig[32..]));
-            assert!(!verify(&SignedCommit { sig: high, ..commit.clone() }, &ctx, did_key));
+            let ctx = &c["ctx"];
+            let (space, repo) = (ctx["space"].as_str().unwrap(), ctx["repo"].as_str().unwrap());
+            let commit = Commit::new(&set_of(c), space, repo, ctx["rev"].as_str().unwrap());
+            assert_eq!(commit.data[..], h(&c["data"])[..]);
+            let secret = h32(&c["sharedSecret"]);
+            let mac = commit_mac(&secret, &commit).unwrap();
+            assert_eq!(mac[..], h(&c["mac"])[..]);
+            assert!(verify(&commit, space, repo, &secret, &mac));
+            assert_eq!(Commit::from_json(&commit.to_json()), Some(commit.clone()));
+        }
+        for r in VECTORS["recordMacs"].as_array().unwrap() {
+            let cid = Cid::parse(r["cid"].as_str().unwrap()).unwrap().to_bytes();
+            let (secret, uri) = (h32(&r["sharedSecret"]), r["uri"].as_str().unwrap());
+            let mac = record_mac(&secret, uri, &cid).unwrap();
+            assert_eq!(mac[..], h(&r["mac"])[..]);
+            assert!(verify_record(&secret, uri, &cid, &mac));
         }
     }
 
-    /// RFC 6979 signing on both sides: vlpds's own commit over a vector's
-    /// inputs is byte-identical to the reference's.
-    #[test]
-    fn signs_like_the_reference() {
-        let c = &VECTORS["commits"][0];
-        let key =
-            vlatproto::crypto::Keypair::from_bytes(&sha2::Sha256::digest(b"vlpds spaces alpha author k256")).unwrap();
-        assert_eq!(key.did_key(), c["didKey"].as_str().unwrap());
-        let ikm: [u8; 32] = h(&c["ikm"]).try_into().unwrap();
-        let commit = sign(&set_of(c), &ctx_of(c), ikm, |m| Ok::<_, ()>(key.sign_deterministic(m))).unwrap();
-        assert_eq!(commit.sig, h(&c["sig"]));
-        assert_eq!(commit.mac, h(&c["mac"]));
-        assert_eq!(commit.hash, h(&c["hash"]));
-    }
+    // The cases below are the reference's tests/mac.test.ts.
 
-    /// The reference's signing cases (tests/repo-commit.test.ts).
-    #[test]
-    fn verification() {
-        let key = vlatproto::crypto::Keypair::generate();
-        let other = vlatproto::crypto::Keypair::generate();
-        let ctx = CommitCtx {
-            space: "at://did:example:space/space/app.bsky.group/test",
-            author: "did:example:alice",
-            rev: "3kbcq3p7ad400",
-        };
-        let mut set = LtHash::default();
-        set.add(&element("app.bsky.feed.post", "1", "bafyreidefdycgbfy3oglcb6ism3eqhyp5llsrpzxjsuac2gsy4mtrtx244"));
-        let signed = |ikm: [u8; 32]| {
-            sign(&set, &ctx, ikm, |m| key.sign_verified(vlatproto::crypto::Purpose::Commit, m)).unwrap()
-        };
-        let commit = signed(rand::random());
-        assert_eq!((commit.ver, commit.hash.len(), commit.ikm.len(), commit.mac.len()), (1, 32, 32, 32));
-        assert!(verify(&commit, &ctx, &key.did_key()));
-        assert!(matches(&set, &commit));
-        let again = signed(rand::random());
-        assert!(again.ikm != commit.ikm && again.mac != commit.mac && again.sig != commit.sig);
-        assert_eq!(again.hash, commit.hash);
-
-        assert!(!verify(&commit, &ctx, &other.did_key()));
-        for other_ctx in [
-            CommitCtx { space: "at://did:example:space/space/app.bsky.group/other", ..ctx },
-            CommitCtx { author: "did:example:bob", ..ctx },
-            CommitCtx { rev: "3kbcq3p7ad999", ..ctx },
-        ] {
-            assert!(!verify(&commit, &other_ctx, &key.did_key()));
+    fn commit() -> Commit {
+        Commit {
+            ver: 1,
+            space: "at://did:example:space/space/app.bsky.group/test".into(),
+            repo: "did:example:alice".into(),
+            rev: "3kbcq3p7ad400".into(),
+            data: [1; 32],
         }
-        // the signature never covered the hash: the MAC catches this
-        let tampered = SignedCommit { hash: LtHash::default().digest().to_vec(), ..commit.clone() };
-        assert!(!verify(&tampered, &ctx, &key.did_key()));
-        assert!(!verify(&SignedCommit { rev: "3kbcq3p7ad999".into(), ..commit.clone() }, &ctx, &key.did_key()));
-        assert!(!verify(&SignedCommit { ver: 2, ..commit.clone() }, &ctx, &key.did_key()));
-        let mut mac = commit.mac.clone();
-        mac[0] ^= 1;
-        assert!(!verify(&SignedCommit { mac, ..commit.clone() }, &ctx, &key.did_key()));
-        assert!(!verify(&SignedCommit { mac: commit.mac[..31].to_vec(), ..commit.clone() }, &ctx, &key.did_key()));
-        assert!(!verify(&commit, &ctx, "did:key:zNotAKey"));
-        assert!(!verify(&commit, &ctx, "did:plc:abc"));
-
-        // high-S is refused, as by the reference's default verification
-        let s = &commit.sig[32..];
-        let n = hex::decode("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141").unwrap();
-        let mut high = commit.sig[..32].to_vec();
-        high.extend(sub_be(&n, s));
-        assert!(!verify(&SignedCommit { sig: high, ..commit.clone() }, &ctx, &key.did_key()));
-
-        let mut advanced = set.clone();
-        advanced.add(&element(
-            "app.bsky.feed.post",
-            "2",
-            "bafyreidpw4cbv6gr4ukh33z23pvvrpr3wi4gnpmi4doamlsl3sa4rgri2a",
-        ));
-        assert!(!matches(&advanced, &commit));
-    }
-
-    pub(crate) fn sub_be(a: &[u8], b: &[u8]) -> Vec<u8> {
-        let mut out = vec![0u8; a.len()];
-        let mut borrow = 0i16;
-        for i in (0..a.len()).rev() {
-            let d = a[i] as i16 - b[i] as i16 - borrow;
-            borrow = (d < 0) as i16;
-            out[i] = d.rem_euclid(256) as u8;
-        }
-        out
     }
 
     #[test]
-    fn ctx_encoding() {
-        let ctx = CommitCtx {
-            space: "at://did:example:space/space/app.bsky.group/test",
-            author: "did:example:alice",
-            rev: "3kbcq3p7ad400",
-        };
-        let ikm = [7u8; 32];
-        let e = encode_ctx(&ctx, &ikm).unwrap();
-        assert_eq!(&e[..16], b"atproto-space-v1");
-        assert_eq!(u16::from_be_bytes([e[16], e[17]]) as usize, ctx.space.len());
-        let a = encode_ctx(&CommitCtx { space: "ab", author: "c", rev: "d" }, &ikm).unwrap();
-        let b = encode_ctx(&CommitCtx { space: "a", author: "bc", rev: "d" }, &ikm).unwrap();
-        assert_ne!(a, b);
-        let long = "x".repeat(65_536);
-        assert!(encode_ctx(&CommitCtx { space: &long, ..ctx }, &ikm).is_none());
-        assert!(encode_ctx(&CommitCtx { space: &long[1..], ..ctx }, &ikm).is_some());
-        assert!(sign(&LtHash::default(), &CommitCtx { space: &long, ..ctx }, ikm, |_| Ok::<_, ()>([0; 64])).is_err());
+    fn commit_macs() {
+        let secret: [u8; 32] = rand::random();
+        let c = commit();
+        let mac = commit_mac(&secret, &c).unwrap();
+        assert!(verify(&c, &c.space, &c.repo, &secret, &mac));
+        assert!(!verify(&c, &c.space, &c.repo, &rand::random(), &mac));
+        // unambiguous across field boundaries
+        let a = Commit { repo: "did:example:alice".into(), rev: "3kbc".into(), ..commit() };
+        let b = Commit { repo: "did:example:alice3".into(), rev: "kbc".into(), ..commit() };
+        assert_ne!(commit_mac(&secret, &a), commit_mac(&secret, &b));
+        // covers the data digest
+        assert!(!verify(&Commit { data: [2; 32], ..commit() }, &c.space, &c.repo, &secret, &mac));
+        // the requested repo and space, and the version
+        assert!(!verify(&c, &c.space, "did:example:bob", &secret, &mac));
+        assert!(!verify(&c, "at://did:example:space/space/app.bsky.group/other", &c.repo, &secret, &mac));
+        assert!(!verify(&Commit { ver: 2, ..commit() }, &c.space, &c.repo, &secret, &mac));
+        assert!(!verify(&c, &c.space, &c.repo, &secret, &mac[..31]));
+        // a field too long for its prefix
+        assert!(commit_mac(&secret, &Commit { space: "x".repeat(65_536), ..commit() }).is_none());
+    }
+
+    #[test]
+    fn record_macs() {
+        let secret: [u8; 32] = rand::random();
+        let uri = "at://did:example:alice/space/app.bsky.group/test/app.bsky.feed.post/1";
+        let a = Cid::parse("bafyreidefdycgbfy3oglcb6ism3eqhyp5llsrpzxjsuac2gsy4mtrtx244").unwrap().to_bytes();
+        let b = Cid::parse("bafyreidpw4cbv6gr4ukh33z23pvvrpr3wi4gnpmi4doamlsl3sa4rgri2a").unwrap().to_bytes();
+        let mac = record_mac(&secret, uri, &a).unwrap();
+        assert!(verify_record(&secret, uri, &a, &mac));
+        assert!(!verify_record(&rand::random(), uri, &a, &mac));
+        assert!(!verify_record(&secret, &format!("{uri}2"), &a, &mac));
+        assert!(!verify_record(&secret, uri, &b, &mac));
+        // domain-separated from a commit MAC
+        assert_ne!(Some(mac), commit_mac(&secret, &commit()));
     }
 
     #[test]
@@ -306,5 +234,27 @@ pub(crate) mod tests {
         a.add(&element("n.c.a", "1", cid));
         b.add(&element("n.c.a", "2", cid));
         assert_ne!(a, b);
+        assert!(matches(&a, &Commit::new(&a, "s", "r", "v")));
+        assert!(!matches(&b, &Commit::new(&a, "s", "r", "v")));
+    }
+
+    /// The empty repo's digest, which clearRecords leaves.
+    #[test]
+    fn empty_digest() {
+        assert_eq!(
+            hex::encode(LtHash::default().digest()),
+            "e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad"
+        );
+    }
+
+    pub(crate) fn sub_be(a: &[u8], b: &[u8]) -> Vec<u8> {
+        let mut out = vec![0u8; a.len()];
+        let mut borrow = 0i16;
+        for i in (0..a.len()).rev() {
+            let d = a[i] as i16 - b[i] as i16 - borrow;
+            borrow = (d < 0) as i16;
+            out[i] = d.rem_euclid(256) as u8;
+        }
+        out
     }
 }

@@ -16,7 +16,7 @@ fn invalid(m: impl Into<String>) -> XrpcError {
 }
 
 /// The verified client_id. `aud` is the space host it must be addressed to
-/// (`{authority}#atproto_space_host`), so one minted for another authority
+/// (`{authority}#atproto_pds`), so one minted for another authority
 /// can't be replayed here; `routing` (the authority) is where its `jti` is
 /// claimed.
 pub async fn verify(app: &crate::xrpc::App, attestation: &str, aud: &str, routing: &str) -> XResult<String> {

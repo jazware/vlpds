@@ -909,7 +909,7 @@ async fn get_repo_car() {
         let s = c[k]["$bytes"].as_str().unwrap_or_else(|| panic!("{k}: {c}"));
         base64::engine::general_purpose::STANDARD_NO_PAD.decode(s.trim_end_matches('=')).unwrap()
     };
-    let sc = commit::SignedCommit {
+    let sc = commit::Commit {
         ver: c["ver"].as_i64().unwrap(),
         hash: bytes("hash"),
         ikm: bytes("ikm"),

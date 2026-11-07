@@ -5,16 +5,16 @@
 //! - `SpaceClient::new(&server, name, scope)`: account, PAR, consent, token.
 //! - `get`/`post`: DPoP-authenticated XRPC as that account.
 //! - `credential(space)`: getDelegationToken, then getSpaceCredential at the
-//!   authority's host, signed by the holder key.
+//!   authority's host, bound to the holder key.
 //! - `signed_get(base, nsid, query, credential, audience)`: a read with
-//!   `Authorization: Atproto-Space`, signed over the authorization and
+//!   `Authorization: Atproto-Space-Credential`, signed over the authorization and
 //!   audience headers.
 
 use super::{Resp, TestServer};
 use crate::oauth::{self, Browser, DpopKey, Flow, Srv};
 use p256::ecdsa::signature::Signer;
 use serde_json::{json, Value as J};
-use vlpds::space::httpsig;
+use vlpds::space::{commit, httpsig, mac, star};
 
 pub struct SpaceClient {
     pub srv: Srv,
@@ -48,20 +48,23 @@ impl Holder {
         base64::engine::general_purpose::STANDARD.encode(sig.to_bytes())
     }
 
-    /// The headers of a request authorized by `authorization`, signed as the
-    /// reference's client signs them (`createSpaceSigHeaders`): with an
-    /// audience for a credential read, without one (and with `keyid`) for a
-    /// delegation exchange.
-    pub fn headers(&self, authorization: &str, audience: Option<&str>) -> Vec<(String, String)> {
-        let input = httpsig::signature_input(audience.is_some(), &self.did);
+    /// The headers of a request authorized by `authorization` (a space
+    /// credential), signed for `audience` as the reference's client signs
+    /// them (`createSpaceSigHeaders`).
+    pub fn headers(&self, authorization: &str, audience: &str) -> Vec<(String, String)> {
+        let input = httpsig::signature_input();
         let sig = self.sign(&httpsig::signature_base(authorization, &input, audience));
-        let mut h = vec![("authorization".to_string(), authorization.to_string())];
-        if let Some(a) = audience {
-            h.push((httpsig::AUDIENCE_HEADER.into(), a.into()));
-        }
-        h.push(("signature-input".into(), format!("{}={input}", httpsig::LABEL)));
-        h.push(("signature".into(), format!("{}=:{sig}:", httpsig::LABEL)));
-        h
+        vec![
+            ("authorization".to_string(), authorization.to_string()),
+            (httpsig::AUDIENCE_HEADER.into(), audience.into()),
+            ("signature-input".into(), format!("{}={input}", httpsig::LABEL)),
+            ("signature".into(), format!("{}=:{sig}:", httpsig::LABEL)),
+        ]
+    }
+
+    /// The headers of a read with `credential`.
+    pub fn credential_headers(&self, credential: &str, audience: &str) -> Vec<(String, String)> {
+        self.headers(&format!("Atproto-Space-Credential {credential}"), audience)
     }
 }
 
@@ -278,11 +281,8 @@ impl SpaceClient {
         token: &str,
         attestation: Option<&str>,
     ) -> Resp {
-        let mut rb = self.srv.http.post(format!("{host}/xrpc/com.atproto.space.getSpaceCredential"));
-        for (k, v) in holder.headers(&format!("Bearer {token}"), None) {
-            rb = rb.header(k, v);
-        }
-        let mut body = json!({"space": space});
+        let rb = self.srv.http.post(format!("{host}/xrpc/com.atproto.space.getSpaceCredential"));
+        let mut body = json!({"space": space, "credentialKid": holder.did, "delegationToken": token});
         if let Some(a) = attestation {
             body["clientAttestation"] = json!(a);
         }
@@ -340,13 +340,16 @@ pub async fn signed_post_as(
     audience: &str,
 ) -> Resp {
     let mut rb = http.post(xrpc_url(base, nsid, &[]));
-    for (k, v) in holder.headers(&format!("Atproto-Space {credential}"), Some(audience)) {
+    for (k, v) in holder.headers(&format!("Atproto-Space-Credential {credential}"), audience) {
         rb = rb.header(k, v);
     }
     resp(rb.json(&body).send().await.unwrap()).await
 }
 
-/// A credential read signed by `holder`.
+/// A credential read signed by `holder`. A method that returns a commit or
+/// a record asks for a MAC against the repo's `#atproto_kem` key (when its
+/// host publishes one), and a MAC that comes back is verified here, as the
+/// reference's `SpaceCredential` helper does.
 pub async fn signed_get_as(
     http: &reqwest::Client,
     holder: &Holder,
@@ -357,8 +360,74 @@ pub async fn signed_get_as(
     audience: &str,
 ) -> Resp {
     let mut rb = http.get(xrpc_url(base, nsid, query));
-    for (k, v) in holder.headers(&format!("Atproto-Space {credential}"), Some(audience)) {
+    for (k, v) in holder.headers(&format!("Atproto-Space-Credential {credential}"), audience) {
         rb = rb.header(k, v);
     }
-    resp(rb.send().await.unwrap()).await
+    let find = |k: &str| query.iter().find(|(n, _)| *n == k).map(|(_, v)| *v);
+    let mut want = None;
+    if let (Some(ty), Some(repo)) = (mac_type(nsid), find("repo")) {
+        if let Some(kem) = kem_key_at(http, base, repo).await {
+            let (share, secret) = mac::encapsulate(&kem).unwrap();
+            rb = rb.header(mac::WANT_MAC_HEADER, mac::format_want_mac(ty, &share));
+            want = Some((ty, secret));
+        }
+    }
+    let r = resp(rb.send().await.unwrap()).await;
+    if let (Some((ty, secret)), 200) = (want, r.status) {
+        verify_mac(&r, nsid, ty, &secret, find("space").unwrap_or(""), find("repo").unwrap_or(""));
+    }
+    r
+}
+
+pub fn mac_type(nsid: &str) -> Option<mac::MacType> {
+    match nsid {
+        "com.atproto.space.getRecord" => Some(mac::MacType::Record),
+        "com.atproto.space.getLatestCommit" | "com.atproto.space.listRepoOps" | "com.atproto.space.getRepo" => {
+            Some(mac::MacType::Repo)
+        }
+        _ => None,
+    }
+}
+
+/// `repo`'s `#atproto_kem` key as `base` publishes it (describeRepo).
+pub async fn kem_key_at(http: &reqwest::Client, base: &str, repo: &str) -> Option<String> {
+    let r = http.get(xrpc_url(base, "com.atproto.repo.describeRepo", &[("repo", repo)])).send().await.ok()?;
+    let j: J = r.json().await.ok()?;
+    mac::kem_key_of(&j["didDoc"])
+}
+
+/// The commit a MAC-bearing response carries: getRepo's STAR metadata, or
+/// the JSON body's `commit`.
+pub fn response_commit(r: &Resp, nsid: &str) -> Option<commit::Commit> {
+    if nsid == "com.atproto.space.getRepo" {
+        let (meta, _) = star::read_all(&r.body, star::LIMITS).expect("a STAR archive");
+        return Some(star::parse_repo_meta(&meta).expect("repo metadata"));
+    }
+    match &r.json["commit"] {
+        J::Null => None,
+        c => Some(commit::Commit::from_json(c).expect("a commit")),
+    }
+}
+
+/// Asserts a response's MAC verifies under `secret` (and that one came
+/// with a commit or record, and none without).
+pub fn verify_mac(r: &Resp, nsid: &str, ty: mac::MacType, secret: &[u8; 32], space: &str, repo: &str) {
+    let header = r.headers.get(mac::MAC_HEADER).map(|v| v.to_str().unwrap().to_string());
+    let vary = r.headers.get_all("vary").iter().any(|v| v.to_str().unwrap().contains(mac::WANT_MAC_HEADER));
+    assert!(vary, "{nsid}: Vary names the MAC request header");
+    match ty {
+        mac::MacType::Record => {
+            let m = mac::parse_mac(header.as_deref(), ty).expect("a record MAC");
+            let (uri, cid) = (r.json["uri"].as_str().unwrap(), r.json["cid"].as_str().unwrap());
+            let cid = vlatproto::cid::Cid::parse(cid).unwrap().to_bytes();
+            assert!(commit::verify_record(secret, uri, &cid, &m), "{nsid}: the record MAC verifies");
+        }
+        mac::MacType::Repo => match response_commit(r, nsid) {
+            Some(c) => {
+                let m = mac::parse_mac(header.as_deref(), ty).expect("a commit MAC");
+                assert!(commit::verify(&c, space, repo, secret, &m), "{nsid}: the commit MAC verifies");
+            }
+            None => assert!(header.is_none(), "{nsid}: a page without a commit has no MAC"),
+        },
+    }
 }

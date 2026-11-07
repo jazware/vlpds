@@ -26,7 +26,7 @@ use base64::Engine;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
-use vlpds::space::commit::{self, CommitCtx, SignedCommit};
+use vlpds::space::commit::{self, Commit};
 use vlpds::space::lthash::LtHash;
 
 pub const IMPORT_REPO: &str = "vlpds.space.importRepo";
@@ -92,7 +92,7 @@ pub async fn import_repo_as(base: &str, auth: &Auth, space: &str, car: &[u8]) ->
 
 #[derive(Debug, Clone)]
 pub struct VerifiedRepo {
-    pub commit: SignedCommit,
+    pub commit: Commit,
     pub index_cid: Cid,
     /// In the index's (canonical) order.
     pub index: Vec<(String, Cid)>,
@@ -106,12 +106,12 @@ impl VerifiedRepo {
     }
 }
 
-fn commit_of(v: &Value) -> Result<SignedCommit, String> {
+fn commit_of(v: &Value) -> Result<Commit, String> {
     let bytes = |k: &str| match v.get(k) {
         Some(Value::Bytes(b)) => Ok(b.clone()),
         other => Err(format!("invalid signedCommit: {k} is {other:?}")),
     };
-    Ok(SignedCommit {
+    Ok(Commit {
         ver: match v.get("ver") {
             Some(Value::Int(n)) => *n,
             other => return Err(format!("invalid signedCommit: ver is {other:?}")),
@@ -196,9 +196,9 @@ pub fn verify_repo_car(
     Ok(VerifiedRepo { commit, index_cid: *icid, index, records })
 }
 
-pub fn commit_block(c: &SignedCommit) -> Vec<u8> {
+pub fn commit_block(c: &Commit) -> Vec<u8> {
     let b64 = |b: &[u8]| json!({"$bytes": base64::engine::general_purpose::STANDARD_NO_PAD.encode(b)});
-    let j = json!({"ver": c.ver, "hash": b64(&c.hash), "ikm": b64(&c.ikm), "sig": b64(&c.sig), "mac": b64(&c.mac), "rev": c.rev});
+    let j = json!({"ver": c.ver, "hash": b64(&c.data.to_vec()), "ikm": b64(&c.ikm), "sig": b64(&c.sig), "mac": b64(&c.mac), "rev": c.rev});
     Value::from_json(&j).unwrap().to_cbor()
 }
 
@@ -246,7 +246,7 @@ pub struct RepoBuilder {
 
 /// The parts of a built CAR, for tests that take it apart.
 pub struct BuiltCar {
-    pub commit: SignedCommit,
+    pub commit: Commit,
     pub commit_cid: Cid,
     pub commit_block: Vec<u8>,
     pub index_cid: Cid,
@@ -456,9 +456,8 @@ impl Syncer {
         }
         assert!(commit.is_object(), "listRepoOps ended without a commit");
         let sc = super::fuzz::signed_commit(&commit);
-        let ctx = CommitCtx { space: &self.space, author: &self.repo, rev: &sc.rev };
-        assert!(commit::verify(&sc, &ctx, &self.did_key), "listRepoOps' commit doesn't verify");
-        if digest(&set)[..] == sc.hash[..] {
+        assert!(sc.space == *&self.space && sc.repo == *&self.repo, "listRepoOps' commit doesn't verify");
+        if digest(&set)[..] == sc.data.to_vec()[..] {
             self.set = set;
             self.rev = Some(sc.rev);
             return false;

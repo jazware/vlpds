@@ -1378,6 +1378,9 @@ async fn describe_server(State(app): AppState) -> Json<J> {
     // without --spaces, so that response stays the reference's shape.
     if app.config.spaces {
         out["vlpds"] = json!({"spaces": true});
+        // the reference's flag for clients to discover the alpha (not in
+        // the lexicon)
+        out["spacesAlpha"] = json!(true);
     }
     Json(out)
 }

@@ -3,10 +3,15 @@ from the reference implementation:
 
   repo:   https://github.com/bluesky-social/atproto
   branch: permissioned-data (PR #5187)
-  commit: 5b95b2f2723a2882824fbb0b819fd6aad884ef20
-  paths:  lexicons/com/atproto/space/*.json        (20 methods + defs)
-          lexicons/com/atproto/simplespace/*.json  (8 methods + defs)
+  commit: 98ef3a6b9d1364f0543f137dd024de9651b21c4c
+  paths:  lexicons/com/atproto/space/*.json          (methods, defs, the policy record)
+          lexicons/com/atproto/memberspace/*.json    (policy, member record, member methods)
+          lexicons/com/atproto/managedspace/*.json   (policy, checkUserAccess)
+          lexicons/com/atproto/personalspace/*.json  (policy)
 
 License: MIT (bluesky-social/atproto). Upstream changes weekly; to update,
-copy both directories from a newer commit, update this file, and re-bundle
-(lexicons/bundle.py, usage at its top).
+copy the four directories from a newer commit, update this file, and re-bundle
+(lexicons/bundle.py, usage at its top). The rest of lexicons/bundle.json comes
+from the upstream main branch's lexicons and is bundled on its own schedule:
+when re-bundling Spaces alone, replace only the com.atproto.{space,memberspace,
+managedspace,personalspace}.* entries.

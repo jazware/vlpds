@@ -2568,13 +2568,13 @@ fn process_space(st: &mut RepoState, r: crate::space::repo::SpaceReq, clock_id: 
             return Ok(());
         }
         // the caller ends the claim if this fails
-        SpaceOp::ImportBegin { nonce, rev } => {
+        SpaceOp::ImportBegin { nonce, replace } => {
             if !spaces.begin_import(&did, sid, nonce) {
                 let m = "an import of this space repo is in progress";
                 let _ = reply.send(Err(WriteError::Invalid(m.into()).into()));
                 return Ok(());
             }
-            match sr::import_begin(st.spaces_mut(), &did, sid, &uri, rev) {
+            match sr::import_begin(st.spaces_mut(), &did, sid, &uri, replace) {
                 Err(e) => {
                     spaces.end_import(&did, sid, nonce);
                     let _ = reply.send(Err(e));
@@ -2591,12 +2591,12 @@ fn process_space(st: &mut RepoState, r: crate::space::repo::SpaceReq, clock_id: 
                 }
             }
         }
-        SpaceOp::ImportCommit { nonce, rev, hash, records } => {
+        SpaceOp::ImportCommit { nonce, prev, hash, records } => {
             if spaces.import_nonce(&did, sid) != Some(nonce) {
                 let _ = reply.send(Err(SpaceError::Write(WriteError::Internal("space import not claimed".into()))));
                 return Ok(());
             }
-            let b = match sr::import_commit(st.spaces_mut(), &did, sid, &uri, rev, *hash, records, clock_id) {
+            let b = match sr::import_commit(st.spaces_mut(), &did, sid, &uri, prev, *hash, records, clock_id) {
                 Ok(b) => b,
                 Err(e) => {
                     let _ = reply.send(Err(e));
@@ -2604,6 +2604,7 @@ fn process_space(st: &mut RepoState, r: crate::space::repo::SpaceReq, clock_id: 
                 }
             };
             let mut head = b.head;
+            let rev = b.rev;
             (head.shard, head.epoch) = (st.partition.id, st.partition.epoch);
             let (head, notify) = (Arc::new(head), b.notify);
             let fanout = b.sequenced.map(|seq| crate::space::fanout::Job {

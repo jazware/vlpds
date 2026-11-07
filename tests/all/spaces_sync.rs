@@ -46,10 +46,10 @@ fn bytes(v: &J) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD_NO_PAD.decode(s.trim_end_matches('=')).unwrap()
 }
 
-fn signed_commit(c: &J) -> commit::SignedCommit {
-    commit::SignedCommit {
+fn signed_commit(c: &J) -> commit::Commit {
+    commit::Commit {
         ver: c["ver"].as_i64().unwrap(),
-        hash: bytes(&c["hash"]),
+        hash: bytes(&c["data"]),
         ikm: bytes(&c["ikm"]),
         sig: bytes(&c["sig"]),
         mac: bytes(&c["mac"]),
@@ -109,7 +109,7 @@ where
 
 /// What a verified getRepo CAR holds.
 struct Car {
-    commit: commit::SignedCommit,
+    commit: commit::Commit,
     paths: Vec<String>,
     index_root: vlatproto::cid::Cid,
     blocks: usize,
@@ -257,15 +257,14 @@ impl Viewer<'_> {
             }
         };
         let ops_commit = signed_commit(&last);
-        let ctx = commit::CommitCtx { space: &self.space, author: &self.repo, rev: &ops_commit.rev };
-        assert!(commit::verify(&ops_commit, &ctx, &self.key));
+        assert!(ops_commit.space == *&self.space && ops_commit.repo == *&self.repo);
         assert!(commit::matches(&set, &ops_commit), "the ops replay to the signed hash");
-        assert_eq!(ops_commit.hash, car.commit.hash, "listRepoOps and getRepo agree");
+        assert_eq!(ops_commit.hash, car.commit.data.to_vec(), "listRepoOps and getRepo agree");
         let latest = self.read("com.atproto.space.getLatestCommit", &[]).await.ok();
-        assert_eq!(bytes(&latest["commit"]["hash"]), car.commit.hash);
+        assert_eq!(bytes(&latest["commit"]["data"]), car.commit.data.to_vec());
         let noop = self.read("com.atproto.space.listRepoOps", &[("since", &car.commit.rev)]).await.ok();
         assert_eq!(noop["ops"], json!([]));
-        assert_eq!(bytes(&noop["commit"]["hash"]), car.commit.hash, "the at-head poll signs the same view");
+        assert_eq!(bytes(&noop["commit"]["data"]), car.commit.data.to_vec(), "the at-head poll signs the same view");
         car
     }
 }
@@ -497,7 +496,7 @@ async fn a_pruned_oplog_sends_syncers_to_get_repo() {
     let (status, _, car) = owner.get_raw("com.atproto.space.getRepo", &rq).await;
     assert_eq!(status, 200);
     let got = verify_car(&car, &space, &owner.did, &key, true);
-    assert_eq!(got.commit.hash, sc.hash, "getRepo reconciles");
+    assert_eq!(got.commit.hash, sc.data.to_vec(), "getRepo reconciles");
     assert_eq!(got.paths, vec![format!("{COLL}/b"), format!("{COLL}/c"), format!("{COLL}/d")]);
     // nothing is left to prune
     assert_eq!(vlpds::space::retention::prune_before(&s.app, 1).await.unwrap(), 0);

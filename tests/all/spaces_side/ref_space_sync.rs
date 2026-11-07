@@ -22,7 +22,7 @@ use crate::common::*;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
-use vlpds::space::commit::{self, CommitCtx, SignedCommit};
+use vlpds::space::commit::{self, Commit};
 use vlpds::space::lthash::LtHash;
 use vlpds::space::token::space_host_aud;
 
@@ -241,7 +241,7 @@ fn cbor_bytes(v: &Value, k: &str) -> Vec<u8> {
 /// `verifyRepoCarFull`: the commit verifies under the author's key, the
 /// index folds to its hash; the record blocks (none with excludeValues)
 /// follow in index order. Returns (commit, index paths, record blocks).
-fn verify_repo_car(car: &[u8], space: &str, author: &str, did_key: &str) -> (SignedCommit, Vec<String>, Vec<Value>) {
+fn verify_repo_car(car: &[u8], space: &str, author: &str, did_key: &str) -> (Commit, Vec<String>, Vec<Value>) {
     let (roots, blocks) = vlatproto::car::read_car(car).expect("a CAR");
     assert_eq!(roots.len(), 2, "roots: the signed commit and the index");
     assert!(blocks.len() >= 2 && blocks[0].0 == roots[0] && blocks[1].0 == roots[1]);
@@ -253,7 +253,7 @@ fn verify_repo_car(car: &[u8], space: &str, author: &str, did_key: &str) -> (Sig
         Some(Value::Text(r)) => r.clone(),
         other => panic!("commit rev: {other:?}"),
     };
-    let sc = SignedCommit {
+    let sc = Commit {
         ver: match c.get("ver") {
             Some(Value::Int(v)) => *v,
             other => panic!("commit ver: {other:?}"),
@@ -304,7 +304,7 @@ async fn get_repo_serves_a_verifiable_car() {
     let (sc, paths, records) = verify_repo_car(&r.body, &space, &bob.did, &key);
     assert_eq!((paths.len(), records.len()), (4, 4));
     let (rev, hash) = repo_state(&bob, &space).await.unwrap();
-    assert_eq!((sc.rev, sc.hash), (rev, hash));
+    assert_eq!((sc.rev, sc.data.to_vec()), (rev, hash));
     let mut texts: Vec<String> = paths
         .iter()
         .zip(&records)
@@ -397,7 +397,7 @@ async fn records_a_writer_from_notify_write() {
     let entry = repos["repos"].as_array().unwrap().iter().find(|r| r["did"] == json!(bob.did)).unwrap().clone();
     let (rev, hash) = repo_state(&bob, &space).await.unwrap();
     assert_eq!(entry["repoRev"], json!(rev));
-    assert_eq!(bytes_field(&entry["hash"]), hash);
+    assert_eq!(bytes_field(&entry["data"]), hash);
 }
 
 /// writer set: "records a writer admitted by public write policy, who was
@@ -624,7 +624,7 @@ async fn retries_the_latest_state_after_failure_and_restart() {
         host.await_calls(NOTIFY_WRITE, refused + 1, Duration::from_secs(15)).await.expect("resent after restart");
     let last = calls.last().unwrap();
     assert_eq!(last.body["repoRev"], json!(rev));
-    assert_eq!(bytes_field(&last.body["hash"]), hash);
+    assert_eq!(bytes_field(&last.body["data"]), hash);
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(host.calls_to(NOTIFY_WRITE).len(), refused + 1, "delivered once");
 }
@@ -674,7 +674,7 @@ async fn notify_write_ignores_duplicate_and_older_revisions() {
     // a duplicate is the newest rev with the hash the authority holds: an
     // equal rev with another hash is a takedown's adjusted view, which vlpds
     // sequences again (a divergence, tests/REFERENCE_COVERAGE.md)
-    let held = super::fuzz::bytes_field(&before["repos"][0]["hash"]);
+    let held = super::fuzz::bytes_field(&before["repos"][0]["data"]);
     notify(&net, &bob, None, notify_body(&space, &bob.did, &older, &[0; 32])).await.ok();
     notify(&net, &bob, None, notify_body(&space, &bob.did, &newest, &held)).await.ok();
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -702,7 +702,7 @@ async fn notify_write_keeps_the_newest_revision_when_racing() {
     let repos = listed["repos"].as_array().unwrap();
     assert_eq!(repos.len(), 1);
     assert_eq!(repos[0]["repoRev"], json!(newer));
-    assert_eq!(bytes_field(&repos[0]["hash"]), empty.to_vec());
+    assert_eq!(bytes_field(&repos[0]["data"]), empty.to_vec());
 }
 
 /// notifyWrite: "rejects future revisions while allowing a small clock skew"

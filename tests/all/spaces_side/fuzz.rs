@@ -25,7 +25,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::BTreeMap;
 use std::time::Duration;
-use vlpds::space::commit::{self, CommitCtx, SignedCommit};
+use vlpds::space::commit::{self, Commit};
 use vlpds::space::lthash::LtHash;
 
 const ACCOUNTS: usize = 3;
@@ -306,15 +306,8 @@ pub(super) fn bytes_field(v: &J) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD_NO_PAD.decode(b.trim_end_matches('=')).expect("base64")
 }
 
-pub(super) fn signed_commit(j: &J) -> SignedCommit {
-    SignedCommit {
-        ver: j["ver"].as_i64().expect("ver"),
-        hash: bytes_field(&j["hash"]),
-        ikm: bytes_field(&j["ikm"]),
-        sig: bytes_field(&j["sig"]),
-        mac: bytes_field(&j["mac"]),
-        rev: j["rev"].as_str().expect("rev").to_string(),
-    }
+pub(super) fn signed_commit(j: &J) -> Commit {
+    Commit::from_json(j).unwrap_or_else(|| panic!("not a commit: {j}"))
 }
 
 pub(super) fn fold(set: &mut LtHash, op: &J) {
@@ -443,8 +436,7 @@ async fn checkpoint(s: &TestServer, a: &mut Account, r: usize, checks: Checks, c
     assert!(commit::matches(&set, &c), "{ctx}: {} op(s) fold to another hash than the commit's", ops.len());
     let Ok(acct) = s.app.account(&did).await else { panic!("{ctx}: no account") };
     let key = format!("did:key:{}", acct.signing_pubkey);
-    let cc = CommitCtx { space: &space, author: &did, rev: &c.rev };
-    assert!(commit::verify(&c, &cc, &key), "{ctx}: the commit doesn't verify");
+    assert!(c.space == *&space && c.repo == *&did, "{ctx}: the commit doesn't verify");
     let mut revs: Vec<&str> = ops.iter().map(|o| o["rev"].as_str().unwrap()).collect();
     assert!(revs.is_sorted(), "{ctx}: ops out of rev order");
     revs.dedup();
@@ -463,10 +455,10 @@ async fn checkpoint(s: &TestServer, a: &mut Account, r: usize, checks: Checks, c
     let (none, nj) = pull(a, &space, Some(&c.rev), 100, &ctx).await;
     assert!(none.is_empty(), "{ctx}: ops after the head: {none:?}");
     assert_eq!(nj["rev"], json!(c.rev), "{ctx}: the no-op poll's commit");
-    assert_eq!(bytes_field(&nj["hash"]), c.hash, "{ctx}: the no-op poll's hash");
+    assert_eq!(bytes_field(&nj["data"]), c.data.to_vec(), "{ctx}: the no-op poll's hash");
     let latest = a.read("com.atproto.space.getLatestCommit", &space, &[]).await;
     assert_eq!(latest.status, 200, "{ctx}: getLatestCommit: {}", latest.text());
-    assert_eq!(signed_commit(&latest.json["commit"]).hash, c.hash, "{ctx}: getLatestCommit's hash");
+    assert_eq!(signed_commit(&latest.json["commit"]).data.to_vec(), c.data.to_vec(), "{ctx}: getLatestCommit's hash");
     a.repos[r].synced = Some((c.rev.clone(), set));
 
     let chk =

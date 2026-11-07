@@ -1,25 +1,20 @@
 {
   "lexicon": 1,
-  "id": "com.atproto.simplespace.removeMember",
+  "id": "com.atproto.space.deleteSpace",
   "defs": {
     "main": {
       "type": "procedure",
-      "description": "Remove a member from a space's host-internal member list. Requires auth as the space owner.",
+      "description": "Delete a space. Requires auth as the space owner. Deletes the owner's own repo in the space; other members' repos are left in place. Afterwards, reads and writes fail with SpaceNotFound and getSpaceCredential returns SpaceDeleted. Idempotent. Implemented by PDS.",
       "input": {
         "encoding": "application/json",
         "schema": {
           "type": "object",
-          "required": ["space", "did"],
+          "required": ["space"],
           "properties": {
             "space": {
               "type": "string",
               "format": "space-ref",
-              "description": "Reference to the space."
-            },
-            "did": {
-              "type": "string",
-              "format": "did",
-              "description": "The DID of the member to remove."
+              "description": "Reference to the space to delete."
             }
           }
         }

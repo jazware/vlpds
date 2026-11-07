@@ -2,12 +2,12 @@
 # The reference implementation, pinned: clones bluesky-social/atproto at the
 # Spaces alpha pin into .scratch/atproto (blobless, so small) and builds the
 # reference PDS image from it natively, with the Dockerfile of the published
-# pds-spaces-alpha build (79d6307e: the same packages as the pin; the pin's
+# pds-spaces-alpha build (704b9e2a: the same packages as the pin; the pin's
 # own Dockerfile misses two workspace packages). Skips what already exists.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-PIN=5b95b2f2723a2882824fbb0b819fd6aad884ef20
-DOCKERFILE_REV=79d6307e19908f3af406838ea0e5fae42847f182
+PIN=98ef3a6b9d1364f0543f137dd024de9651b21c4c
+DOCKERFILE_REV=704b9e2acd7df78c9a22a275c64ecf8befcf30b7
 IMAGE="vlpds-spaces-refpds:${PIN:0:8}"
 src="$here/.scratch/atproto"
 mkdir -p "$here/.scratch"

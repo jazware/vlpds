@@ -107,7 +107,7 @@ hex = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # OAuth (src/oauth): ES256 (P-256) for DPoP proofs, client assertions and access tokens;
 # DNS TXT lookups for lexicon authority resolution (include: permission sets).
-p256 = { version = "0.14", features = ["ecdsa", "getrandom"] }
+p256 = { version = "0.14", features = ["ecdsa", "ecdh", "getrandom"] }
 hickory-resolver = "0.26"
 # HTTP: server-wide CORS, response compression (json/car) and request
 # Content-Encoding decoding, as the reference PDS does.

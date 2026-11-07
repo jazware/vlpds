@@ -23,8 +23,7 @@ const MAX_ENDPOINT: usize = 2048;
 pub const REGISTRATION_TTL: Duration = Duration::from_secs(24 * 3600);
 
 /// Reference `resolveServiceEndpoint`: `did#fragment` names that service
-/// entry; a bare DID its PDS. `#atproto_space_host` falls back to the PDS
-/// when the document has no dedicated entry.
+/// entry; a bare DID its PDS.
 pub async fn resolve_service_endpoint(app: &App, service: &str) -> Option<String> {
     let (did, fragment) = match service.split_once('#') {
         Some((d, f)) => (d, Some(f)),
@@ -41,8 +40,6 @@ pub async fn resolve_service_endpoint(app: &App, service: &str) -> Option<String
         }
     };
     let ep = match fragment {
-        Some("atproto_space_host") => vlatproto::did_resolver::service_endpoint(&doc, "atproto_space_host")
-            .or_else(|| vlatproto::did_resolver::service_endpoint(&doc, "atproto_pds")),
         Some(f) => vlatproto::did_resolver::service_endpoint(&doc, f),
         None => vlatproto::did_resolver::service_endpoint(&doc, "atproto_pds"),
     };
@@ -207,7 +204,7 @@ pub async fn forward(app: &App, f: &Forward, prev: Option<Tid>) -> &'static str 
         "space": &*f.uri,
         "repo": f.writer,
         "repoRev": f.repo_rev.to_string(),
-        "hash": b64(&f.hash),
+        "data": b64(&f.hash),
         "spaceRev": f.space_rev.to_string(),
     });
     if let Some(p) = prev {
@@ -260,9 +257,9 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Ok when `writer`'s host serves `hash` at `rev` in `space` now: its
 /// getLatestCommit, read as a syncer reads it with a credential `authority`
-/// issues itself, signed by `writer`'s #atproto key. A commit's hash is the
-/// author's claim only when it comes from the author's host (see
-/// [`super::commit::verify`]), which is where this asks.
+/// issues itself, its MAC keyed against `writer`'s `#atproto_kem` key. A
+/// commit's hash is the author's claim only when it comes from the author's
+/// host, MACed for this request, which is what this asks for.
 pub async fn check_served_hash(
     app: &App,
     space: &str,
@@ -271,9 +268,44 @@ pub async fn check_served_hash(
     rev: Tid,
     hash: &[u8; 32],
 ) -> Result<(), String> {
-    use p256::ecdsa::signature::Signer;
     let doc = app.did_resolver.resolve(writer).await.map_err(|e| format!("could not resolve the writer: {e:?}"))?;
-    let endpoint = vlatproto::did_resolver::service_endpoint(&doc, "atproto_pds").ok_or("the writer names no PDS")?;
+    match served_commit(app, &doc, space, authority, writer).await {
+        Err(e) if e == MAC_MISMATCH => {
+            // the KEM key may have rotated since the document was cached
+            if !app.did_resolver.refresh(writer) {
+                return Err(e);
+            }
+            let doc = app.did_resolver.resolve(writer).await.map_err(|e| format!("could not resolve the writer: {e:?}"))?;
+            check_commit(served_commit(app, &doc, space, authority, writer).await?, rev, hash)
+        }
+        r => check_commit(r?, rev, hash),
+    }
+}
+
+const MAC_MISMATCH: &str = "the commit's MAC doesn't verify against the writer's KEM key";
+
+fn check_commit(c: super::commit::Commit, rev: Tid, hash: &[u8; 32]) -> Result<(), String> {
+    if c.rev != rev.to_string() {
+        return Err(format!("the writer's host is at {}", c.rev));
+    }
+    if c.data != *hash {
+        return Err("the writer's host serves another hash".into());
+    }
+    Ok(())
+}
+
+/// The writer's getLatestCommit, its MAC verified.
+async fn served_commit(
+    app: &App,
+    doc: &J,
+    space: &str,
+    authority: &str,
+    writer: &str,
+) -> Result<super::commit::Commit, String> {
+    use p256::ecdsa::signature::Signer;
+    let endpoint = vlatproto::did_resolver::service_endpoint(doc, "atproto_pds").ok_or("the writer names no PDS")?;
+    let kem = super::mac::kem_key_of(doc).ok_or("the writer publishes no KEM key")?;
+    let (share, secret) = super::mac::encapsulate(&kem).map_err(|e| e.0.to_string())?;
     let (key, _) = crate::xrpc::proxy::account_key_status(app, authority).await.map_err(|e| e.message)?;
     let holder = <p256::ecdsa::SigningKey as p256::elliptic_curve::Generate>::generate();
     let mut mk = vec![0x80, 0x24];
@@ -292,27 +324,23 @@ pub async fn check_served_hash(
         Ok::<_, std::convert::Infallible>(key.sign(b))
     })
     .map_err(|e| format!("credential: {e:?}"))?;
-    let authorization = format!("{} {cred}", crate::xrpc::authn::SPACE_SCHEME);
-    let input = super::httpsig::signature_input(true, &holder_did);
-    let sig: p256::ecdsa::Signature =
-        holder.sign(&super::httpsig::signature_base(&authorization, &input, Some(writer)));
-    use base64::Engine;
-    let sig = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+    let signed = super::httpsig::headers(&cred, writer, |b| {
+        let sig: p256::ecdsa::Signature = holder.sign(b);
+        sig.to_bytes().into()
+    });
     let url = format!("{}/xrpc/com.atproto.space.getLatestCommit", endpoint.trim_end_matches('/'));
-    let mut r = vlatproto::http::guarded(app.config.dev_mode)
+    let mut req = vlatproto::http::guarded(app.config.dev_mode)
         .request(reqwest::Method::GET, &url)?
         .query(&[("space", space), ("repo", writer)])
-        .header(reqwest::header::AUTHORIZATION, authorization)
-        .header(super::httpsig::AUDIENCE_HEADER, writer)
-        .header("signature-input", format!("{}={input}", super::httpsig::LABEL))
-        .header("signature", format!("{}=:{sig}:", super::httpsig::LABEL))
-        .timeout(CHECK_TIMEOUT)
-        .send()
-        .await
-        .map_err(|e| http_error("getLatestCommit", e))?;
+        .header(super::mac::WANT_MAC_HEADER, super::mac::format_want_mac(super::mac::MacType::Repo, &share));
+    for (k, v) in signed {
+        req = req.header(k, v);
+    }
+    let mut r = req.timeout(CHECK_TIMEOUT).send().await.map_err(|e| http_error("getLatestCommit", e))?;
     if !r.status().is_success() {
         return Err(format!("getLatestCommit: {}", r.status()));
     }
+    let mac = r.headers().get(super::mac::MAC_HEADER).and_then(|v| v.to_str().ok()).map(String::from);
     let mut buf = Vec::new();
     while let Some(c) = r.chunk().await.map_err(|e| http_error("getLatestCommit", e))? {
         if buf.len() + c.len() > MAX_RESPONSE {
@@ -321,45 +349,12 @@ pub async fn check_served_hash(
         buf.extend_from_slice(&c);
     }
     let body: J = serde_json::from_slice(&buf).map_err(|_| "getLatestCommit: not JSON")?;
-    let c = &body["commit"];
-    let bytes = |k: &str| -> Result<Vec<u8>, String> {
-        let s = c[k]["$bytes"].as_str().ok_or_else(|| format!("commit.{k} isn't bytes"))?;
-        base64::engine::general_purpose::STANDARD_NO_PAD
-            .decode(s.trim_end_matches('='))
-            .map_err(|_| format!("commit.{k} isn't base64"))
-    };
-    let commit = super::commit::SignedCommit {
-        ver: c["ver"].as_i64().ok_or("commit.ver isn't an integer")?,
-        hash: bytes("hash")?,
-        ikm: bytes("ikm")?,
-        sig: bytes("sig")?,
-        mac: bytes("mac")?,
-        rev: c["rev"].as_str().ok_or("commit.rev isn't a string")?.to_string(),
-    };
-    let rev = rev.to_string();
-    if commit.rev != rev {
-        return Err(format!("the writer's host is at {}", commit.rev));
+    let commit = super::commit::Commit::from_json(&body["commit"]).ok_or("getLatestCommit: malformed commit")?;
+    let mac = super::mac::parse_mac(mac.as_deref(), super::mac::MacType::Repo).map_err(|e| e.0.to_string())?;
+    if !super::commit::verify(&commit, space, writer, &secret, &mac) {
+        return Err(MAC_MISMATCH.into());
     }
-    if commit.hash[..] != hash[..] {
-        return Err("the writer's host serves another hash".into());
-    }
-    let ctx = super::commit::CommitCtx { space, author: writer, rev: &rev };
-    let signed_by = |doc: &J| {
-        vlatproto::did_resolver::signing_key_multibase(doc)
-            .is_some_and(|mb| super::commit::verify(&commit, &ctx, &format!("did:key:{mb}")))
-    };
-    if signed_by(&doc) {
-        return Ok(());
-    }
-    // a key rotated since the document was cached
-    if app.did_resolver.refresh(writer) {
-        if let Ok(doc) = app.did_resolver.resolve(writer).await {
-            if signed_by(&doc) {
-                return Ok(());
-            }
-        }
-    }
-    Err("the commit doesn't verify against the writer's key".into())
+    Ok(commit)
 }
 
 #[cfg(test)]

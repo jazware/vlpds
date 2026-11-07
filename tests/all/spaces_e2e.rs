@@ -29,10 +29,10 @@ fn bytes(v: &J) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD_NO_PAD.decode(s.trim_end_matches('=')).unwrap()
 }
 
-fn signed_commit(c: &J) -> commit::SignedCommit {
-    commit::SignedCommit {
+fn signed_commit(c: &J) -> commit::Commit {
+    commit::Commit {
         ver: c["ver"].as_i64().unwrap(),
-        hash: bytes(&c["hash"]),
+        hash: bytes(&c["data"]),
         ikm: bytes(&c["ikm"]),
         sig: bytes(&c["sig"]),
         mac: bytes(&c["mac"]),
@@ -216,7 +216,7 @@ async fn credential_refusals() {
         a.srv
             .http
             .get(&url)
-            .header("authorization", format!("Atproto-Space {cred}"))
+            .header("authorization", format!("Atproto-Space-Credential {cred}"))
             .header("atproto-space-audience", &a.did)
             .send()
             .await
@@ -231,16 +231,12 @@ async fn credential_refusals() {
     // a delegation token is good for one exchange
     let tok = a.delegation_token(&space).await.ok()["token"].as_str().unwrap().to_string();
     a.exchange(&s.url, &space, &tok).await.ok();
-    a.exchange(&s.url, &space, &tok).await.err(401, "JwtReplayed");
+    a.exchange(&s.url, &space, &tok).await.err(400, "InvalidDelegationToken");
     // one for another space than the request names
     let tok = a.delegation_token(&other).await.ok()["token"].as_str().unwrap().to_string();
     a.exchange(&s.url, &space, &tok).await.err(400, "InvalidDelegationToken");
     // a credential isn't a delegation token
-    let mut rb = a.srv.http.post(format!("{}/xrpc/com.atproto.space.getSpaceCredential", s.url));
-    for (k, v) in a.holder.headers(&format!("Bearer {cred}"), None) {
-        rb = rb.header(k, v);
-    }
-    resp(rb.json(&json!({"space": space})).send().await.unwrap()).await.err(401, "BadJwtType");
+    a.exchange(&s.url, &space, &cred).await.err(400, "InvalidDelegationToken");
 }
 
 /// Space data is OAuth-only: a password session or an app password reads
@@ -438,7 +434,7 @@ async fn eventually<T>(within: Duration, mut f: impl FnMut() -> Option<T>) -> Op
 /// The newest rev and hash of `a`'s repo in `space`, as its owner reads them.
 async fn head(a: &SpaceClient, space: &str) -> (String, Vec<u8>) {
     let r = a.get("com.atproto.space.getLatestCommit", &[("space", space), ("repo", &a.did)]).await.ok();
-    (r["commit"]["rev"].as_str().unwrap().to_string(), bytes(&r["commit"]["hash"]))
+    (r["commit"]["rev"].as_str().unwrap().to_string(), bytes(&r["commit"]["data"]))
 }
 
 const ANY_SCOPE: &str = "space:com.example.group?authority=*&collection=com.example.post&action=read&action=create";
@@ -467,7 +463,7 @@ async fn outbound_notify_through_durable_outbox() {
     assert!(sends.len() <= 2, "{} sends: {:?}", sends.len(), sends.iter().map(|s| &s.0).collect::<Vec<_>>());
     assert_eq!(last.0["space"], json!(space));
     assert_eq!(last.0["repo"], json!(a.did));
-    assert_eq!(bytes(&last.0["hash"]), hash);
+    assert_eq!(bytes(&last.0["data"]), hash);
     let key = s.signing_key(&a.did).await;
     for (_, jwt) in &sends {
         check_service_jwt(jwt, &a.did, &auth.did, &key);

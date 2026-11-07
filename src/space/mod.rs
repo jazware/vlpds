@@ -26,7 +26,6 @@
 //! - [`credcache`]: verified credentials, until they expire.
 
 pub mod attestation;
-pub mod car;
 pub mod check;
 pub mod commit;
 pub mod credcache;
@@ -35,12 +34,14 @@ pub mod heads;
 pub mod host;
 pub mod httpsig;
 pub mod lthash;
+pub mod mac;
 pub mod outbox;
 pub mod repo;
 pub mod retention;
 pub mod revocations;
 pub mod rows;
 mod sfv;
+pub mod star;
 pub mod token;
 
 use std::sync::Arc;

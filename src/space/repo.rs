@@ -129,20 +129,21 @@ pub enum SpaceOp {
         /// then, so a renewal that landed meanwhile is never undone.
         expired_by: Option<u64>,
     },
-    /// vlpds.space.importRepo: claims the space for an import (`nonce`),
-    /// the account having no records there; its writes there wait it out.
-    /// An empty repo's head goes (the import's `rev` must be newer), so
-    /// what's staged is never served until the commit. With `rev` None,
-    /// only a repo with no head is claimed: to clear rows left under it.
+    /// space.importRepo: claims the space for an import (`nonce`); the
+    /// account's writes there wait it out. With `replace`, a repo there has
+    /// its head taken away, so what's staged is never served until the
+    /// commit; without, only a repo with no head is claimed: to clear rows
+    /// left under it.
     ImportBegin {
         nonce: u64,
-        rev: Option<Tid>,
+        replace: bool,
     },
-    /// The imported records are durable in `sR`: the head goes in, at the
-    /// imported rev, with an empty oplog.
+    /// The imported records are durable in `sR`: the head goes in at a new
+    /// rev after `prev` (the archive's and the replaced repo's), with an
+    /// empty oplog.
     ImportCommit {
         nonce: u64,
-        rev: Tid,
+        prev: Option<Tid>,
         hash: Box<LtHash>,
         records: u64,
     },
@@ -859,19 +860,13 @@ pub fn record_writer(
     Ok(sequence(host, authority, sid, writer, repo_rev, hash, clock_id, &mut muts)?.map(|s| (muts, s)))
 }
 
-fn importable(head: &SpaceHead, uri: &str, rev: Option<Tid>) -> Result<(), SpaceError> {
-    let invalid = |m: &str| Err(SpaceError::Write(WriteError::Invalid(m.into())));
+fn importable(head: &SpaceHead, uri: &str, replace: bool) -> Result<(), SpaceError> {
     if *head.uri != *uri {
         return Err(internal(format!("space id collision: {} and {uri}", head.uri)));
     }
-    match (head.rev, rev) {
-        (None, _) => Ok(()),
-        (Some(_), None) => invalid("this account has a repo in the space"),
-        // the authority ignores a notify whose rev isn't newer than the last
-        (Some(old), Some(rev)) if rev <= old => {
-            invalid("the imported commit's rev must be newer than the repo's in the space")
-        }
-        (Some(_), Some(_)) => Ok(()),
+    match (head.rev, replace) {
+        (Some(_), false) => Err(SpaceError::Write(WriteError::Invalid("this account has a repo in the space".into()))),
+        _ => Ok(()),
     }
 }
 
@@ -882,10 +877,10 @@ pub fn import_begin(
     did: &str,
     sid: SpaceId,
     uri: &str,
-    rev: Option<Tid>,
+    replace: bool,
 ) -> Result<Option<Vec<Mutation>>, SpaceError> {
     let head = st.repos.get_mut(&sid).ok_or_else(|| internal("space head not loaded"))?;
-    importable(head, uri, rev)?;
+    importable(head, uri, replace)?;
     if head.rev.is_none() {
         // what's staged lands under it: the next op reads it again (and
         // looks for leftovers), whether the import commits or stops. With no
@@ -902,21 +897,22 @@ pub fn import_begin(
     Ok(Some(vec![del(state::space_head_key(did, &sid)), del(state::space_list_key(did, uri, SpaceListed::Repo))]))
 }
 
-/// importRepo's head: the `sH` row at the imported rev, and the notify the
-/// authority is owed (or, the account being the authority, its writer
-/// state), as a write's entry has.
+/// importRepo's head: the `sH` row at a new rev after `prev`, and the
+/// notify the authority is owed (or, the account being the authority, its
+/// writer state), as a write's entry has.
 #[allow(clippy::too_many_arguments)]
 pub fn import_commit(
     st: &mut SpaceStates,
     did: &str,
     sid: SpaceId,
     uri: &Arc<str>,
-    rev: Tid,
+    prev: Option<Tid>,
     hash: LtHash,
     records: u64,
     clock_id: u64,
 ) -> Result<BuiltWrite, SpaceError> {
-    importable(st.repos.get(&sid).ok_or_else(|| internal("space head not loaded"))?, uri, Some(rev))?;
+    importable(st.repos.get(&sid).ok_or_else(|| internal("space head not loaded"))?, uri, true)?;
+    let rev = tid::next_rev(prev, clock_id);
     let created = 0;
     let mut head = SpaceHead::new(uri.clone(), None);
     (head.rev, head.hash, head.records, head.created) = (Some(rev), hash.clone(), records, created);
@@ -1432,28 +1428,26 @@ mod tests {
             r => panic!("{:?}", r.err()),
         }
         // a headless repo is claimed and read again afterwards
-        assert!(import_begin(&mut st, did, sid, URI, None).unwrap().is_none());
+        assert!(import_begin(&mut st, did, sid, URI, false).unwrap().is_none());
         assert!(!st.repos.contains_key(&sid));
 
         let (mut st, sid, uri) = states_with(&[("com.example.post/a", None)]);
         go(&mut st, sid, &uri, vec![create("a", 1)]).unwrap();
         let invalid =
             |r: Result<Option<Vec<Mutation>>, SpaceError>| matches!(r, Err(SpaceError::Write(WriteError::Invalid(_))));
-        assert!(invalid(import_begin(&mut st, did, sid, URI, Some(Tid(1)))), "an older rev over its records");
         let del = SpaceWrite::Delete { collection: "com.example.post".into(), rkey: "a".into(), must_exist: true };
-        let gone = go(&mut st, sid, &uri, vec![del]).unwrap().rev;
-        assert!(invalid(import_begin(&mut st, did, sid, URI, None)), "a sweep never takes a head");
-        assert!(invalid(import_begin(&mut st, did, sid, URI, Some(gone))), "the import's rev must be newer");
+        go(&mut st, sid, &uri, vec![del]).unwrap();
+        assert!(invalid(import_begin(&mut st, did, sid, URI, false)), "a sweep never takes a head");
         // an empty repo's head goes, and what's held is headless and unswept
-        let m = import_begin(&mut st, did, sid, URI, Some(Tid(gone.0 + (1 << 20)))).unwrap().unwrap();
+        let m = import_begin(&mut st, did, sid, URI, true).unwrap().unwrap();
         let keys: Vec<_> = m.iter().map(|m| (m.key.to_vec(), m.val.clone())).collect();
         let list = state::space_list_key(did, URI, SpaceListed::Repo);
         assert_eq!(keys, [(state::space_head_key(did, &sid), None), (list, None)]);
         assert!(st.repos[&sid].rev.is_none() && st.repos[&sid].unswept);
-        // a repo with records is replaced the same way at a newer rev
+        // a repo with records is replaced the same way
         let (mut st, sid, uri) = states_with(&[("com.example.post/a", None)]);
-        let rev = go(&mut st, sid, &uri, vec![create("a", 1)]).unwrap().rev;
-        let m = import_begin(&mut st, did, sid, URI, Some(Tid(rev.0 + (1 << 20)))).unwrap().unwrap();
+        go(&mut st, sid, &uri, vec![create("a", 1)]).unwrap();
+        let m = import_begin(&mut st, did, sid, URI, true).unwrap().unwrap();
         let keys: Vec<_> = m.iter().map(|m| (m.key.to_vec(), m.val.clone())).collect();
         let list = state::space_list_key(did, URI, SpaceListed::Repo);
         assert_eq!(keys, [(state::space_head_key(did, &sid), None), (list, None)]);
