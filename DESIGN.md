@@ -5495,16 +5495,16 @@ changes weekly. Pinned: bluesky-social/atproto PR #5187 (branch
 (HTTP Message Signatures instead of DPoP, 10-minute credentials and
 revocation, `repoRev`/`spaceRev`). The proposal is bluesky-social/proposals
 0016. Open upstream changes that would move this: proposals #114 (STAR
-instead of the 2-root CAR export), #118 (`name` becomes `title` in space
-type declarations) and #119 (space management moves into
-`com.atproto.space.*` behind a policy token).
+instead of the 2-root CAR export) and #118 (`name` becomes `title` in space
+type declarations).
 
 Everything is behind `--spaces` (off). With it off, the router, the log and
 every format are what they were before Spaces, and no `vlpds_space_*`
 series is exported. With it on, vlpds is a repo host for its accounts'
-space repos and a simplespace host for the spaces they govern, and every
-`com.atproto.space.*` and `com.atproto.simplespace.*` method is answered
-on the node (501 for one a PDS doesn't serve), never proxied. The operator
+space repos and a space host for the spaces they govern, under the
+baseline policies (`personalspace`, `memberspace`, `managedspace`), and
+every `com.atproto.space.*` and policy method (`com.atproto.memberspace.*`)
+is answered on the node (501 for one a PDS doesn't serve), never proxied. The operator
 docs are in `docs/spaces/`.
 
 The lexicons are vendored unmodified in `lexicons/spaces-alpha`. The syntax
@@ -5531,8 +5531,8 @@ URI), since URIs can run past 600 B. The URI is kept in `sH`, `sS` and
 | `sP/{did}\0{sid}` | author | the notifyWrite outbox row (URI, repoRev, hash) |
 | `sb/{did}\0{sid}{cid}\0{path}` | author | a space record's blob ref |
 | `sc/{did}\0{cid}\0{sid}{path}` | author | the same ref, CID first, for the GC and `sync.getBlob` |
-| `sS/{auth}\0{sid}` | authority | the space: policies, created, a `deleted` tombstone |
-| `sM/{auth}\0{sid}{member}` | authority | a member's access |
+| `sS/{auth}\0{sid}` | authority | the space: its normalized policy, created, a `deleted` tombstone |
+| `sM/{auth}\0{sid}{member}` | authority | a member's access, read only under a `memberspace` |
 | `sW/{auth}\0{sid}{writer}` | authority | writer state: repoRev, hash, spaceRev |
 | `sQ/{auth}\0{sid}{spaceRev}` | authority | the writer, in `listRepos` order (latest per writer), and the spaceRev sequenced before it |
 | `sN/{auth}\0{sid}{service}` | authority | a notify registration, 24 h |
@@ -5566,6 +5566,25 @@ segments the same way (the bench measured 0.50 PUTs per write at 4
 writers on one repo, 0.125 at 16, for both). The new head is published to
 the in-memory heads cache at the ack, tagged with the shard and epoch it
 was read under.
+
+The space host's config changes run on the authority's worker too, and a
+policy that publishes itself (`publishPolicy`, `publishMembers`) gets its
+`com.atproto.space.policy` and `com.atproto.memberspace.member` records
+written into the authority's own repo in the same entry, as the
+authority's write, so the records never disagree with the config. Direct
+writes to those collections are refused in every repo. `updateSpace` to
+another `$type` deletes the member list in that entry. `clearRecords`
+claims the repo as an import does, so writes to it wait, reads the rows
+once the account's earlier entries are applied, and writes their deletes
+with the new head in one entry.
+
+An `sS` row from before space policies holds the simplespace config. It
+decodes to the policy the reference's `006-space-policy` migration gives
+it and is written in the new form at its next change, so there's no
+rewrite at startup. Every row carries the closest simplespace config next
+to the policy, so an older build still reads it (Spaces rows aren't behind
+a feature level). The member list of one that becomes a `managedspace`
+isn't read again and goes at the next change of `$type` or deletion.
 
 ### Read path
 
@@ -5796,9 +5815,9 @@ the space row, and counts a mismatch in
   that forks the chain. A lost one does, and the service
   catches up with listRepos as it would with the reference.
 - Space data is OAuth-only. App passwords (scoped or not) and password
-  sessions are refused on every space and simplespace method, delegation
+  sessions are refused on every space and policy method, delegation
   tokens included. `getServiceAuth` mints a token for a
-  `com.atproto.space.*` or `com.atproto.simplespace.*` method (with
+  `com.atproto.space.*` or policy method (with
   `--spaces` on or off) only to an OAuth app whose `space:` grant covers
   the action: `manage` or the account's own spaces for
   notifyCredentialRevoked (an authority's app revoking at member hosts),

@@ -13,7 +13,7 @@ timeline:
   lanes:
     - { id: app, label: App, sub: "OAuth client · P-256 key", tone: ink }
     - { id: user, label: Your PDS, sub: holds your account key, tone: accent }
-    - { id: auth, label: Authority's host, sub: simplespace, tone: accent }
+    - { id: auth, label: Authority's host, sub: space host, tone: accent }
     - { id: bob, label: bob's PDS, sub: member repo, tone: accent }
     - { id: carol, label: carol's PDS, sub: member repo, tone: accent }
   spans:
@@ -54,6 +54,29 @@ vlpds signs both JWTs with ES256K and the `#atproto` key. It doesn't publish a s
 `jti` is claimed with `claim_replay_anywhere`, so a replay is refused even on another node after a
 failover.
 
+## Who gets a credential
+
+The authority checks the user, then the app. A user the policy refuses gets `SpaceNotFound`, so a
+refusal says nothing about the space, and `AppNotAuthorized` only comes after the user passes.
+
+| Policy | Users | Apps | No delegation token |
+|---|---|---|---|
+| `personalspace` | the authority only | any | `SpaceNotFound` |
+| `memberspace` | anyone with `publicRead`, else members with `read` | `allowedApps` by attested `client_id`, else any | issued only with `publicRead` |
+| `managedspace` | whoever `managingApp` says (`checkUserAccess`, `access=read`, with the `clientId`) | the managing app's call | `SpaceNotFound` |
+
+The authority itself always gets one. A managing app that can't be resolved, errors or times out
+denies. vlpds also refuses a taken-down member or authority, and a taken-down space answers
+`NotAuthorized` to anyone the policy admits.
+
+`getSpace` and `listMembers` are the owner's alone, over OAuth with `read_self`, and a credential
+doesn't reach them. A policy can publish itself and its member list instead: with `publishPolicy`
+the space host keeps a `com.atproto.space.policy/self` record in the authority's repo in the space,
+and with `publishMembers` a `com.atproto.memberspace.member` record per member, keyed by DID
+(`did:web:localhost%3A2583` as `did:web:localhost:2583`). They change in the same log entry as the
+config they mirror, and readers sync them like any record. Only the space host writes them: a direct
+write of either collection in any repo gets 400.
+
 ## OAuth only
 
 | Session | Space reads and writes | `getDelegationToken` |
@@ -65,7 +88,7 @@ failover.
 Space data is OAuth-only on vlpds. The reference lets legacy app passwords read and write the
 account's own space records, so this is a deliberate divergence
 ([Interop](interop.md#where-vlpds-differs)). `getServiceAuth` follows the same rule for a
-`com.atproto.space.*` or `com.atproto.simplespace.*` method, with `--spaces` on or off: an app
+`com.atproto.space.*` or policy method (`com.atproto.memberspace.*`, `managedspace.*`), with `--spaces` on or off: an app
 password or password session never gets a token for one, and an OAuth app needs a `space:` grant
 that covers it. `transition:generic` or `rpc:` alone isn't enough. A `notifyCredentialRevoked`
 token (an authority's app revoking at member hosts) needs `manage` or the account's own spaces, a

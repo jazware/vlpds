@@ -107,6 +107,7 @@ pub(super) fn space_error(e: SpaceError) -> XrpcError {
         SpaceError::SpaceNotFound => XrpcError::bad("SpaceNotFound", "Space not found"),
         SpaceError::SpaceDeleted => XrpcError::bad("SpaceDeleted", "Space has been deleted"),
         SpaceError::SpaceAlreadyExists => XrpcError::bad("SpaceAlreadyExists", "Space already exists"),
+        SpaceError::PolicyMismatch => super::space_policy::policy_mismatch(),
         SpaceError::NotAuthorized(m) => forbidden(m),
         SpaceError::Unswept(_) => XrpcError::unavailable("Unavailable", "the space repo is being cleared; retry"),
         SpaceError::SameRev => XrpcError::internal("an unchecked same-rev notify"),
@@ -122,10 +123,15 @@ fn forbidden(m: impl Into<String>) -> XrpcError {
 /// first write over rows an import or a sweep left behind clears them and
 /// runs again.
 pub(super) async fn submit_space(app: &App, did: &str, space: &Space, op: SpaceOp) -> XResult<SpaceAck> {
+    let again = match &op {
+        SpaceOp::Write { .. } => None,
+        op => op.host_retry(),
+    };
     let ack = match submit_space_once(app, did, space, op).await? {
         Err(SpaceError::Unswept(writes)) => {
             super::space_import::sweep_unheaded(app, did, space).await?;
-            submit_space_once(app, did, space, SpaceOp::Write { writes }).await?.map_err(space_error)
+            let op = again.unwrap_or(SpaceOp::Write { writes });
+            submit_space_once(app, did, space, op).await?.map_err(space_error)
         }
         r => r.map_err(space_error),
     }?;
@@ -172,8 +178,16 @@ pub(super) async fn submit_space_once(
     rx.await.map_err(|_| XrpcError::internal("worker dropped request"))
 }
 
+/// Reference `assertNotPolicyRecord`: in any repo, validated or not.
+fn refuse_published(collection: &str) -> XResult<()> {
+    match crate::space::publish::is_published(collection) {
+        true => Err(XrpcError::bad("InvalidRequest", crate::space::publish::refusal(collection))),
+        false => Ok(()),
+    }
+}
+
 /// Reference: `repo` must be the caller (ForbiddenError).
-fn writer(creds: &Credentials, repo: &str) -> XResult<String> {
+pub(super) fn writer(creds: &Credentials, repo: &str) -> XResult<String> {
     let did = creds.user_did()?;
     if did != repo {
         return Err(forbidden("repo must match authenticated user"));
@@ -232,6 +246,7 @@ async fn create_record_inner(app: &Arc<App>, creds: &Credentials, body: RecordBo
     let record = take(&mut v, "record")?;
     crate::ratelimit::check_repo_write(creds.did(), crate::ratelimit::CREATE_POINTS)?;
     let did = writer(creds, &repo)?;
+    refuse_published(&collection)?;
     creds.need_space(&space.target(), SpaceAccess::Write("create", &collection))?;
     check_path(&collection, rkey.as_deref())?;
     let rkey = rkey.unwrap_or_else(|| app.tids.next().to_string());
@@ -258,6 +273,7 @@ async fn put_record_inner(app: &Arc<App>, creds: &Credentials, body: RecordBody)
     let record = take(&mut v, "record")?;
     crate::ratelimit::check_repo_write(creds.did(), crate::ratelimit::UPDATE_POINTS)?;
     let did = writer(creds, &repo)?;
+    refuse_published(&collection)?;
     // a create or an update by what the path holds: the worker asks for the
     // scope of the one it turns out to be (reference putRecord)
     let t = space.target();
@@ -305,6 +321,7 @@ async fn delete_record_inner(app: &App, creds: &Credentials, inp: DeleteRecordIn
     let space = Space::parse(&inp.space)?;
     crate::ratelimit::check_repo_write(creds.did(), crate::ratelimit::DELETE_POINTS)?;
     let did = writer(creds, &inp.repo)?;
+    refuse_published(&inp.collection)?;
     creds.need_space(&space.target(), SpaceAccess::Write("delete", &inp.collection))?;
     check_path(&inp.collection, Some(&inp.rkey))?;
     // idempotent, as com.atproto.repo.deleteRecord is
@@ -362,6 +379,7 @@ async fn apply_writes_inner(app: &Arc<App>, creds: &Credentials, body: RecordBod
             DELETE => "delete",
             _ => return Err(XrpcError::bad("InvalidRequest", format!("Action not supported: {t}"))),
         };
+        refuse_published(&collection)?;
         creds.need_space(&space.target(), SpaceAccess::Write(action, &collection))?;
         check_path(&collection, rkey.as_deref())?;
         if action == "delete" {
@@ -447,7 +465,7 @@ pub(super) fn assert_space_read(creds: &Credentials, space: &Space, repo: &str) 
 /// 300 s. The account's own reads of its repo stay open.
 async fn assert_space_open(app: &App, space: &Space, self_read: bool) -> XResult<()> {
     if !self_read && space_takendown(app, space).await? {
-        return Err(super::simplespace::space_not_found());
+        return Err(super::space_policy::space_not_found());
     }
     Ok(())
 }
@@ -1301,7 +1319,7 @@ async fn issue_credential(app: &App, inp: CredentialIn) -> XResult<Json<J>> {
         None => None,
     };
     let space = Space::parse(&inp.space)?;
-    super::simplespace::assert_space_host(app, &space).await?;
+    super::space_policy::assert_space_host(app, &space).await?;
     let client_id = match &inp.client_attestation {
         Some(a) => {
             let aud = token::space_host_aud(&space.authority);
@@ -1309,7 +1327,7 @@ async fn issue_credential(app: &App, inp: CredentialIn) -> XResult<Json<J>> {
         }
         None => None,
     };
-    let row = super::simplespace::space_row(app, &space).await?;
+    let row = super::space_policy::space_row(app, &space).await?;
     if !row.live() {
         // the durable signal that a space is gone, for a syncer that missed
         // notifySpaceDeleted, with or without a delegation token
@@ -1332,22 +1350,21 @@ async fn issue_credential(app: &App, inp: CredentialIn) -> XResult<Json<J>> {
             Err(e) => return Err(e),
         }
     }
-    // without a delegation token only a public space issues a credential,
-    // and anything else is answered as though the space didn't exist
-    if user.is_none() && row.read_policy != crate::space::rows::Policy::Public {
-        return Err(super::simplespace::space_not_found());
-    }
-    // the app perimeter first: decided from the config alone, so a refused
-    // app is never disclosed to a managing app
-    if let crate::space::rows::AppAccess::AllowList { allowed } = &row.app_access {
-        if !client_id.as_ref().is_some_and(|c| allowed.contains(c)) {
-            return Err(XrpcError::bad("AppNotAuthorized", "Application not authorized for this space"));
+    // Reference `authorizeCredential`: the user first, and one the policy
+    // refuses is answered as though the space didn't exist, so a refusal
+    // discloses nothing about it. Without a delegation token only a public
+    // read admits. The app perimeter only after that.
+    let user_ok = match &user {
+        Some(user) => {
+            super::space_policy::authorize_user(app, &space, &row, user, "read", client_id.as_deref()).await?
         }
+        None => row.policy.public_read(),
+    };
+    if !user_ok {
+        return Err(super::space_policy::space_not_found());
     }
-    if let Some(user) = &user {
-        if !super::simplespace::authorize_user(app, &space, &row, user, "read", client_id.as_deref()).await? {
-            return Err(XrpcError::bad("UserNotAuthorized", "User not authorized for this space"));
-        }
+    if !row.policy.app_authorized(client_id.as_deref()) {
+        return Err(XrpcError::bad("AppNotAuthorized", "Application not authorized for this space"));
     }
     if taken_down {
         return Err(XrpcError::bad("NotAuthorized", "Space has been taken down"));
@@ -2045,18 +2062,18 @@ pub(super) async fn process_notify_write(
     hash: [u8; 32],
     same_rev: SameRev,
 ) -> XResult<Notified> {
-    super::simplespace::assert_space_host(app, space).await?;
+    super::space_policy::assert_space_host(app, space).await?;
     if repo_rev.micros() > vlatproto::tid::now_micros() + FUTURE_REV.as_micros() as u64 {
         return Err(XrpcError::bad("FutureRev", "Repo revision is in the future"));
     }
-    let row = super::simplespace::live_space(app, space).await?;
+    let row = super::space_policy::live_space(app, space).await?;
     if space_takendown(app, space).await? {
         tracing::debug!(space = %hex::encode(space.sid), "notifyWrite to a taken-down space dropped");
         return Ok(Notified::Noop);
     }
-    let managing_app = match &row.write_policy {
-        crate::space::rows::Policy::ManagingApp { .. } if writer != space.authority => {
-            Some(super::simplespace::authorize_user(app, space, &row, writer, "write", None).await?)
+    let managing_app = match &row.policy {
+        crate::space::rows::Policy::Managed { .. } if writer != space.authority => {
+            Some(super::space_policy::authorize_user(app, space, &row, writer, "write", None).await?)
         }
         _ => None,
     };
@@ -2220,9 +2237,9 @@ async fn list_repos(State(app): AppState, headers: HeaderMap, Query(q): Query<Li
     // to its 300 s; getSpaceCredential's gate alone wouldn't stop it
     let (_, status) = super::proxy::account_key_status(&app, &space.authority).await?;
     authority_suspended(status.as_deref())?;
-    super::simplespace::live_space(&app, &space).await?;
+    super::space_policy::live_space(&app, &space).await?;
     if space_takendown(&app, &space).await? {
-        return Err(super::simplespace::space_not_found());
+        return Err(super::space_policy::space_not_found());
     }
     metrics::space_read("listRepos", "credential");
     let p = app.partition(&space.authority)?;
@@ -2283,9 +2300,9 @@ async fn register_notify(State(app): AppState, headers: HeaderMap, Json(inp): Js
     let sp = spaces(&app)?.clone();
     let space = Space::parse(&inp.space)?;
     let cred = host_credential(&app, &headers, &space).await?;
-    super::simplespace::assert_space_host(&app, &space).await?;
+    super::space_policy::assert_space_host(&app, &space).await?;
     if space_takendown(&app, &space).await? {
-        return Err(super::simplespace::space_not_found());
+        return Err(super::space_policy::space_not_found());
     }
     use crate::space::host::{MAX_REGISTRATIONS, MAX_SERVICE_LEN};
     if inp.service.len() > MAX_SERVICE_LEN {
@@ -2347,7 +2364,7 @@ async fn unregister_notify(
     spaces(&app)?;
     let space = Space::parse(&inp.space)?;
     host_credential(&app, &headers, &space).await?;
-    super::simplespace::assert_space_host(&app, &space).await?;
+    super::space_policy::assert_space_host(&app, &space).await?;
     submit_space(&app, &space.authority, &space, SpaceOp::UnregisterNotify { service: inp.service, expired_by: None })
         .await?;
     Ok(StatusCode::OK)

@@ -829,6 +829,14 @@ fn files(dir: &std::path::Path) -> Vec<String> {
     out
 }
 
+/// Space state no feature level guards (Spaces shipped inside level 1 and
+/// follows the alpha), whose form changed without a level. `sS` gained the
+/// space policy and still carries the simplespace fields beside it, so an
+/// older build reads every row (rows.rs `new_rows_read_as_simplespace_rows`).
+/// The frozen fixtures keep the old form, which must decode and convert
+/// (`check`), and this build's bytes must decode.
+const OUTSIDE_LEVELS: &[&str] = &["state/space_space.json"];
+
 #[tokio::test]
 async fn writers_reproduce_the_max_level_fixtures() {
     // writers emit the active level (process-wide): the build's max here
@@ -837,7 +845,7 @@ async fn writers_reproduce_the_max_level_fixtures() {
     let dir = level_dir(version::MAX_LEVEL);
     let written = written();
     if bless() {
-        for (name, bytes) in &written {
+        for (name, bytes) in written.iter().filter(|(n, _)| !OUTSIDE_LEVELS.contains(n)) {
             let p = dir.join(name);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             if std::fs::read(&p).ok().as_deref() != Some(bytes.as_slice()) {
@@ -848,6 +856,10 @@ async fn writers_reproduce_the_max_level_fixtures() {
         record_once(&dir).await;
     }
     for (name, bytes) in &written {
+        if OUTSIDE_LEVELS.contains(name) {
+            check(version::MAX_LEVEL, name, bytes).await;
+            continue;
+        }
         let got = std::fs::read(dir.join(name)).unwrap_or_else(|e| panic!("{name}: {e} (VLPDS_BLESS=1 to record)"));
         assert!(
             got == *bytes,
@@ -1099,7 +1111,13 @@ async fn check(level: u32, name: &str, b: &[u8]) {
         }
         "state/space_space.json" => {
             let r = vlpds::space::rows::SpaceRow::decode(b).unwrap();
-            assert!(r.live() && r.encode() == b);
+            assert!(r.live());
+            assert_eq!(r.policy, vlpds::space::rows::Policy::member_defaults());
+            // a simplespace row decodes to its policy, and is written in the
+            // new form, which reads back the same
+            let again = r.encode();
+            assert_eq!(vlpds::space::rows::SpaceRow::decode(&again).unwrap(), r);
+            assert!(again == b || serde_json::from_slice::<serde_json::Value>(b).unwrap().get("readPolicy").is_some());
         }
         "control/node_lease.json" => {
             json_reencode::<vlpds::cluster::NodeLease>(name, b);

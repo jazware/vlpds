@@ -333,7 +333,7 @@ async fn space_takedown_closes_the_space_at_its_host() {
     // a non-member is told what it's always told, not that it's taken down
     let token = delegation_token(&eve, &t.space).await;
     let (r, _) = t.net.mint_credential(&t.space, &token, None).await;
-    assert_eq!(r.error_name(), Some("UserNotAuthorized"), "{}", r.text());
+    assert_eq!(r.error_name(), Some("SpaceNotFound"), "{}", r.text());
     assert!(!r.text().contains("taken down"), "{}", r.text());
     before.get(&pds0, "com.atproto.space.listRepos", &[("space", &t.space)]).await.err(400, "SpaceNotFound");
     let r = before.get(&pds0, "com.atproto.space.listRecords", &q).await;

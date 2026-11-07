@@ -312,10 +312,136 @@ impl NotifyRow {
     }
 }
 
-/// A simplespace user policy (`readPolicy`, `writePolicy`).
+/// The policies this host implements (the baseline ones every PDS
+/// supports), normalized: defaults filled in and unknown fields dropped,
+/// so that what is stored is what is enforced. Serialized as on the wire.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
+#[serde(tag = "$type")]
 pub enum Policy {
+    #[serde(rename = "com.atproto.personalspace.policy")]
+    Personal,
+    #[serde(rename = "com.atproto.memberspace.policy", rename_all = "camelCase")]
+    Member {
+        public_read: bool,
+        public_write: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_apps: Option<Vec<String>>,
+        publish_policy: bool,
+        publish_members: bool,
+    },
+    #[serde(rename = "com.atproto.managedspace.policy", rename_all = "camelCase")]
+    Managed { managing_app: String, publish_policy: bool },
+}
+
+pub const PERSONALSPACE: &str = "com.atproto.personalspace.policy";
+pub const MEMBERSPACE: &str = "com.atproto.memberspace.policy";
+pub const MANAGEDSPACE: &str = "com.atproto.managedspace.policy";
+
+/// A policy the request names that this host doesn't take.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PolicyError {
+    Unsupported(String),
+    Invalid(String),
+}
+
+impl Policy {
+    /// A memberspace with every flag off: only the authority and members.
+    pub fn member_defaults() -> Policy {
+        Policy::Member {
+            public_read: false,
+            public_write: false,
+            allowed_apps: None,
+            publish_policy: false,
+            publish_members: false,
+        }
+    }
+
+    /// Reference `normalizePolicy` of a policy the lexicon has checked.
+    pub fn from_lex(v: &serde_json::Value) -> Result<Policy, PolicyError> {
+        let flag = |k: &str| v.get(k).and_then(|b| b.as_bool()).unwrap_or(false);
+        let t = v.get("$type").and_then(|t| t.as_str()).unwrap_or("");
+        match t {
+            PERSONALSPACE => Ok(Policy::Personal),
+            MEMBERSPACE => {
+                let allowed_apps = match v.get("allowedApps") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(a) => Some(
+                        a.as_array()
+                            .and_then(|a| a.iter().map(|c| c.as_str().map(String::from)).collect::<Option<Vec<_>>>())
+                            .ok_or_else(|| PolicyError::Invalid("allowedApps must be an array of strings".into()))?,
+                    ),
+                };
+                Ok(Policy::Member {
+                    public_read: flag("publicRead"),
+                    public_write: flag("publicWrite"),
+                    allowed_apps,
+                    publish_policy: flag("publishPolicy"),
+                    publish_members: flag("publishMembers"),
+                })
+            }
+            MANAGEDSPACE => {
+                let app = v.get("managingApp").and_then(|a| a.as_str()).unwrap_or("");
+                let did = app.split_once('#').map_or(app, |(d, _)| d);
+                if !vlatproto::syntax::valid_did(did) {
+                    return Err(PolicyError::Invalid(format!(
+                        "managingApp must be a DID with an optional service fragment, got: {app}"
+                    )));
+                }
+                Ok(Policy::Managed { managing_app: app.into(), publish_policy: flag("publishPolicy") })
+            }
+            _ => Err(PolicyError::Unsupported(format!("Unsupported policy: {t}"))),
+        }
+    }
+
+    pub fn to_lex(&self) -> serde_json::Value {
+        serde_json::to_value(self).expect("policies serialize")
+    }
+
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Policy::Personal => PERSONALSPACE,
+            Policy::Member { .. } => MEMBERSPACE,
+            Policy::Managed { .. } => MANAGEDSPACE,
+        }
+    }
+
+    /// Only a memberspace keeps a member list.
+    pub fn is_memberspace(&self) -> bool {
+        matches!(self, Policy::Member { .. })
+    }
+
+    /// Reference `isPublicRead`: only then is a credential minted without a
+    /// delegation token saying who the user is.
+    pub fn public_read(&self) -> bool {
+        matches!(self, Policy::Member { public_read: true, .. })
+    }
+
+    pub fn publishes_policy(&self) -> bool {
+        matches!(self, Policy::Member { publish_policy: true, .. } | Policy::Managed { publish_policy: true, .. })
+    }
+
+    pub fn publishes_members(&self) -> bool {
+        matches!(self, Policy::Member { publish_members: true, .. })
+    }
+
+    /// Reference `isAppAuthorized`: only a memberspace restricts apps, by
+    /// the attested client_id, so an app with no attestation is never one
+    /// of the allowed ones.
+    pub fn app_authorized(&self, client_id: Option<&str>) -> bool {
+        match self {
+            Policy::Member { allowed_apps: Some(allowed), .. } => {
+                client_id.is_some_and(|c| allowed.iter().any(|a| a == c))
+            }
+            _ => true,
+        }
+    }
+}
+
+/// An October 1 simplespace user policy (`readPolicy`, `writePolicy`), as
+/// rows written before space policies hold it.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+enum LegacyPolicy {
     Public,
     MemberList,
     #[serde(rename_all = "camelCase")]
@@ -324,39 +450,133 @@ pub enum Policy {
     },
 }
 
-/// A simplespace `appAccess`.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// A simplespace `appAccess`, as those rows hold it.
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
-pub enum AppAccess {
+enum LegacyAppAccess {
     Open,
     AllowList { allowed: Vec<String> },
 }
 
+/// Reference `006-space-policy` `configToPolicy`: a managing app on either
+/// side makes a managedspace, which asks it about reads and writes both and
+/// drops any app allow-list; anything else is a memberspace. Nothing is
+/// published.
+fn legacy_policy(read: LegacyPolicy, write: LegacyPolicy, apps: LegacyAppAccess) -> Policy {
+    let managing_app = match (&read, &write) {
+        (LegacyPolicy::ManagingApp { managing_app }, _) | (_, LegacyPolicy::ManagingApp { managing_app }) => {
+            Some(managing_app.clone())
+        }
+        _ => None,
+    };
+    if let Some(managing_app) = managing_app {
+        return Policy::Managed { managing_app, publish_policy: false };
+    }
+    Policy::Member {
+        public_read: matches!(read, LegacyPolicy::Public),
+        public_write: matches!(write, LegacyPolicy::Public),
+        allowed_apps: match apps {
+            LegacyAppAccess::Open => None,
+            LegacyAppAccess::AllowList { allowed } => Some(allowed),
+        },
+        publish_policy: false,
+        publish_members: false,
+    }
+}
+
+/// The simplespace config closest to `p`, written next to it so a build
+/// from before space policies still reads every row (with that config's
+/// meaning: it knows nothing of publishing). A personalspace is a member
+/// list with no members, which admits only the authority too.
+fn legacy_config(p: &Policy) -> (LegacyPolicy, LegacyPolicy, LegacyAppAccess) {
+    let side = |public: bool| if public { LegacyPolicy::Public } else { LegacyPolicy::MemberList };
+    match p {
+        Policy::Personal => (LegacyPolicy::MemberList, LegacyPolicy::MemberList, LegacyAppAccess::Open),
+        Policy::Member { public_read, public_write, allowed_apps, .. } => (
+            side(*public_read),
+            side(*public_write),
+            match allowed_apps {
+                Some(allowed) => LegacyAppAccess::AllowList { allowed: allowed.clone() },
+                None => LegacyAppAccess::Open,
+            },
+        ),
+        Policy::Managed { managing_app, .. } => (
+            LegacyPolicy::ManagingApp { managing_app: managing_app.clone() },
+            LegacyPolicy::ManagingApp { managing_app: managing_app.clone() },
+            LegacyAppAccess::Open,
+        ),
+    }
+}
+
 /// `sS`: a space this account governs. A deleted one stays as a tombstone
 /// (`deleted_at`), so getSpaceCredential can answer `SpaceDeleted`.
+///
+/// A row written before space policies holds the simplespace config
+/// (`readPolicy`, `writePolicy`, `appAccess`) instead of `policy`: it
+/// decodes to the policy the reference's migration gives it, and is
+/// written back in this form the next time it changes. Every row carries
+/// the closest simplespace config as well ([`legacy_config`]), since space
+/// rows aren't behind a feature level and a rollback must still read them.
+/// Its member list,
+/// if it becomes a managedspace, is never consulted again (only a
+/// memberspace reads one), and goes when the space changes `$type` or is
+/// deleted.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "RawSpaceRow", into = "RawSpaceRow")]
 pub struct SpaceRow {
     pub uri: String,
-    pub read_policy: Policy,
-    pub write_policy: Policy,
-    pub app_access: AppAccess,
+    pub policy: Policy,
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deleted_at: Option<String>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawSpaceRow {
+    uri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    policy: Option<Policy>,
+    read_policy: Option<LegacyPolicy>,
+    write_policy: Option<LegacyPolicy>,
+    app_access: Option<LegacyAppAccess>,
+    created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    deleted_at: Option<String>,
+}
+
+impl From<SpaceRow> for RawSpaceRow {
+    fn from(r: SpaceRow) -> RawSpaceRow {
+        let (read, write, apps) = legacy_config(&r.policy);
+        RawSpaceRow {
+            uri: r.uri,
+            policy: Some(r.policy),
+            read_policy: Some(read),
+            write_policy: Some(write),
+            app_access: Some(apps),
+            created_at: r.created_at,
+            deleted_at: r.deleted_at,
+        }
+    }
+}
+
+impl TryFrom<RawSpaceRow> for SpaceRow {
+    type Error = String;
+
+    fn try_from(r: RawSpaceRow) -> Result<SpaceRow, String> {
+        let policy = match (r.policy, r.read_policy, r.write_policy, r.app_access) {
+            (Some(p), ..) => p,
+            (None, Some(read), Some(write), Some(apps)) => legacy_policy(read, write, apps),
+            _ => return Err("space row has no policy".into()),
+        };
+        Ok(SpaceRow { uri: r.uri, policy, created_at: r.created_at, deleted_at: r.deleted_at })
+    }
+}
+
 impl SpaceRow {
     /// Before createSpace: governed with the defaults.
     pub fn defaults(uri: &str, created_at: &str) -> SpaceRow {
-        SpaceRow {
-            uri: uri.into(),
-            read_policy: Policy::MemberList,
-            write_policy: Policy::MemberList,
-            app_access: AppAccess::Open,
-            created_at: created_at.into(),
-            deleted_at: None,
-        }
+        SpaceRow { uri: uri.into(), policy: Policy::member_defaults(), created_at: created_at.into(), deleted_at: None }
     }
 
     pub fn encode(&self) -> Bytes {
@@ -420,8 +640,154 @@ mod tests {
         assert_eq!(SpaceRow::decode(&s.encode()).unwrap(), s);
         assert_eq!(
             String::from_utf8(s.encode().to_vec()).unwrap(),
-            r#"{"uri":"at://did:plc:a/space/com.example.group/x","readPolicy":{"type":"member-list"},"writePolicy":{"type":"member-list"},"appAccess":{"type":"open"},"createdAt":"2026-10-01T00:00:00.000Z"}"#
+            r#"{"uri":"at://did:plc:a/space/com.example.group/x","policy":{"$type":"com.atproto.memberspace.policy","publicRead":false,"publicWrite":false,"publishPolicy":false,"publishMembers":false},"readPolicy":{"type":"member-list"},"writePolicy":{"type":"member-list"},"appAccess":{"type":"open"},"createdAt":"2026-10-01T00:00:00.000Z"}"#
         );
+    }
+
+    /// Rows written before space policies, as that version encoded them,
+    /// decode to the policy the reference's `006-space-policy` gives them.
+    #[test]
+    fn simplespace_rows_convert() {
+        let row = |read: &str, write: &str, apps: &str, deleted: &str| {
+            format!(
+                r#"{{"uri":"at://did:plc:a/space/com.example.group/x","readPolicy":{read},"writePolicy":{write},"appAccess":{apps},"createdAt":"2026-10-01T00:00:00.000Z"{deleted}}}"#
+            )
+        };
+        let (member, public) = (r#"{"type":"member-list"}"#, r#"{"type":"public"}"#);
+        let app = r#"{"type":"managing-app","managingApp":"did:web:forum.example#forum"}"#;
+        let (open, allow) = (r#"{"type":"open"}"#, r#"{"type":"allowList","allowed":["https://app.example/cm.json"]}"#);
+        let managed = Policy::Managed { managing_app: "did:web:forum.example#forum".into(), publish_policy: false };
+        let ms = |public_read, public_write, apps: Option<&[&str]>| Policy::Member {
+            public_read,
+            public_write,
+            allowed_apps: apps.map(|a| a.iter().map(|s| s.to_string()).collect()),
+            publish_policy: false,
+            publish_members: false,
+        };
+        for (read, write, apps, want) in [
+            (member, member, open, ms(false, false, None)),
+            (public, member, open, ms(true, false, None)),
+            (member, public, open, ms(false, true, None)),
+            (public, public, allow, ms(true, true, Some(&["https://app.example/cm.json"]))),
+            (member, member, allow, ms(false, false, Some(&["https://app.example/cm.json"]))),
+            (app, app, open, managed.clone()),
+            // a managing app on one side asks it about both; the allow-list goes
+            (app, public, allow, managed.clone()),
+            (member, app, open, managed.clone()),
+        ] {
+            let got = SpaceRow::decode(row(read, write, apps, "").as_bytes()).unwrap();
+            assert_eq!(got.policy, want, "{read} {write} {apps}");
+            assert_eq!(got.uri, "at://did:plc:a/space/com.example.group/x");
+            assert!(got.live());
+            // written back in the new form, which decodes the same
+            assert_eq!(SpaceRow::decode(&got.encode()).unwrap(), got);
+            assert!(String::from_utf8(got.encode().to_vec()).unwrap().contains(r#""policy":"#));
+        }
+        let tomb = SpaceRow::decode(row(member, member, open, r#","deletedAt":"2026-10-02T00:00:00.000Z""#).as_bytes())
+            .unwrap();
+        assert_eq!(tomb.deleted_at.as_deref(), Some("2026-10-02T00:00:00.000Z"));
+        assert!(SpaceRow::decode(br#"{"uri":"at://x","createdAt":"t"}"#).is_err(), "no policy at all");
+    }
+
+    /// The Oct 1 build's `SpaceRow` decode, frozen: every row this build
+    /// writes still decodes with it, to the closest simplespace config.
+    #[test]
+    fn new_rows_read_as_simplespace_rows() {
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        #[serde(tag = "type", rename_all = "kebab-case")]
+        enum OldPolicy {
+            Public,
+            MemberList,
+            #[serde(rename_all = "camelCase")]
+            ManagingApp {
+                managing_app: String,
+            },
+        }
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        #[serde(tag = "type", rename_all = "camelCase")]
+        enum OldAppAccess {
+            Open,
+            AllowList { allowed: Vec<String> },
+        }
+        #[derive(serde::Deserialize, Debug)]
+        #[serde(rename_all = "camelCase")]
+        #[allow(dead_code)]
+        struct OldSpaceRow {
+            uri: String,
+            read_policy: OldPolicy,
+            write_policy: OldPolicy,
+            app_access: OldAppAccess,
+            created_at: String,
+            #[serde(default)]
+            deleted_at: Option<String>,
+        }
+        let app = "did:web:forum.example#forum".to_string();
+        let allowed = vec!["https://app.example/cm.json".to_string()];
+        let cases = [
+            (Policy::Personal, OldPolicy::MemberList, OldPolicy::MemberList, OldAppAccess::Open),
+            (Policy::member_defaults(), OldPolicy::MemberList, OldPolicy::MemberList, OldAppAccess::Open),
+            (
+                Policy::Member {
+                    public_read: true,
+                    public_write: false,
+                    allowed_apps: Some(allowed.clone()),
+                    publish_policy: true,
+                    publish_members: true,
+                },
+                OldPolicy::Public,
+                OldPolicy::MemberList,
+                OldAppAccess::AllowList { allowed: allowed.clone() },
+            ),
+            (
+                Policy::Member {
+                    public_read: false,
+                    public_write: true,
+                    allowed_apps: None,
+                    publish_policy: false,
+                    publish_members: false,
+                },
+                OldPolicy::MemberList,
+                OldPolicy::Public,
+                OldAppAccess::Open,
+            ),
+            (
+                Policy::Managed { managing_app: app.clone(), publish_policy: true },
+                OldPolicy::ManagingApp { managing_app: app.clone() },
+                OldPolicy::ManagingApp { managing_app: app.clone() },
+                OldAppAccess::Open,
+            ),
+        ];
+        for (policy, read, write, apps) in cases {
+            let mut row = SpaceRow::defaults("at://did:plc:a/space/com.example.group/x", "t");
+            row.policy = policy.clone();
+            row.deleted_at = Some("d".into());
+            let bytes = row.encode();
+            let old: OldSpaceRow = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!((&old.read_policy, &old.write_policy, &old.app_access), (&read, &write, &apps), "{policy:?}");
+            assert_eq!(old.deleted_at.as_deref(), Some("d"));
+            assert_eq!(SpaceRow::decode(&bytes).unwrap(), row, "the new decoder takes the policy over them");
+        }
+    }
+
+    #[test]
+    fn policies_normalize() {
+        let p = |v: serde_json::Value| Policy::from_lex(&v);
+        assert_eq!(p(serde_json::json!({"$type": PERSONALSPACE, "extra": 1})), Ok(Policy::Personal));
+        assert_eq!(p(serde_json::json!({"$type": MEMBERSPACE})), Ok(Policy::member_defaults()));
+        assert_eq!(
+            p(serde_json::json!({"$type": MANAGEDSPACE, "managingApp": "did:web:x.example#forum", "other": true})),
+            Ok(Policy::Managed { managing_app: "did:web:x.example#forum".into(), publish_policy: false })
+        );
+        assert!(matches!(
+            p(serde_json::json!({"$type": MANAGEDSPACE, "managingApp": "nope"})),
+            Err(PolicyError::Invalid(_))
+        ));
+        assert!(matches!(p(serde_json::json!({"$type": "com.example.policy"})), Err(PolicyError::Unsupported(_))));
+        assert_eq!(
+            Policy::member_defaults().to_lex(),
+            serde_json::json!({"$type": MEMBERSPACE, "publicRead": false, "publicWrite": false, "publishPolicy": false, "publishMembers": false})
+        );
+        assert_eq!(Policy::Personal.to_lex(), serde_json::json!({"$type": PERSONALSPACE}));
     }
 
     #[test]

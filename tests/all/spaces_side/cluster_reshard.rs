@@ -199,7 +199,7 @@ impl World {
         let local = writers[auth].create_space(&st, "local").await;
         for w in &writers[1..] {
             let m = json!({"space": local, "did": w.did, "read": true, "write": true});
-            writers[auth].post("com.atproto.simplespace.putMember", m).await.ok();
+            writers[auth].post("com.atproto.memberspace.putMember", m).await.ok();
         }
         let (stub, syncer) = (StubDid::spawn().await, StubDid::spawn().await);
         stub.refuse(true);

@@ -1,4 +1,4 @@
-//! The space host's calls out (reference `simplespace/manager.ts` and
+//! The space host's calls out (reference `space-policy/manager.ts` and
 //! `api/com/atproto/space/util.ts`): resolving a service identifier,
 //! asking a managing app whether a user may read or write, forwarding a
 //! sequenced write to a registered service, and telling registered services
@@ -101,13 +101,14 @@ pub async fn check_user_access(
     access: &str,
     client_id: Option<&str>,
 ) -> bool {
-    let lxm = "com.atproto.simplespace.checkUserAccess";
+    let lxm = "com.atproto.managedspace.checkUserAccess";
     let Some(endpoint) = resolve_service_endpoint(app, managing_app).await else {
         tracing::info!(space = %crate::state::space_log_id(space), managing_app, "could not resolve managing app");
         return false;
     };
     let mut q = vec![("space", space), ("user", user), ("access", access)];
-    if let Some(c) = client_id {
+    // the attested client is the managing app's to judge, on reads only
+    if let Some(c) = client_id.filter(|_| access == "read") {
         q.push(("clientId", c));
     }
     let client = vlatproto::http::guarded(app.config.dev_mode);

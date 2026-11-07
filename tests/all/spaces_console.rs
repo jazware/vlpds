@@ -31,7 +31,7 @@ async fn eventually(within: Duration, mut f: impl AsyncFnMut() -> bool) -> bool 
 
 async fn put_member(owner: &SpaceClient, space: &str, did: &str) {
     let body = json!({"space": space, "did": did, "read": true, "write": true});
-    owner.post("com.atproto.simplespace.putMember", body).await.ok();
+    owner.post("com.atproto.memberspace.putMember", body).await.ok();
 }
 
 /// A did:web syncer on loopback that takes every notify.
@@ -140,7 +140,7 @@ async fn views_are_metadata_only() {
     assert_eq!(rows.iter().map(|r| r["uri"].clone()).collect::<Vec<_>>(), [json!(big), json!(quiet)]);
     let r0 = &rows[0];
     assert_eq!((r0["records"].clone(), r0["repos"].clone(), r0["writers"].clone()), (json!(4), json!(2), json!(2)));
-    assert_eq!((r0["handle"].clone(), r0["readPolicy"].clone()), (json!(owner.handle), json!("member-list")));
+    assert_eq!((r0["handle"].clone(), r0["readPolicy"].clone()), (json!(owner.handle), json!("members")));
     assert!(r0["lastSpaceRev"].is_string() && rows[1]["lastSpaceRev"].is_null(), "{l}");
     let paged = s.xrpc.get("vlpds.admin.listSpaces", &[("limit", "1")], &Auth::Admin).await.ok();
     assert_eq!((paged["spaces"].as_array().unwrap().len(), paged["cursor"].clone()), (1, json!("1")));

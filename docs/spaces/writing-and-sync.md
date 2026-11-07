@@ -87,6 +87,16 @@ edges:
   grow a space repo past `--space-repo-max-records` (100k) gets `InvalidRequest`.
 - The 200 goes out once the segment is in the bucket, applied, and the lease re-checked. That's the
   same path as a public commit ([The path of a commit](../the-path-of-a-commit.md)).
+- `clearRecords` is one entry too. It claims the repo (writes to it wait, as during an import),
+  reads every record, blob ref and oplog row once the account's earlier entries are applied, checks
+  a `delete` grant for each collection, and writes the deletes with the new head: a new rev over the
+  empty set, so `data` is the empty repo's digest, and an empty oplog. In the authority's own repo
+  the published `com.atproto.space.policy` and `com.atproto.memberspace.member` records stay and the
+  head covers them. A repo with nothing to delete is left alone. The authority hears the new rev like
+  any write, and the repo stays in the writer set.
+- The space host's changes to a space (`createSpace`, `updateSpace`, `putMember`, `removeMember`)
+  write the config and the records it publishes in one entry on the authority's worker, as the
+  authority's own write to its repo there.
 - Space writes share segments the way public commits do. The in-tree bench measured 0.50 segment
   PUTs per write with 4 writers on one repo and 0.125 with 16, the same for space and public writes
   ([Operating](operating.md#server-cost-on-one-node)).
@@ -132,9 +142,11 @@ or a takeover. The sending side lives in memory on the shard's owner.
 
 ```steps
 - title: Check the rev
-  body: "`repoRev` more than 5 min in the future gets `FutureRev`. The writer must pass the space's `writePolicy` (a managing app is asked with `checkUserAccess`)."
+  body: "`repoRev` more than 5 min in the future gets `FutureRev`. The writer must pass the space's policy: under `memberspace` `publicWrite` or a member with `write`, under `managedspace` the managing app (`checkUserAccess` with `access=write`, no `clientId`), under `personalspace` only the authority."
 - title: Sequence it on the authority's worker
   body: "A `repoRev` below the writer's last one is a no-op, and so is the same `repoRev` with the same hash, so a resent notify is harmless. The same `repoRev` with another hash is a record takedown or its reversal changing what the writer serves ([Privacy](privacy.md#takedowns)), so it's sequenced again. From another host, it's sequenced only once the writer's PDS serves a signed commit with that hash at that rev, and at most 3 times per writer and space in 10 min. The rest are dropped and left to polls. The push isn't logged either, so if the author's host crashes before it goes, syncers find out on their next poll. Otherwise the worker assigns the next `spaceRev` (a TID) and writes `sW` plus the `sQ` swap as one private entry. One worker per authority means no lock."
+- title: Leave the writer set
+  body: "`removeWriter`, `removeMember` and a `putMember` without write delete the writer's `sW` row and its `sQ` entry on the same worker. Nothing tells syncers, and the writer's records stay where they are. Its next write the policy allows puts it back. `updateSpace` leaves the writer set as it is."
 - title: Answer 200 once it's durable
   body: "The writer's outbox only drops its row after this."
 - title: Fan out

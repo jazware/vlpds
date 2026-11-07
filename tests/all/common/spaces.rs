@@ -218,17 +218,15 @@ impl SpaceClient {
         oauth_resp(oauth::xrpc_dpop(&self.srv, &self.key, &self.access, "POST", nsid, Some(body)).await)
     }
 
-    /// simplespace.createSpace with the default policies; the space's URI.
+    /// space.createSpace with a default memberspace; the space's URI.
     pub async fn create_space(&self, space_type: &str, skey: &str) -> String {
         let r = self
             .post(
-                "com.atproto.simplespace.createSpace",
+                "com.atproto.space.createSpace",
                 json!({
                     "spaceType": space_type,
                     "skey": skey,
-                    "readPolicy": {"$type": "com.atproto.simplespace.defs#memberListPolicy"},
-                    "writePolicy": {"$type": "com.atproto.simplespace.defs#memberListPolicy"},
-                    "appAccess": {"$type": "com.atproto.simplespace.defs#open"},
+                    "policy": {"$type": "com.atproto.memberspace.policy"},
                 }),
             )
             .await;
@@ -271,7 +269,7 @@ impl SpaceClient {
         self.exchange_with(holder, host, space, token, None).await
     }
 
-    /// getSpaceCredential with a client attestation (an `appAccess` allow
+    /// getSpaceCredential with a client attestation (an `allowedApps`
     /// list's proof of which app asks).
     pub async fn exchange_with(
         &self,

@@ -218,7 +218,7 @@ A retried import of the same rev answers 200 and writes nothing
 ([Moving a repo in](spaces/storage.md#moving-a-repo-in)). So a reload, a Retry or a lost answer
 just runs the import again, and the page keeps each space's outcome (no secrets) with the rest of
 its progress so it only redoes what didn't move. Only the member repos move. A space the account
-governs keeps its members and policies on the old server, since nothing moves a simplespace yet.
+governs keeps its members and policy on the old server, since nothing here moves a space's host state yet.
 
 Syncers see none of the account's space data between activation and the import, so the step runs
 right away. It's seconds for a few spaces. If the user skips it or a space fails, that data stays in

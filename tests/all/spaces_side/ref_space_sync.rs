@@ -471,7 +471,12 @@ async fn macs_an_account_its_own_data_only_when_asked() {
 async fn records_a_co_located_writer_without_resolving_it() {
     let net = Net::new(0).await;
     let (alice, dan) = (net.actor("alice", 0).await, net.actor("dan", 0).await);
-    let space = net.create_space(&alice, SpaceOpts { write_policy: Some(public()), ..Default::default() }).await;
+    let space = net
+        .create_space(
+            &alice,
+            SpaceOpts { policy: Some(memberspace(json!({"publicWrite": true}))), ..Default::default() },
+        )
+        .await;
     net.plc.set_down(true);
     write(&dan, &space, W::new().text("same PDS")).await.ok();
     net.plc.set_down(false);
@@ -502,7 +507,12 @@ async fn records_a_writer_from_notify_write() {
 async fn records_a_public_policy_writer_who_was_never_a_member() {
     let net = Net::new(1).await;
     let (alice, bob) = (net.actor("alice", 0).await, net.actor("bob", 1).await);
-    let space = net.create_space(&alice, SpaceOpts { write_policy: Some(public()), ..Default::default() }).await;
+    let space = net
+        .create_space(
+            &alice,
+            SpaceOpts { policy: Some(memberspace(json!({"publicWrite": true}))), ..Default::default() },
+        )
+        .await;
     write(&bob, &space, W::new().text("from a non-member")).await.ok();
     assert_eq!(net.await_writer(&alice, &space, &bob.did).await, [bob.did.as_str()]);
 }
@@ -518,7 +528,7 @@ async fn records_a_writer_into_an_allow_list_space() {
             &alice,
             SpaceOpts {
                 members: &[&bob],
-                app_access: Some(allow_list(&["https://app.example.com/client-metadata.json"])),
+                policy: Some(memberspace(json!({"allowedApps": ["https://app.example.com/client-metadata.json"]}))),
                 ..Default::default()
             },
         )
@@ -1149,4 +1159,62 @@ async fn outbox_defers_inactive_accounts_and_resumes_on_activation() {
 
 fn oauth_password() -> &'static str {
     crate::oauth::PASSWORD
+}
+
+/// writer set: "drops a writer on removeWriter, and tracks it again once it
+/// writes"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remove_writer_drops_it_until_it_writes_again() {
+    let net = Net::new(1).await;
+    let (alice, bob) = (net.actor("alice", 0).await, net.actor("bob", 1).await);
+    let opts = SpaceOpts { policy: Some(memberspace(json!({"publicWrite": true}))), ..Default::default() };
+    let space = net.create_space(&alice, opts).await;
+    write(&bob, &space, W::new().text("before removal")).await.ok();
+    net.await_writer(&alice, &space, &bob.did).await;
+    remove_writer(&alice, &space, &bob).await.ok();
+    assert!(net.writer_dids(&alice, &space).await.is_empty());
+    // idempotent
+    remove_writer(&alice, &space, &bob).await.ok();
+    // publicWrite still admits bob, so his next write tracks him again
+    write(&bob, &space, W::new().text("after removal")).await.ok();
+    assert_eq!(net.await_writer(&alice, &space, &bob.did).await, vec![bob.did.clone()]);
+}
+
+/// writer set: "refuses removeWriter from anyone but the authority"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remove_writer_is_the_authoritys_alone() {
+    let net = Net::new(0).await;
+    let (alice, dan) = (net.actor("alice", 0).await, net.actor("dan", 0).await);
+    let space = net.create_space(&alice, SpaceOpts { members: &[&dan], ..Default::default() }).await;
+    write(&dan, &space, W::new().text("still tracked")).await.ok();
+    net.await_writer(&alice, &space, &dan.did).await;
+    remove_writer(&dan, &space, &dan).await.err(400, "NotSpaceOwner");
+    assert_eq!(net.writer_dids(&alice, &space).await, vec![dan.did.clone()]);
+}
+
+/// writer set: "keeps a cleared repo in the writer set, at the empty
+/// digest" (the authority's `sW` row, read from its store)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cleared_repo_stays_a_writer_at_the_empty_digest() {
+    let net = Net::new(0).await;
+    let (alice, dan) = (net.actor("alice", 0).await, net.actor("dan", 0).await);
+    let space = net.create_space(&alice, SpaceOpts { members: &[&dan], ..Default::default() }).await;
+    write(&dan, &space, W::new().text("to be cleared")).await.ok();
+    net.await_writer(&alice, &space, &dan.did).await;
+    clear(&dan, &space).await.ok();
+    let (rev, _) = repo_state(&dan, &space).await.unwrap();
+    let p = net.pds[0].app.partitions.for_key(&alice.did).unwrap();
+    let key = vlpds::state::space_writer_key(&alice.did, &vlpds::state::space_id(&space), &dan.did);
+    let mut row = None;
+    for _ in 0..100 {
+        row = p.db.get(key.clone()).await.unwrap().map(|v| vlpds::space::rows::WriterRow::decode(&v).unwrap());
+        if row.is_some_and(|r| r.repo_rev.to_string() == rev) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let row = row.expect("dan is still a writer");
+    assert_eq!(row.repo_rev.to_string(), rev);
+    assert_eq!(row.hash, LtHash::default().digest());
+    assert_eq!(net.writer_dids(&alice, &space).await, vec![dan.did.clone()]);
 }

@@ -10,7 +10,7 @@ summary: "No new storage system: space rows are slot-prefixed key families in th
 diagram:
   caption: "The author's shard holds its space repos and the authority's shard holds the space host's state. Both are ordinary slot-prefixed families, so they ride the node log and move with their shards like every other row. Space entries carry an empty frame, which the firehose skips."
   nodes:
-    - { id: api, label: Apps · syncers, sub: "space.* · simplespace.*", at: [0, 5.5], size: [9, 3], tone: ink }
+    - { id: api, label: Apps · syncers, sub: "space.* · memberspace.*", at: [0, 5.5], size: [9, 3], tone: ink }
     - { id: fwd, label: Any node, sub: routes the call, at: [12, 5.5], size: [9, 3], tone: accent }
     - { id: as, label: Author's shard, sub: "sH · sR · sO · sP · sb · sc · sL", at: [25, 1], size: [11, 3], tone: accent }
     - { id: hs, label: Authority's shard, sub: "sS · sM · sW · sQ · sN · sL", at: [25, 10], size: [11, 3], tone: accent }
@@ -47,8 +47,8 @@ hash collision fails loudly with `space id collision` instead of mixing two spac
 | `sR/{did}\0{sid}{coll}/{rkey}` | the author | CID, rev and record bytes, as `R/` holds them. The source of truth |
 | `sO/{did}\0{sid}{rev}{idx}` | the author | the oplog: action, collection, rkey, CID and prev CID. Kept 7 days |
 | `sP/{did}\0{sid}` | the author | the notifyWrite outbox: URI, repoRev and hash, one row per (repo, space) |
-| `sS/{auth}\0{sid}` | the authority | the space as JSON: URI, policies, created, and `deleted` for a tombstone |
-| `sM/{auth}\0{sid}{member}` | the authority | a member's read and write access |
+| `sS/{auth}\0{sid}` | the authority | the space as JSON: URI, the policy (as on the wire, defaults filled in), created, and `deleted` for a tombstone. It also carries the closest `readPolicy`/`writePolicy`/`appAccess`, which an older build reads. A row from before space policies holds only those and decodes to the policy the reference's migration gives it |
+| `sM/{auth}\0{sid}{member}` | the authority | a member's read and write access. Read only under a `memberspace`, and wiped when the space changes policy |
 | `sW/{auth}\0{sid}{writer}` | the authority | writer state: repoRev, hash, spaceRev |
 | `sQ/{auth}\0{sid}{spaceRev}` | the authority | the writer's DID, in `listRepos` order, and the spaceRev sequenced just before it. It holds each writer's latest state only, so the row before isn't always that one |
 | `sN/{auth}\0{sid}{service}` | the authority | a notify registration: endpoint and expiry (24 h) |

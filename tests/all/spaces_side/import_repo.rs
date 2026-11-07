@@ -419,8 +419,8 @@ pub(super) async fn two_hosts() -> TwoHosts {
     let skey = last_segment(&space).to_string();
     let r = alice
         .post(
-            "com.atproto.simplespace.createSpace",
-            json!({"spaceType": TEST_SPACE_TYPE, "skey": skey, "readPolicy": member_list(), "writePolicy": member_list(), "appAccess": open()}),
+            "com.atproto.space.createSpace",
+            json!({"spaceType": TEST_SPACE_TYPE, "skey": skey, "policy": memberspace(json!({}))}),
         )
         .await;
     assert_eq!(r.ok()["uri"], json!(space));

@@ -209,6 +209,16 @@ for the rest and logs the DIDs whose owners must publish it ([Operating Spaces](
 It runs once, in the background, and needs no feature level. An older build keeps the new account
 fields, so rolling back is a redeploy.
 
+Space policies replace the simplespace config in place, with no feature level either: Spaces rows
+aren't level-gated. A space written before this build converts when its row is next read, as the
+reference's migration converts it (a managing app on either side makes a `managedspace`, anything
+else a `memberspace`, nothing published), and is written back in the new form at its next change.
+Every row this build writes also carries the closest simplespace config, so an older build still
+reads it, with the Oct 1 meaning: it ignores the publish flags, a `personalspace` reads as a member
+list with no members, and a `managedspace` asks its app about both sides. Rolling back is a
+redeploy. A row an older build then changes loses its new policy fields and converts again on the
+way forward.
+
 ## Upgrading from builds before 2026-10-06
 
 Builds from 2026-10-06 on store more in each repo's stats row (40 bytes, up from 24) and keep

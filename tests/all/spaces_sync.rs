@@ -35,7 +35,7 @@ async fn spawn() -> TestServer {
 
 async fn put_member(owner: &SpaceClient, space: &str, did: &str) {
     owner
-        .post("com.atproto.simplespace.putMember", json!({"space": space, "did": did, "read": true, "write": true}))
+        .post("com.atproto.memberspace.putMember", json!({"space": space, "did": did, "read": true, "write": true}))
         .await
         .ok();
 }
@@ -552,9 +552,9 @@ async fn a_notify_crosses_to_the_authoritys_node() {
 
     // getSpaceCredential and credential calls at x, the authority on y
     let cred = member.credential_at(&x.url, &space).await;
-    let r =
-        member.signed_get(&x.url, "com.atproto.simplespace.getSpace", &[("space", &space)], &cred, &owner.did).await;
-    assert_eq!(r.ok()["uri"], json!(space));
+    // the policy is the owner's alone: a credential doesn't reach it
+    let r = member.signed_get(&x.url, "com.atproto.space.getSpace", &[("space", &space)], &cred, &owner.did).await;
+    r.client_err();
     let repos = || async {
         let r = member.signed_get(&x.url, "com.atproto.space.listRepos", &[("space", &space)], &cred, &owner.did).await;
         r.ok()["repos"].as_array().unwrap().clone()

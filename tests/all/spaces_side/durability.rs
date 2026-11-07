@@ -502,7 +502,7 @@ async fn takeover_mid_burst(authority_on_victim: bool) {
     let space = auth.create_space(&st, "tb").await;
     for w in [&wv, &ws] {
         let m = json!({"space": space, "did": w.did, "read": true, "write": true});
-        auth.post("com.atproto.simplespace.putMember", m).await.ok();
+        auth.post("com.atproto.memberspace.putMember", m).await.ok();
     }
     let syncer = StubDid::spawn().await;
     let cred = auth.credential(&space).await;
@@ -653,7 +653,7 @@ async fn inbound_notifies_survive_a_kill_after_their_200() {
     let mut n = OneNode::new("in").await;
     let writer = StubDid::spawn().await;
     let m = json!({"space": n.space, "did": writer.did, "read": false, "write": true});
-    n.sc.post("com.atproto.simplespace.putMember", m).await.ok();
+    n.sc.post("com.atproto.memberspace.putMember", m).await.ok();
     let base = vlatproto::tid::now_micros();
     let revs: Vec<String> = (0..5).map(|i| tid(base, i * 1000)).collect();
     let hashes: Vec<Vec<u8>> = (0..5).map(|_| random_bytes(32)).collect();

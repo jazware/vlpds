@@ -34,19 +34,29 @@ it. With no space traffic, a node with it on makes one conditional GET of the re
 ## What you get with `--spaces`
 
 A node with the flag serves every Spaces method a PDS serves at the `5b95b2f2` pin, in both roles.
-As a repo host it holds your accounts' space repos. As a simplespace host it runs the spaces your
-accounts govern. Nothing is proxied to another host.
+As a repo host it holds your accounts' space repos. As a space host it runs the spaces your
+accounts govern, under the baseline policies (`personalspace`, `memberspace`, `managedspace`).
+Nothing is proxied to another host.
 
 | Area | What's served |
 |---|---|
-| Space records | `space.createRecord`, `putRecord`, `deleteRecord`, `applyWrites`, `getRecord`, `listRecords`, `listSpaces` |
+| Space records | `space.createRecord`, `putRecord`, `deleteRecord`, `applyWrites`, `clearRecords`, `getRecord`, `listRecords`, `listSpaces` |
 | Sync | `space.getLatestCommit`, `listRepoOps`, `getRepo`, `listBlobs`, `getBlob` |
 | Credentials | `space.getDelegationToken`, `getSpaceCredential`, `notifyCredentialRevoked` |
-| simplespace host | `simplespace.createSpace`, `getSpace`, `updateSpace`, `deleteSpace`, `putMember`, `removeMember`, `listMembers`, and `space.notifyWrite`, `listRepos`, `registerNotify`, `unregisterNotify` |
+| Space host | `space.createSpace`, `getSpace`, `updateSpace`, `deleteSpace`, `removeWriter`, `memberspace.putMember`, `removeMember`, `listMembers`, and `space.notifyWrite`, `listRepos`, `registerNotify`, `unregisterNotify` |
 | vlpds only | `vlpds.space.importRepo`, operator reads (`vlpds.admin.getSpaceRepo`, `listSpaceRecords`, `getSpaceRecord`), `vlpds.admin.checkSpace`, space takedowns |
 
-A method under `com.atproto.space.*` or `com.atproto.simplespace.*` that a PDS doesn't serve
-(`notifySpaceDeleted` and `checkUserAccess` go to syncers and managing apps) answers 501 here.
+A method under `com.atproto.space.*` or a policy's namespace (`com.atproto.memberspace.*`,
+`managedspace.*`, `personalspace.*`) that a PDS doesn't serve (`notifySpaceDeleted` and
+`managedspace.checkUserAccess` go to syncers and managing apps) answers 501 here.
+
+Spaces created before space policies convert to them when their row is next read, as the
+reference's migration converts them: a managing app on either side makes a `managedspace` (asked
+about reads and writes both, any app allow-list dropped), anything else a `memberspace` with
+`publicRead`/`publicWrite` where a side was public and `allowedApps` from an allow-list. Nothing is
+published until the owner turns it on. A space that becomes a `managedspace` stops consulting its
+member list, which goes when the space changes policy or is deleted. Look for spaces with a managing
+app on only one side before upgrading: those now ask the app about the other side too.
 
 Turn `--spaces` on only once every node in the cluster runs a build that knows Spaces, and don't
 roll back below that build afterwards. Space writes put private entries in the node logs and space
@@ -189,7 +199,7 @@ can't show each registration's last delivery, since fan-out keeps that in memory
 
 | Flag | Default | What it does |
 |---|---|---|
-| `--spaces` (`VLPDS_SPACES`) | off | serves `com.atproto.space.*` and `com.atproto.simplespace.*` here |
+| `--spaces` (`VLPDS_SPACES`) | off | serves `com.atproto.space.*` and `com.atproto.memberspace.*` here |
 | `--space-repo-max-records` | 100000 | the most records one account's repo in one space may hold. A write past it gets `InvalidRequest` |
 | `--space-oplog-retention` | `7d` | how long ops stay for `listRepoOps`. `off` keeps them all |
 | `--max-import-mb` | 1024 | the largest CAR `vlpds.space.importRepo` takes, as for `com.atproto.repo.importRepo`. Its blocks are capped besides ([Moving a repo in](storage.md#moving-a-repo-in)), and it reserves from the same import budget |

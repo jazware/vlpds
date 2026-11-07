@@ -1,9 +1,9 @@
 //! Ported from the reference's `tests/client-attestation.test.ts`
 //! (5b95b2f2), a unit test of `ClientAttestationVerifier` against an
 //! injected fetch, plus the "client attestation" cases of
-//! `space/simplespace.test.ts`. vlpds verifies an attestation inside
+//! `space/policy.test.ts`. vlpds verifies an attestation inside
 //! getSpaceCredential, so each case is a credential mint for a space whose
-//! `appAccess` allow-lists a [`MockClientApp`] served over loopback HTTP.
+//! `allowedApps` lists a [`MockClientApp`] served over loopback HTTP.
 //!
 //! Every refusal is a 4xx: the reference pins "Invalid client attestation"
 //! and friends by message, which vlpds isn't held to.
@@ -30,8 +30,7 @@ impl Fixture {
             .create_space(
                 &alice,
                 SpaceOpts {
-                    read_policy: Some(public()),
-                    app_access: Some(allow_list(&[&app.client_id])),
+                    policy: Some(memberspace(json!({"publicRead": true, "allowedApps": [app.client_id]}))),
                     ..Default::default()
                 },
             )
@@ -63,7 +62,7 @@ async fn accepts_an_attestation_signed_by_a_key_in_the_client_jwks() {
 }
 
 /// "accepts an attestation when the client publishes a jwks_uri"
-/// (simplespace: "mints for an allow-listed app that signs with its
+/// (policy: "mints for an allow-listed app that signs with its
 /// published key")
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn accepts_an_attestation_when_the_client_publishes_a_jwks_uri() {
@@ -90,7 +89,7 @@ async fn refuses_an_attestation_with_no_jti() {
 }
 
 /// "refuses an attestation signed by a key the client does not publish"
-/// (simplespace: "refuses an attestation signed by a key the app does not
+/// (policy: "refuses an attestation signed by a key the app does not
 /// publish")
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn refuses_an_attestation_signed_by_an_unpublished_key() {
@@ -100,7 +99,7 @@ async fn refuses_an_attestation_signed_by_an_unpublished_key() {
     f.mint(&f.app.attest(&f.aud(), Attest { sign_with: Some(&attacker), ..Default::default() })).await.client_err();
 }
 
-/// "refuses an attestation addressed to another space host" (simplespace:
+/// "refuses an attestation addressed to another space host" (policy:
 /// "refuses an attestation addressed to another authority")
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn refuses_an_attestation_addressed_to_another_space_host() {
@@ -157,7 +156,7 @@ async fn refuses_when_the_jwks_uri_cannot_be_resolved() {
     f.mint(&f.app.attest(&f.aud(), Attest::default())).await.client_err();
 }
 
-/// simplespace client attestation: "refuses an attestation from an app that
+/// policy client attestation: "refuses an attestation from an app that
 /// is not allow-listed"
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn refuses_an_attestation_from_an_app_that_is_not_allow_listed() {
@@ -165,4 +164,13 @@ async fn refuses_an_attestation_from_an_app_that_is_not_allow_listed() {
     f.control().await;
     let other = MockClientApp::spawn(Keys::Uri).await;
     f.mint(&other.attest(&f.aud(), Attest::default())).await.err(400, "AppNotAuthorized");
+}
+
+/// policy client attestation: "mints for an allow-listed app without a
+/// delegation token"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mints_for_an_allow_listed_app_without_a_delegation_token() {
+    let f = Fixture::new(Keys::Uri).await;
+    let attestation = f.app.attest(&f.aud(), Attest::default());
+    f.net.public_credential(&f.space, Some(&attestation)).await.0.ok();
 }

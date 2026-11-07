@@ -159,37 +159,51 @@ export async function myRepo(s: OAuthSession, space: string): Promise<MyRepo | n
   return { records, more, rev, lastWrite: tidTime(rev) }
 }
 
-export type Policy = { $type: string; managingApp?: string }
+export type Policy = {
+  $type: string
+  publicRead?: boolean
+  publicWrite?: boolean
+  allowedApps?: string[]
+  managingApp?: string
+  publishPolicy?: boolean
+  publishMembers?: boolean
+}
 export type Member = { did: string; read: boolean; write: boolean }
-export type Governance = { readPolicy: Policy; writePolicy: Policy; appAccess: { $type: string; allowed?: string[] }; members: Member[]; more: boolean }
+export type Governance = { policy: Policy; members: Member[]; more: boolean }
+
+export const MEMBERSPACE = 'com.atproto.memberspace.policy'
+export const MANAGEDSPACE = 'com.atproto.managedspace.policy'
+export const PERSONALSPACE = 'com.atproto.personalspace.policy'
 
 const MEMBER_PAGES = 10
 
-/** A space the account governs: its policies and members. */
+/** A space the account governs: its policy and, for a memberspace, its members. */
 export async function governance(s: OAuthSession, space: string): Promise<Governance> {
-  const g = await s.call('com.atproto.simplespace.getSpace', { params: { space } })
+  const g = await s.call('com.atproto.space.getSpace', { params: { space } })
+  const policy: Policy = g.policy
   const members: Member[] = []
   let more = false
-  for (let cursor: string | undefined, i = 0; ; i++) {
+  for (let cursor: string | undefined, i = 0; policy.$type === MEMBERSPACE; i++) {
     if (i === MEMBER_PAGES) {
       more = true
       break
     }
-    const r = await s.call('com.atproto.simplespace.listMembers', { params: { space, limit: 1000, cursor } })
+    const r = await s.call('com.atproto.memberspace.listMembers', { params: { space, limit: 1000, cursor } })
     members.push(...(r.members ?? []))
     if (!r.cursor || !(r.members ?? []).length) break
     cursor = r.cursor
   }
-  return { readPolicy: g.readPolicy, writePolicy: g.writePolicy, appAccess: g.appAccess, members, more }
+  return { policy, members, more }
 }
 
-export function policyText(p?: Policy): string {
-  switch (p?.$type?.split('#')[1]) {
-    case 'publicPolicy':
-      return 'anyone'
-    case 'memberListPolicy':
-      return 'members'
-    case 'managingAppPolicy':
+/** Who may read (or write) under `p`, besides the owner. */
+export function accessText(p: Policy | undefined, side: 'read' | 'write'): string {
+  switch (p?.$type) {
+    case PERSONALSPACE:
+      return 'only you'
+    case MEMBERSPACE:
+      return (side === 'read' ? p.publicRead : p.publicWrite) ? 'anyone' : 'members'
+    case MANAGEDSPACE:
       return 'an app decides'
     default:
       return p?.$type ?? '—'

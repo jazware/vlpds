@@ -52,10 +52,10 @@ change. The lexicons are vendored unmodified in `lexicons/spaces-alpha` and the 
 | A taken-down or deactivated authority suspends its spaces: `RepoTakendown` / `RepoDeactivated` on getSpaceCredential and listRepos (#134) | `xrpc/space.rs` | no | none |
 | An authority's own repo needs its live space (`SpaceNotFound`) | `space/repo.rs` | no | none |
 
-Where the spec is silent and vlpds copies the reference: a removed member stays in `listRepos` at its
-last `repoRev` unless the authority removes the writer, `listRepoOps` leaves out values for
-superseded ops, and `listSpaces` treats its filters as the scope target, so an unfiltered listing
-needs a wildcard grant.
+Where the spec is silent and vlpds copies the reference: `updateSpace` leaves the writer set as it is
+(only `removeWriter`, `removeMember` and a `putMember` without write take a writer out),
+`listRepoOps` leaves out values for superseded ops, and `listSpaces` treats its
+filters as the scope target, so an unfiltered listing needs a wildcard grant.
 
 ## Where vlpds differs
 
@@ -82,6 +82,10 @@ needs a wildcard grant.
 | importRepo | no notify | the authority is told of the imported repo's new rev, as after any write |
 | Backlinks | a like of a space URI is recorded as a backlink | public URIs only |
 | `sync.getBlob` with Spaces on | serves only publicly referenced blobs | the same. Without `--spaces`, vlpds still serves an upload before any record names it |
+| Space takedown | none | a vlpds extension: no credentials, no `listRepos` or registrations, notifies dropped |
+| Credentials for taken-down accounts | issued | refused for a taken-down member or authority |
+| Writes during `clearRecords` | wait for its transaction | refused with `InvalidRequest` (retry) while the clear holds the repo, as during an import |
+| `managingApp` | must start with `did:` | the part before `#` must be a valid DID |
 
 ## Upstream gaps
 

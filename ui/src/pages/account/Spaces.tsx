@@ -5,13 +5,14 @@ import { useAction, useLoad, useSession } from '../../lib/hooks'
 import { ACCOUNT_CALLBACK_PATH, clientInfo, type OAuthSession } from '../../lib/oauth'
 import { Link, navigate, useSearch } from '../../lib/router'
 import {
+  accessText,
   connect,
   disconnect,
   governance,
   listSpaces,
   myRepo,
+  MEMBERSPACE,
   OWNER_SCOPE,
-  policyText,
   pool,
   READ_SCOPE,
   resolveMember,
@@ -238,13 +239,13 @@ function Overview({ sess }: { sess: OAuthSession }) {
                       </Link>
                       {r.gov && (
                         <span className="sm-meta small muted">
-                          Read: {policyText(r.gov.readPolicy)} · write: {policyText(r.gov.writePolicy)}
+                          Read: {accessText(r.gov.policy, 'read')} · write: {accessText(r.gov.policy, 'write')}
                         </span>
                       )}
                     </td>
                     <td className="num">{r.gov ? `${fmtNum(r.gov.members.length)}${r.gov.more ? '+' : ''}` : '—'}</td>
                     <td className="num">{r.gov ? writers(r.gov) : '—'}</td>
-                    <td className="hide-sm">{r.gov ? `${policyText(r.gov.readPolicy)} · ${policyText(r.gov.writePolicy)}` : '—'}</td>
+                    <td className="hide-sm">{r.gov ? `${accessText(r.gov.policy, 'read')} · ${accessText(r.gov.policy, 'write')}` : '—'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -256,11 +257,10 @@ function Overview({ sess }: { sess: OAuthSession }) {
   )
 }
 
-/** Who can write besides the owner: members with write, or everyone under a public policy. */
+/** Who can write besides the owner: members with write, everyone under public write, or the app's say. */
 function writers(g: Governance): string {
-  const t = g.writePolicy?.$type?.split('#')[1]
-  if (t === 'publicPolicy') return 'anyone'
-  if (t === 'managingAppPolicy') return 'app'
+  const t = accessText(g.policy, 'write')
+  if (g.policy.$type !== MEMBERSPACE || t === 'anyone') return t
   return `${fmtNum(g.members.filter((m) => m.write).length)}${g.more ? '+' : ''}`
 }
 
@@ -433,16 +433,17 @@ function Governed({ sess, s, gov, reload }: { sess: OAuthSession; s: SpaceRef; g
   const ask = useAction(() => connect(sess.did, `${READ_SCOPE} ${OWNER_SCOPE}`, here))
   const [removing, setRemoving] = useState<string>()
   const remove = useAction(async (did: string) => {
-    await sess.call('com.atproto.simplespace.removeMember', { body: JSON.stringify({ space: s.uri, did }), type: 'application/json' })
+    await sess.call('com.atproto.memberspace.removeMember', { body: JSON.stringify({ space: s.uri, did }), type: 'application/json' })
     setRemoving(undefined)
     reload()
   })
   const controls = manage && granted
+  const listed = gov.policy.$type === MEMBERSPACE
   return (
     <>
       <Panel
         title="Members"
-        desc={`${fmtNum(gov.members.length)}${gov.more ? '+' : ''} ${gov.members.length === 1 ? 'member' : 'members'}. Read: ${policyText(gov.readPolicy)}. Write: ${policyText(gov.writePolicy)}.`}
+        desc={`${fmtNum(gov.members.length)}${gov.more ? '+' : ''} ${gov.members.length === 1 ? 'member' : 'members'}. Read: ${accessText(gov.policy, 'read')}. Write: ${accessText(gov.policy, 'write')}.`}
         actions={
           !manage && (
             <button type="button" className="btn sm" name="spaces-manage" onClick={() => setManage(true)}>
@@ -453,7 +454,9 @@ function Governed({ sess, s, gov, reload }: { sess: OAuthSession; s: SpaceRef; g
         flush
         id="space-members"
       >
-        {gov.members.length === 0 ? (
+        {!listed ? (
+          <Empty title={`No member list (${gov.policy.$type.split('.')[2] ?? gov.policy.$type})`} />
+        ) : gov.members.length === 0 ? (
           <Empty title="No members yet" />
         ) : (
           <div className="table-wrap">
@@ -491,9 +494,7 @@ function Governed({ sess, s, gov, reload }: { sess: OAuthSession; s: SpaceRef; g
             </table>
           </div>
         )}
-        {gov.appAccess?.$type?.endsWith('#allowList') && (
-          <p className="small muted panel-foot">Apps allowed: {(gov.appAccess.allowed ?? []).join(', ') || 'none'}</p>
-        )}
+        {gov.policy.allowedApps && <p className="small muted panel-foot">Apps allowed: {gov.policy.allowedApps.join(', ') || 'none'}</p>}
       </Panel>
       {manage && !granted && (
         <Panel title="Manage this space" id="space-grant">
@@ -517,7 +518,7 @@ function Governed({ sess, s, gov, reload }: { sess: OAuthSession; s: SpaceRef; g
           </div>
         </Panel>
       )}
-      {controls && <AddMember sess={sess} s={s} reload={reload} />}
+      {controls && listed && <AddMember sess={sess} s={s} reload={reload} />}
       {controls && <DeleteSpace sess={sess} s={s} />}
       <Confirm
         open={!!removing}
@@ -544,7 +545,7 @@ function AddMember({ sess, s, reload }: { sess: OAuthSession; s: SpaceRef; reloa
   const look = useAction(async () => setPending(await resolveMember(handle)))
   const add = useAction(async () => {
     if (!pending) return
-    await sess.call('com.atproto.simplespace.putMember', {
+    await sess.call('com.atproto.memberspace.putMember', {
       body: JSON.stringify({ space: s.uri, did: pending.did, read: true, write: access === 'write' }),
       type: 'application/json',
     })
@@ -616,7 +617,7 @@ function AddMember({ sess, s, reload }: { sess: OAuthSession; s: SpaceRef; reloa
 function DeleteSpace({ sess, s }: { sess: OAuthSession; s: SpaceRef }) {
   const [open, setOpen] = useState(false)
   const del = useAction(async () => {
-    await sess.call('com.atproto.simplespace.deleteSpace', { body: JSON.stringify({ space: s.uri }), type: 'application/json' })
+    await sess.call('com.atproto.space.deleteSpace', { body: JSON.stringify({ space: s.uri }), type: 'application/json' })
     setOpen(false)
     navigate(base)
   })

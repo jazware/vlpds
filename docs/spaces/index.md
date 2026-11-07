@@ -8,7 +8,7 @@ summary: "Permissioned data on vlpds: every member keeps a private, signed space
 
 ```hero
 diagram:
-  caption: "One space with three writers (simplified). alice's own DID is the authority, the simplespace case, so her PDS also runs the space host. Each writer's records live in that writer's space repo on their own PDS. A reader who never writes has no repo."
+  caption: "One space with three writers (simplified). alice's own DID is the authority, so her PDS also runs the space host. Each writer's records live in that writer's space repo on their own PDS. A reader who never writes has no repo."
   nodes:
     - { id: sp, label: Space, sub: "authority · type · skey", at: [13, 0], size: [14, 3], tone: violet }
     - { id: a, label: alice's PDS, sub: "authority · space host", at: [0, 6], size: [11, 3], tone: accent }
@@ -37,7 +37,7 @@ repo for it on their PDS, and the space is the union of those repos. There's no 
 controls who can read the data, but the PDSes holding it can read it.
 
 vlpds implements the reference's alpha as a repo host (your accounts' space repos) and as a
-simplespace host (spaces your accounts govern). It's off unless you start the node with `--spaces`.
+space host (spaces your accounts govern). It's off unless you start the node with `--spaces`.
 
 ## Addressing
 
@@ -74,7 +74,7 @@ from it. vlpds has no back-compat for Spaces data yet, so a format change replac
 |---|---|
 | Space record writes and reads, `listRepoOps`, `getLatestCommit`, `getRepo` | built |
 | The credential chain, revocations, the credential cache | built |
-| simplespace host: policies, members, `getSpaceCredential`, `notifyWrite`, `listRepos`, fan-out | built |
+| space host: the baseline policies (`personalspace`, `memberspace`, `managedspace`), published policy and member records, members, `removeWriter`, `getSpaceCredential`, `notifyWrite`, `listRepos`, fan-out | built |
 | The notifyWrite outbox, oplog retention, the 100k record cap | built |
 | Space blobs (`space.getBlob`, `listBlobs`, the `sync.getBlob` rule) | built |
 | The OAuth consent screen for `space:` scopes | built |

@@ -1,85 +1,34 @@
-//! `com.atproto.simplespace.*` (`--spaces`): the space host role for spaces
-//! anchored on an account hosted here (reference `simplespace/`). Space
-//! state (`sS`, `sM`, `sW`/`sQ`, `sN`) lives in the authority's shard and
-//! changes through its repo worker, so config, member and spaceRev changes
-//! serialize there with no lock.
+//! The space host methods of space policies (reference `space-policy/`
+//! and the `com.atproto.space` lifecycle, `com.atproto.memberspace`
+//! handlers; `--spaces`), for spaces anchored on an account hosted here.
+//! Space state (`sS`, `sM`, `sW`/`sQ`, `sN`) lives in the authority's
+//! shard and changes through its repo worker, so config, member, spaceRev
+//! and published-record changes serialize there with no lock.
 
-use super::authn::SpaceAuth;
-use super::space::{assert_credential_space, spaces, submit_space, Space};
+use super::space::{spaces, submit_space, Space};
 use super::*;
 use crate::oauth::scopes::SpaceAccess;
 use crate::space::repo::{SpaceAck, SpaceOp};
-use crate::space::rows::{AppAccess, MemberRow, Policy, SpaceRow};
+use crate::space::rows::{MemberRow, Policy, PolicyError, SpaceRow};
 
 pub fn routes() -> Router<Arc<App>> {
     Router::new()
-        .route("/xrpc/com.atproto.simplespace.createSpace", post(create_space))
-        .route("/xrpc/com.atproto.simplespace.getSpace", get(get_space))
-        .route("/xrpc/com.atproto.simplespace.updateSpace", post(update_space))
-        .route("/xrpc/com.atproto.simplespace.deleteSpace", post(delete_space))
-        .route("/xrpc/com.atproto.simplespace.putMember", post(put_member))
-        .route("/xrpc/com.atproto.simplespace.removeMember", post(remove_member))
-        .route("/xrpc/com.atproto.simplespace.listMembers", get(list_members))
+        .route("/xrpc/com.atproto.space.createSpace", post(create_space))
+        .route("/xrpc/com.atproto.space.getSpace", get(get_space))
+        .route("/xrpc/com.atproto.space.updateSpace", post(update_space))
+        .route("/xrpc/com.atproto.space.deleteSpace", post(delete_space))
+        .route("/xrpc/com.atproto.space.removeWriter", post(remove_writer))
+        .route("/xrpc/com.atproto.memberspace.putMember", post(put_member))
+        .route("/xrpc/com.atproto.memberspace.removeMember", post(remove_member))
+        .route("/xrpc/com.atproto.memberspace.listMembers", get(list_members))
 }
 
-const DEFS: &str = "com.atproto.simplespace.defs";
-
-fn lex_type(v: &J) -> &str {
-    v.get("$type").and_then(|t| t.as_str()).unwrap_or("")
-}
-
-/// Reference `lexPolicyToDb`.
-fn policy_from_lex(v: &J) -> XResult<Policy> {
-    let t = lex_type(v);
-    match t.strip_prefix(DEFS).unwrap_or("") {
-        "#publicPolicy" => Ok(Policy::Public),
-        "#memberListPolicy" => Ok(Policy::MemberList),
-        "#managingAppPolicy" => {
-            let app = v.get("managingApp").and_then(|a| a.as_str()).unwrap_or("");
-            if !app.starts_with("did:") {
-                return Err(XrpcError::bad(
-                    "UnsupportedPolicy",
-                    format!("managingApp must be a DID with an optional service fragment, got: {app}"),
-                ));
-            }
-            Ok(Policy::ManagingApp { managing_app: app.into() })
-        }
-        _ => Err(XrpcError::bad("UnsupportedPolicy", format!("Unsupported policy: {t}"))),
-    }
-}
-
-fn policy_to_lex(p: &Policy) -> J {
-    match p {
-        Policy::Public => json!({"$type": format!("{DEFS}#publicPolicy")}),
-        Policy::MemberList => json!({"$type": format!("{DEFS}#memberListPolicy")}),
-        Policy::ManagingApp { managing_app } => {
-            json!({"$type": format!("{DEFS}#managingAppPolicy"), "managingApp": managing_app})
-        }
-    }
-}
-
-/// Reference `lexAppAccessToDb`.
-fn app_access_from_lex(v: &J) -> XResult<AppAccess> {
-    let t = lex_type(v);
-    match t.strip_prefix(DEFS).unwrap_or("") {
-        "#open" => Ok(AppAccess::Open),
-        "#allowList" => {
-            let allowed = v
-                .get("allowed")
-                .and_then(|a| a.as_array())
-                .map(|a| a.iter().filter_map(|c| c.as_str().map(String::from)).collect::<Vec<_>>());
-            let allowed = allowed.ok_or_else(|| XrpcError::bad("InvalidRequest", "allowList requires allowed"))?;
-            Ok(AppAccess::AllowList { allowed })
-        }
-        _ => Err(XrpcError::bad("UnsupportedAppAccess", format!("Unsupported appAccess: {t}"))),
-    }
-}
-
-fn app_access_to_lex(a: &AppAccess) -> J {
-    match a {
-        AppAccess::Open => json!({"$type": format!("{DEFS}#open")}),
-        AppAccess::AllowList { allowed } => json!({"$type": format!("{DEFS}#allowList"), "allowed": allowed}),
-    }
+fn req_policy(v: &J) -> XResult<Policy> {
+    let p = v.get("policy").ok_or_else(|| XrpcError::bad("InvalidRequest", "policy is required"))?;
+    Policy::from_lex(p).map_err(|e| match e {
+        PolicyError::Unsupported(m) => XrpcError::bad("UnsupportedPolicy", m),
+        PolicyError::Invalid(m) => XrpcError::bad("InvalidRequest", m),
+    })
 }
 
 /// Reference `assertSpaceHost`: the authority is an account hosted here
@@ -89,6 +38,10 @@ pub(super) async fn assert_space_host(app: &App, space: &Space) -> XResult<()> {
         Some(_) => Ok(()),
         None => Err(space_not_found()),
     }
+}
+
+pub(super) fn policy_mismatch() -> XrpcError {
+    XrpcError::bad("PolicyMismatch", "Space is not governed by the memberspace policy")
 }
 
 pub(super) fn space_not_found() -> XrpcError {
@@ -143,8 +96,9 @@ pub(super) async fn live_space(app: &App, space: &Space) -> XResult<SpaceRow> {
 }
 
 /// Reference `authorizeUser`: the authority can't lock itself out of the
-/// space it alone can reconfigure; otherwise the policy for `access`
-/// (`read` or `write`) decides. A managing app that can't be asked denies.
+/// space it alone can reconfigure; otherwise the policy decides for
+/// `access` (`read` or `write`). A managing app is asked about both, and
+/// one that can't be asked denies.
 pub(super) async fn authorize_user(
     app: &App,
     space: &Space,
@@ -156,17 +110,19 @@ pub(super) async fn authorize_user(
     if user == space.authority {
         return Ok(true);
     }
-    let policy = if access == "read" { &row.read_policy } else { &row.write_policy };
-    match policy {
-        Policy::Public => Ok(true),
-        Policy::MemberList => {
+    match &row.policy {
+        Policy::Personal => Ok(false),
+        Policy::Member { public_read, public_write, .. } => {
+            if *(if access == "read" { public_read } else { public_write }) {
+                return Ok(true);
+            }
             let p = app.partition(&space.authority)?;
             let k = state::space_member_key(&space.authority, &space.sid, user);
             let m = p.db.get(k).await.map_err(XrpcError::from_err)?;
             let m = m.map(|v| MemberRow::decode(&v)).transpose().map_err(XrpcError::from_err)?;
             Ok(m.is_some_and(|m| if access == "read" { m.read } else { m.write }))
         }
-        Policy::ManagingApp { managing_app } => Ok(crate::space::host::check_user_access(
+        Policy::Managed { managing_app, .. } => Ok(crate::space::host::check_user_access(
             app,
             &space.uri,
             &space.authority,
@@ -207,7 +163,9 @@ fn req_bool(v: &J, k: &str) -> XResult<bool> {
     v.get(k).and_then(|b| b.as_bool()).ok_or_else(|| XrpcError::bad("InvalidRequest", format!("{k} must be a boolean")))
 }
 
-/// Reference createSpace: anchored on the caller, `skey` a TID unless
+/// Reference createSpace: anchored on the caller, governed by the policy
+/// given (normalized; one this host doesn't implement is
+/// UnsupportedPolicy), which publishes itself if it asks to. `skey` a TID unless
 /// given. Over a deleted space's tombstone it starts fresh.
 async fn create_space(State(app): AppState, Auth(creds): Auth, Json(inp): Json<J>) -> XResult<Json<J>> {
     spaces(&app)?;
@@ -223,17 +181,9 @@ async fn create_space(State(app): AppState, Auth(creds): Auth, Json(inp): Json<J
     };
     let space = Space::parse(&format!("at://{did}/space/{space_type}/{skey}"))?;
     creds.need_space(&space.target(), SpaceAccess::Manage("create"))?;
-    let read_policy = policy_from_lex(&inp["readPolicy"])?;
-    let write_policy = policy_from_lex(&inp["writePolicy"])?;
-    let app_access = app_access_from_lex(&inp["appAccess"])?;
-    let row = SpaceRow {
-        uri: space.uri.clone(),
-        read_policy,
-        write_policy,
-        app_access,
-        created_at: vlatproto::events::now_rfc3339(),
-        deleted_at: None,
-    };
+    let policy = req_policy(&inp)?;
+    let row =
+        SpaceRow { uri: space.uri.clone(), policy, created_at: vlatproto::events::now_rfc3339(), deleted_at: None };
     let existing = space_row_opt(&app, &space).await?;
     if existing.as_ref().is_none_or(|r| !r.live()) {
         crate::ratelimit::check(&[&crate::ratelimit::SPACE_CREATE], &did, 1)?;
@@ -259,42 +209,41 @@ struct SpaceQ {
     space: String,
 }
 
-/// Reference getSpace: the authority itself, or a credential addressed to
-/// the authority (a member hosted elsewhere can't present OAuth here).
-async fn get_space(State(app): AppState, SpaceAuth(creds): SpaceAuth, Query(q): Query<SpaceQ>) -> XResult<Json<J>> {
+/// Reference getSpace: OAuth as the owner with `read_self`. The policy is
+/// the authority's own state, so a credential doesn't reach it; a policy
+/// can publish itself to readers instead.
+async fn get_space(State(app): AppState, Auth(creds): Auth, Query(q): Query<SpaceQ>) -> XResult<Json<J>> {
     spaces(&app)?;
     let space = Space::parse(&q.space)?;
-    match &creds {
-        Credentials::SpaceCredential { audience, space: s, .. } => {
-            assert_credential_space(audience, s, &space, &space.authority)?
-        }
-        c => {
-            assert_owner(c, &space, SpaceAccess::ReadSelf)?;
-        }
-    }
-    let row = space_row(&app, &space).await?;
-    if !row.live() {
-        return Err(space_not_found());
-    }
-    Ok(Json(json!({
-        "uri": row.uri,
-        "readPolicy": policy_to_lex(&row.read_policy),
-        "writePolicy": policy_to_lex(&row.write_policy),
-        "appAccess": app_access_to_lex(&row.app_access),
-    })))
+    super::authn::check_space_read_account(&creds)?;
+    assert_owner(&creds, &space, SpaceAccess::ReadSelf)?;
+    let row = live_space(&app, &space).await?;
+    Ok(Json(json!({"uri": row.uri, "policy": row.policy.to_lex()})))
 }
 
-/// Reference updateSpace: each policy given replaces the space's wholesale
-/// (so a policy that isn't managing-app drops the managing app).
+/// Reference updateSpace: the policy replaced wholesale (omitted fields
+/// take their defaults). Another `$type` migrates the space and drops the
+/// old policy's state; the writer set is left as it is.
 async fn update_space(State(app): AppState, Auth(creds): Auth, Json(inp): Json<J>) -> XResult<StatusCode> {
     spaces(&app)?;
     let space = req_space(&inp)?;
     let did = assert_owner(&creds, &space, SpaceAccess::Manage("update"))?;
-    let given = |k: &str| inp.get(k).filter(|v| !v.is_null());
-    let read_policy = given("readPolicy").map(policy_from_lex).transpose()?;
-    let write_policy = given("writePolicy").map(policy_from_lex).transpose()?;
-    let app_access = given("appAccess").map(app_access_from_lex).transpose()?;
-    submit_space(&app, &did, &space, SpaceOp::UpdateSpace { read_policy, write_policy, app_access }).await?;
+    let policy = req_policy(&inp)?;
+    assert_space_host(&app, &space).await?;
+    submit_space(&app, &did, &space, SpaceOp::UpdateSpace { policy }).await?;
+    Ok(StatusCode::OK)
+}
+
+/// Reference removeWriter: out of listRepos until it writes again while
+/// authorized. Idempotent; not announced to syncers, and its records stay
+/// where they are.
+async fn remove_writer(State(app): AppState, Auth(creds): Auth, Json(inp): Json<J>) -> XResult<StatusCode> {
+    spaces(&app)?;
+    let space = req_space(&inp)?;
+    let writer = req_did(&inp, "did")?.to_string();
+    let did = assert_owner(&creds, &space, SpaceAccess::Manage("update"))?;
+    assert_space_host(&app, &space).await?;
+    submit_space(&app, &did, &space, SpaceOp::RemoveWriter { writer }).await?;
     Ok(StatusCode::OK)
 }
 
@@ -381,7 +330,8 @@ pub(super) async fn delete_space_rows(app: &App, space: &Space) -> XResult<()> {
     Ok(())
 }
 
-/// Reference putMember: both flags replace the member's.
+/// Reference putMember: both flags replace the member's; without write the
+/// member leaves the writer set. PolicyMismatch outside a memberspace.
 async fn put_member(State(app): AppState, Auth(creds): Auth, Json(inp): Json<J>) -> XResult<StatusCode> {
     spaces(&app)?;
     let space = req_space(&inp)?;
@@ -393,8 +343,8 @@ async fn put_member(State(app): AppState, Auth(creds): Auth, Json(inp): Json<J>)
     Ok(StatusCode::OK)
 }
 
-/// Reference removeMember. A removed member's writer state stays (it is
-/// in listRepos at its last repoRev), as the reference keeps it.
+/// Reference removeMember, which also drops the member from the writer
+/// set. PolicyMismatch outside a memberspace.
 async fn remove_member(State(app): AppState, Auth(creds): Auth, Json(inp): Json<J>) -> XResult<StatusCode> {
     spaces(&app)?;
     let space = req_space(&inp)?;
@@ -419,8 +369,11 @@ async fn list_members(State(app): AppState, Auth(creds): Auth, Query(q): Query<L
     spaces(&app)?;
     let space = Space::parse(&q.space)?;
     let limit = super::extract::limit_param(q.limit, 100, 1, 1000)?;
+    super::authn::check_space_read_account(&creds)?;
     assert_owner(&creds, &space, SpaceAccess::ReadSelf)?;
-    live_space(&app, &space).await?;
+    if !live_space(&app, &space).await?.policy.is_memberspace() {
+        return Err(policy_mismatch());
+    }
     let p = app.partition(&space.authority)?;
     let prefix = state::space_prefix(state::SPACE_MEMBER_FAMILY, &space.authority, &space.sid);
     let lo = match &q.cursor {

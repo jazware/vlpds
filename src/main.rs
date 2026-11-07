@@ -743,8 +743,8 @@ struct Args {
     #[arg(long, env = "VLPDS_RESOLVE_LEXICONS")]
     resolve_lexicons: bool,
     /// AT Protocol Spaces (permissioned data; the reference's alpha, which
-    /// changes weekly): com.atproto.space.* and com.atproto.simplespace.*
-    /// are served here, never proxied; one not implemented yet answers 501
+    /// changes weekly): com.atproto.space.* and the policies' methods
+    /// (com.atproto.memberspace.*) are served here, never proxied; one not implemented yet answers 501
     /// MethodNotImplemented.
     #[arg(long, env = "VLPDS_SPACES")]
     spaces: bool,

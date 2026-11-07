@@ -616,7 +616,7 @@ async fn list_spaces_index_pages() {
     }
     // a deleted space goes, whether the authority wrote in it or not
     for (t, k) in [(TYPE, "g01"), (TYPE, "g05"), (OTHER, "b07")] {
-        a.post("com.atproto.simplespace.deleteSpace", json!({"space": own(t, k)})).await.ok();
+        a.post("com.atproto.space.deleteSpace", json!({"space": own(t, k)})).await.ok();
         want.remove(&own(t, k));
     }
     assert_eq!(want.len(), 21 + 8);

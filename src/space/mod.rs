@@ -17,14 +17,15 @@
 //! - [`repo`]: space writes and space host ops on the repo worker.
 //! - [`heads`]: durable space repo heads for reads.
 //! - [`outbox`]: delivery of notifyWrite to space authorities.
-//! - [`host`]: the space host role (simplespace policies, notifyWrite).
+//! - [`host`]: the space host's calls out (managing apps, notifyWrite).
+//! - [`publish`]: the policy and member records a policy publishes.
 //! - [`fanout`]: forwarding of sequenced writes to registered services.
 //! - [`star`]: STAR archives (getRepo, importRepo).
 //! - [`meta`]: the space meta archive (exportSpaceMeta, importSpaceMeta).
 //! - [`mac`]: the KEM shared secret and the MAC headers.
 //! - [`deleted`]: notifySpaceDeleted retries.
 //! - [`retention`]: pruning of oplogs past the retention window.
-//! - [`attestation`]: client attestations for `appAccess` allow lists.
+//! - [`attestation`]: client attestations for `allowedApps`.
 //! - [`revocations`]: revoked credentials.
 //! - [`credcache`]: verified credentials, until they expire.
 
@@ -41,6 +42,7 @@ pub mod lthash;
 pub mod mac;
 pub mod meta;
 pub mod outbox;
+pub mod publish;
 pub mod repo;
 pub mod retention;
 pub mod revocations;
@@ -521,7 +523,7 @@ impl Default for Spaces {
 /// The XRPC methods of the Spaces lexicons. NSID authorities are
 /// case-insensitive, as the proxy's method lists match them.
 pub fn is_space_nsid(nsid: &str) -> bool {
-    ["com.atproto.space.", "com.atproto.simplespace."]
+    ["com.atproto.space.", "com.atproto.personalspace.", "com.atproto.memberspace.", "com.atproto.managedspace."]
         .iter()
         .any(|p| nsid.get(..p.len()).is_some_and(|h| h.eq_ignore_ascii_case(p)))
 }
@@ -614,7 +616,12 @@ mod tests {
 
     #[test]
     fn space_nsids() {
-        for yes in ["com.atproto.space.getRecord", "com.atproto.simplespace.createSpace", "COM.ATPROTO.Space.x"] {
+        for yes in [
+            "com.atproto.space.getRecord",
+            "com.atproto.memberspace.putMember",
+            "com.atproto.managedspace.checkUserAccess",
+            "COM.ATPROTO.Space.x",
+        ] {
             assert!(is_space_nsid(yes), "{yes}");
         }
         for no in ["com.atproto.repo.getRecord", "com.atproto.spaces.x", "com.atproto.space", "app.bsky.space.x", ""] {

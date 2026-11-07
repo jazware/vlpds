@@ -244,9 +244,7 @@ async fn requires_the_authority_as_audience_for_space_host_requests() {
     let space = net.create_space(&alice, SpaceOpts { members: &[&bob], ..Default::default() }).await;
     let cred = net.credential_for(&bob, &space).await;
     let q = [("space", space.as_str())];
-    for nsid in ["com.atproto.space.listRepos", "com.atproto.simplespace.getSpace"] {
-        cred.get_for(&net.pds[0].url, nsid, &q, &bob.did).await.err(401, "BadSpaceAudience");
-    }
+    cred.get_for(&net.pds[0].url, "com.atproto.space.listRepos", &q, &bob.did).await.err(401, "BadSpaceAudience");
 }
 
 /// HTTP message signature binding: "reuses a signature for the same
@@ -340,7 +338,7 @@ async fn refuses_a_credential_for_a_removed_member() {
     let space = net.create_space(&alice, SpaceOpts { members: &[&carol], ..Default::default() }).await;
     let token = delegation_token(&carol, &space).await;
     remove_member(&alice, &space, &carol).await.ok();
-    net.mint_credential(&space, &token, None).await.0.err(400, "UserNotAuthorized");
+    net.mint_credential(&space, &token, None).await.0.err(400, "SpaceNotFound");
 }
 
 // ---------------------------------------------------------------------------
@@ -516,7 +514,12 @@ async fn delegation_tokens_are_refused_for_a_space_other_than_their_subject() {
 async fn delegation_tokens_live_at_most_300_seconds() {
     let net = Net::new(0).await;
     let alice = net.actor("alice", 0).await;
-    let space = net.create_space(&alice, SpaceOpts { read_policy: Some(public()), ..Default::default() }).await;
+    let space = net
+        .create_space(
+            &alice,
+            SpaceOpts { policy: Some(memberspace(json!({"publicRead": true}))), ..Default::default() },
+        )
+        .await;
     let c = jwt_claims(&delegation_token(&alice, &space).await);
     assert!(c["exp"].as_i64().unwrap() - c["iat"].as_i64().unwrap() <= 300, "{c}");
     let user = MockService::spawn(&[]).await;
@@ -705,4 +708,21 @@ async fn oauth_materializes_declared_collections_into_a_bare_grant() {
             .ok();
     }
     scope_missing(&write(&app, &space, W::new().collection(TEST_COLLECTION).rkey("undeclared")).await);
+}
+
+/// OAuth scopes: "requires delete on every collection a clear removes"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn oauth_requires_delete_on_every_collection_a_clear_removes() {
+    let net = Net::new(0).await;
+    let alice = net.actor("alice", 0).await;
+    let space = net.create_space(&alice, SpaceOpts::default()).await;
+    let [first, second] = SPACE_TYPE_COLLECTIONS;
+    write(&alice, &space, W::new().collection(first).rkey("first")).await.ok();
+    write(&alice, &space, W::new().collection(second).rkey("second")).await.ok();
+    let app = regrant(&alice, &grant(&alice, &format!("collection={first}&action=delete"))).await;
+    scope_missing(&clear(&app, &space).await);
+    assert_eq!(all_records(&alice, &space).await.len(), 2);
+    let app = regrant(&alice, &grant(&alice, &format!("collection={first}&collection={second}&action=delete"))).await;
+    assert_eq!(clear(&app, &space).await.ok(), json!({}));
+    assert!(all_records(&alice, &space).await.is_empty());
 }

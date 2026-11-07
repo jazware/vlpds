@@ -615,3 +615,122 @@ async fn blobs_serves_a_blob_the_authorized_space_does_reference() {
     let r = space_get_blob(&net, &cred, &space, &alice.did, &blob_cid(&blob)).await;
     assert_eq!((r.status, &r.body[..]), (200, &[1u8, 2, 3][..]), "{}", r.text());
 }
+
+// ---------------------------------------------------------------------------
+// clearRecords
+// ---------------------------------------------------------------------------
+
+const EMPTY_REPO_DATA: &str = "e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad";
+
+/// clearRecords: "deletes every record, leaving the repo empty at a new rev"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn clear_deletes_every_record_at_a_new_rev() {
+    let net = Net::new(0).await;
+    let (alice, dan) = (net.actor("alice", 0).await, net.actor("dan", 0).await);
+    let space = net.create_space(&alice, SpaceOpts { members: &[&dan], ..Default::default() }).await;
+    write(&dan, &space, W::new().rkey("one").text("one")).await.ok();
+    write(&dan, &space, W::new().collection(TEST_COLLECTION_ALT).rkey("two").text("two")).await.ok();
+    let before = repo_state(&dan, &space).await.unwrap();
+    assert_eq!(clear(&dan, &space).await.ok(), json!({}));
+    assert!(all_records(&dan, &space).await.is_empty());
+    let (rev, data) = repo_state(&dan, &space).await.unwrap();
+    assert!(rev > before.0, "{rev} after {}", before.0);
+    assert_eq!(hex::encode(data), EMPTY_REPO_DATA);
+    expect_set_hash_matches_store(&dan, &space).await;
+}
+
+/// clearRecords: "clears the oplog rather than logging a delete per record"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn clear_empties_the_oplog() {
+    let net = Net::new(0).await;
+    let (alice, dan) = (net.actor("alice", 0).await, net.actor("dan", 0).await);
+    let space = net.create_space(&alice, SpaceOpts { members: &[&dan], ..Default::default() }).await;
+    write(&dan, &space, W::new().rkey("one")).await.ok();
+    write(&dan, &space, W::new().rkey("two")).await.ok();
+    clear(&dan, &space).await.ok();
+    let r = dan.get("com.atproto.space.listRepoOps", &[("space", &space), ("repo", &dan.did)]).await.ok();
+    assert_eq!(r["ops"], json!([]), "{r}");
+    assert_eq!(hex::encode(bytes_field(&r["commit"]["data"])), EMPTY_REPO_DATA);
+}
+
+/// clearRecords: "is a no-op on an empty or unwritten repo"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn clear_is_a_noop_on_an_empty_repo() {
+    let net = Net::new(0).await;
+    let (alice, dan) = (net.actor("alice", 0).await, net.actor("dan", 0).await);
+    let space = net.create_space(&alice, SpaceOpts { members: &[&dan], ..Default::default() }).await;
+    clear(&dan, &space).await.ok();
+    assert_eq!(repo_state(&dan, &space).await, None);
+    write(&dan, &space, W::new().rkey("gone")).await.ok();
+    del(&dan, &space, None, "gone").await.ok();
+    let emptied = repo_state(&dan, &space).await;
+    clear(&dan, &space).await.ok();
+    assert_eq!(repo_state(&dan, &space).await, emptied);
+}
+
+/// clearRecords: "recreates the repo on a later write"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn clear_then_a_write_repopulates() {
+    let net = Net::new(0).await;
+    let (alice, dan) = (net.actor("alice", 0).await, net.actor("dan", 0).await);
+    let space = net.create_space(&alice, SpaceOpts { members: &[&dan], ..Default::default() }).await;
+    write(&dan, &space, W::new().rkey("before")).await.ok();
+    clear(&dan, &space).await.ok();
+    let cleared = repo_state(&dan, &space).await.unwrap();
+    let created = write(&dan, &space, W::new().rkey("after")).await.ok();
+    let after = repo_state(&dan, &space).await.unwrap();
+    assert!(after.0 > cleared.0);
+    let ops = dan.get("com.atproto.space.listRepoOps", &[("space", &space), ("repo", &dan.did)]).await.ok();
+    let ops = ops["ops"].as_array().unwrap();
+    assert_eq!(ops.len(), 1, "{ops:?}");
+    assert_eq!((&ops[0]["rkey"], &ops[0]["cid"], &ops[0]["prev"]), (&json!("after"), &created["cid"], &J::Null));
+    expect_set_hash_matches_store(&dan, &space).await;
+}
+
+/// clearRecords: "leaves the account's repos in other spaces alone"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn clear_leaves_other_spaces_alone() {
+    let net = Net::new(0).await;
+    let (alice, dan) = (net.actor("alice", 0).await, net.actor("dan", 0).await);
+    let space = net.create_space(&alice, SpaceOpts { members: &[&dan], ..Default::default() }).await;
+    let other = net
+        .create_space(&alice, SpaceOpts { skey: Some("clear-records-other"), members: &[&dan], ..Default::default() })
+        .await;
+    write(&dan, &space, W::new().rkey("cleared")).await.ok();
+    write(&dan, &other, W::new().rkey("kept")).await.ok();
+    clear(&dan, &space).await.ok();
+    let kept: Vec<J> = all_records(&dan, &other).await.iter().map(|r| r["rkey"].clone()).collect();
+    assert_eq!(kept, [json!("kept")]);
+    expect_set_hash_matches_store(&dan, &other).await;
+}
+
+/// clearRecords: "refuses to clear another account repo"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn clear_refuses_another_accounts_repo() {
+    let net = Net::new(0).await;
+    let (alice, dan) = (net.actor("alice", 0).await, net.actor("dan", 0).await);
+    let space = net.create_space(&alice, SpaceOpts { members: &[&dan], ..Default::default() }).await;
+    let r = dan.post("com.atproto.space.clearRecords", json!({"space": space, "repo": alice.did})).await;
+    r.err(403, "Forbidden");
+}
+
+/// blobs: "drops the blobs of cleared records" (gone once space.getBlob no
+/// longer serves it)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn clear_drops_the_blobs_of_cleared_records() {
+    let net = Net::new(0).await;
+    let alice = net.actor("alice", 0).await;
+    let space = net.create_space(&alice, SpaceOpts::default()).await;
+    let blob = upload_blob(&alice, &[3, 1, 3]).await;
+    let cid = blob_cid(&blob);
+    let rec = json!({"$type": TEST_COLLECTION, "text": "cleared", "image": blob});
+    write(&alice, &space, W::new().rkey("cleared-blob").record(rec)).await.ok();
+    let q = [("space", space.as_str()), ("repo", alice.did.as_str())];
+    let listed = alice.get("com.atproto.space.listBlobs", &q).await.ok();
+    assert_eq!(listed["cids"], json!([cid]), "{listed}");
+    clear(&alice, &space).await.ok();
+    let listed = alice.get("com.atproto.space.listBlobs", &q).await.ok();
+    assert_eq!(listed["cids"], json!([]), "{listed}");
+    let q = [("space", space.as_str()), ("repo", alice.did.as_str()), ("cid", cid.as_str())];
+    alice.get("com.atproto.space.getBlob", &q).await.client_err();
+}

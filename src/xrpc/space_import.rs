@@ -134,11 +134,11 @@ fn record_blobs(path: &str, bytes: &[u8]) -> XResult<Vec<Cid>> {
 }
 
 /// Releases the import's claim however it ends.
-struct Claim<'a> {
-    sp: &'a crate::space::Spaces,
-    did: &'a str,
-    sid: crate::state::SpaceId,
-    nonce: u64,
+pub(super) struct Claim<'a> {
+    pub(super) sp: &'a crate::space::Spaces,
+    pub(super) did: &'a str,
+    pub(super) sid: crate::state::SpaceId,
+    pub(super) nonce: u64,
 }
 
 impl Drop for Claim<'_> {
@@ -197,8 +197,8 @@ async fn import(app: &Arc<App>, creds: &Credentials, headers: &HeaderMap, body: 
     let space = Space::parse(&c.space)?;
     creds.need_space(&space.target(), SpaceAccess::WriteAny("create"))?;
     // the authority's own repo comes after its space (importSpaceMeta)
-    if space.authority == did && !super::simplespace::live_space(app, &space).await.is_ok() {
-        return Err(super::simplespace::space_not_found());
+    if space.authority == did && !super::space_policy::live_space(app, &space).await.is_ok() {
+        return Err(super::space_policy::space_not_found());
     }
     let floor = Tid::parse(&c.rev);
     // the repo's new rev comes after this one: past the authorities'

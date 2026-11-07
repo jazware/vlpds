@@ -54,7 +54,7 @@ every configuration, and it passes too.
 
 ## No proxy escape
 
-With `--spaces` on, every `com.atproto.space.*` and `com.atproto.simplespace.*` method is answered on
+With `--spaces` on, every `com.atproto.space.*` and policy method (`com.atproto.memberspace.*`) is answered on
 this node. One that isn't built yet answers 501 `MethodNotImplemented`. It never reaches the
 `atproto-proxy` fallback, where vlpds would mint service auth for it and send it to another host. With
 `--spaces` off they answer 501 too and are never proxied either, so an app can't get the node to

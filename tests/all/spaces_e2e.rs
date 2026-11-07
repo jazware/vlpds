@@ -252,7 +252,7 @@ async fn legacy_auth_and_missing_scopes() {
         "com.atproto.space.notifyWrite",
         "com.atproto.space.notifyCredentialRevoked",
         "com.atproto.space.getRecord",
-        "com.atproto.simplespace.getSpace",
+        "com.atproto.space.getSpace",
         "COM.ATPROTO.SPACE.notifyWrite",
     ];
     async fn mint(sc: &SpaceClient, lxm: &str) -> Resp {
