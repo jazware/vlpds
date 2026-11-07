@@ -682,7 +682,12 @@ async fn notify_write_from_another_vlpds() {
     let space_rev1 = first[0]["spaceRev"].as_str().unwrap().to_string();
     member.create_record(&space, COLL, Some("2"), rec("two")).await.ok();
     let rev2 = head(&member, &space).await;
-    assert!(eventually(Duration::from_secs(10), || async { repos().await[0]["repoRev"] == json!(rev2) }).await);
+    assert!(
+        eventually(Duration::from_secs(10), || async {
+            repos().await.first().is_some_and(|r| r["repoRev"] == json!(rev2))
+        })
+        .await
+    );
     let second = repos().await;
     assert_eq!(second.len(), 1, "one state per writer: {second:?}");
     let space_rev2 = second[0]["spaceRev"].as_str().unwrap().to_string();
@@ -786,7 +791,12 @@ async fn notify_write_from_another_vlpds() {
     let before = syncer.calls("/xrpc/com.atproto.space.notifyWrite").len();
     member.create_record(&space, COLL, Some("3"), rec("three")).await.ok();
     let rev3 = head(&member, &space).await;
-    assert!(eventually(Duration::from_secs(10), || async { repos().await[0]["repoRev"] == json!(rev3) }).await);
+    assert!(
+        eventually(Duration::from_secs(10), || async {
+            repos().await.first().is_some_and(|r| r["repoRev"] == json!(rev3))
+        })
+        .await
+    );
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(syncer.calls("/xrpc/com.atproto.space.notifyWrite").len(), before);
     // an expired registration gets nothing either
@@ -805,7 +815,12 @@ async fn notify_write_from_another_vlpds() {
         .unwrap();
     member.create_record(&space, COLL, Some("4"), rec("four")).await.ok();
     let rev4 = head(&member, &space).await;
-    assert!(eventually(Duration::from_secs(10), || async { repos().await[0]["repoRev"] == json!(rev4) }).await);
+    assert!(
+        eventually(Duration::from_secs(10), || async {
+            repos().await.first().is_some_and(|r| r["repoRev"] == json!(rev4))
+        })
+        .await
+    );
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(syncer.calls("/xrpc/com.atproto.space.notifyWrite").len(), before);
     // unregistering what isn't registered is fine
