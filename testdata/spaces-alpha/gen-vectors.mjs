@@ -24,6 +24,7 @@ import {
   formatWantMacHeader,
   parseMacHeader,
   parseWantMacHeader,
+  readSpaceMetaStar,
   serializeRecord,
   serializeRepo,
   serializeSpaceMeta,
@@ -179,9 +180,11 @@ const metaBytes = await concat(
       { key: 'com.atproto.memberspace.member/did:plc:b', value: { $type: 'com.atproto.memberspace.member', read: true, write: false } },
       { key: 'com.atproto.memberspace.member/did:plc:a', value: { $type: 'com.atproto.memberspace.member', read: true, write: true } },
     ],
-    writers: [{ did: 'did:plc:a', rev: '3kbcq3p7ad400', data: await seed('writer a'), spaceRev: '3kbcq3p7ad402' }],
+    writers: [{ did: 'did:plc:a', rev: '3kbcq3p7ad422', data: await seed('writer a'), spaceRev: '3kbcq3p7ad432' }],
   }),
 )
+const metaBack = await readSpaceMetaStar([metaBytes])
+if (metaBack.writers.length !== 1 || metaBack.policyState.length !== 2) throw new Error('space meta vector does not read back')
 star.push({ profile: 'atproto-space-meta', space: metaSpace, star: hex(metaBytes) })
 out.star = star
 

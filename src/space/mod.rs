@@ -36,6 +36,7 @@ pub mod host;
 pub mod httpsig;
 pub mod lthash;
 pub mod mac;
+pub mod meta;
 pub mod outbox;
 pub mod repo;
 pub mod retention;
