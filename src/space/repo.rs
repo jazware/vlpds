@@ -613,9 +613,11 @@ pub fn write(
     if writes.len() > MAX_WRITES {
         return Err(SpaceError::Write(WriteError::Invalid(format!("Too many writes. Max: {MAX_WRITES}"))));
     }
+    // the authority's own repo lives only as long as its space (reference
+    // `ensureRepo`); another account's repo needs no space here
     let own = authority(uri) == Some(did);
-    if own && st.hosts.get(&sid).and_then(|h| h.space.as_ref()).is_some_and(|s| !s.live()) {
-        return Err(SpaceError::SpaceDeleted);
+    if own && !st.hosts.get(&sid).and_then(|h| h.space.as_ref()).is_some_and(|s| s.live()) {
+        return Err(SpaceError::SpaceNotFound);
     }
     let head = st.repos.get_mut(&sid).ok_or_else(|| internal("space head not loaded"))?;
     if *head.uri != **uri {
@@ -1501,7 +1503,7 @@ mod tests {
         install(&mut st, f);
         let applied = Arc::new(AtomicBool::new(false));
         let e = write(&mut st, auth, sid, &uri, vec![create("a", 1)], 1, &applied, Vec::new(), u64::MAX).err().unwrap();
-        assert!(matches!(e, SpaceError::SpaceDeleted));
+        assert!(matches!(e, SpaceError::SpaceNotFound));
         create_space(&mut st, auth, sid, SpaceRow::defaults(URI, "t4"), 1).unwrap();
         let host = &st.hosts[&sid];
         assert!(host.members.is_empty() && host.max_space_rev.is_none());
@@ -1513,10 +1515,11 @@ mod tests {
         assert!(matches!(e, SpaceError::Write(WriteError::Internal(_))), "{e:?}");
     }
 
-    /// Writes the authority made before creating its space are sequenced by
-    /// the createSpace entry.
+    /// The authority's own repo needs its space (reference "refuses an
+    /// authority write to its own deleted space", and `ensureRepo`): a
+    /// write before createSpace is SpaceNotFound.
     #[test]
-    fn create_sequences_earlier_own_writes() {
+    fn own_writes_need_a_live_space() {
         let auth = "did:plc:auth";
         let uri: Arc<str> = URI.into();
         let sid = state::space_id(URI);
@@ -1528,14 +1531,14 @@ mod tests {
         f.writers.push((sid, auth.into(), None));
         install(&mut st, f);
         let applied = Arc::new(AtomicBool::new(false));
+        let e = write(&mut st, auth, sid, &uri, vec![create("a", 1)], 1, &applied, Vec::new(), u64::MAX).err().unwrap();
+        assert!(matches!(e, SpaceError::SpaceNotFound), "{e:?}");
+        let muts = create_space(&mut st, auth, sid, SpaceRow::defaults(URI, "t"), 1).unwrap();
+        assert_eq!(muts[1].key.to_vec(), state::space_list_key(auth, URI, SpaceListed::Governs));
         let b = write(&mut st, auth, sid, &uri, vec![create("a", 1)], 1, &applied, Vec::new(), u64::MAX)
             .unwrap()
             .ok()
             .unwrap();
-        assert!(b.sequenced.is_none() && b.notify.is_none(), "not created yet: nothing to sequence");
-        let muts = create_space(&mut st, auth, sid, SpaceRow::defaults(URI, "t"), 1).unwrap();
-        assert_eq!(muts.len(), 4, "sS, sL, sQ, sW");
-        assert_eq!(muts[1].key.to_vec(), state::space_list_key(auth, URI, SpaceListed::Governs));
-        assert_eq!(st.hosts[&sid].writers[auth].unwrap().repo_rev, b.rev);
+        assert!(b.sequenced.is_some(), "an own write in a live space is sequenced in its entry");
     }
 }
