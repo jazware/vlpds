@@ -8,8 +8,9 @@ real app runs. `harness.mjs` wires the app to the harness's PLC and accounts, an
 and `lib/syncer.mjs` run on the app's Spaces client (`packages/boards/src/spaces/`).
 
 ```
-just spaces-boards                  # every story in all-vlpds, vlpds-owner and ref-owner
+just spaces-boards                  # every story in all-vlpds, vlpds-owner, ref-owner and all-ref
 just spaces-boards ref-owner        # one config
+VLPDS_BIN=none just spaces-boards all-ref   # the reference alone, no vlpds build
 CLUSTER=1 just spaces-boards        # 3 vlpds nodes, and story 11 kills one mid-run
 just spaces-boards-ui               # the web UI on http://127.0.0.1:2888 until Ctrl-C
 UI_E2E=1 just spaces-boards-ui      # the UI in headless Chromium, then exit
@@ -25,8 +26,8 @@ shrinks story 10 for quick runs and `SEED` fixes its workload. Reports land in
 
 ## The app
 
-A board is a simplespace space of type `dev.example.boards.board`, and its owner's DID is the
-authority. The lexicons are in `packages/boards/lexicons/dev/example/boards/`:
+A board is a space of type `dev.example.boards.board` under a `com.atproto.memberspace.policy`, and its
+owner's DID is the authority. The lexicons are in `packages/boards/lexicons/dev/example/boards/`:
 
 | collection | what |
 |---|---|
@@ -49,7 +50,7 @@ reports not impl.
 `packages/boards/src/appview.mjs` is the indexer and API. The owner adds the appview's account as a read-only member and
 calls `indexBoard`. The appview registers for notifies and syncs every member repo with the
 app's `SpaceSyncer` (listRepos from a spaceRev checkpoint, listRepoOps with a running LtHash checked
-against the signed commit, a verified getRepo on a mismatch). It holds nothing it didn't get that
+against the commit once its MAC verifies, a verified STAR getRepo on a mismatch). It holds nothing it didn't get that
 way. A poll every 2 s catches what nothing pushes, which today is a record takedown. `src/model.mjs`
 turns the synced repos into the board, and the scenario runner runs the same function over the
 writes it saw acked, so the two can be compared post for post.
@@ -62,9 +63,10 @@ non-member can't read a board through the appview either, and the appview honour
 
 The board rules, as `model.mjs` has them:
 
-- A removed member's posts, comments and votes are hidden. listRepos keeps a removed member at the
-  last repoRev it tracked, but there's no way to read a repo at that rev, so a syncer that starts
-  later reads past it. Hiding by `settings.removed` gives every appview the same board.
+- A removed member's posts, comments and votes are hidden. Removal takes the member out of the
+  writer set, so listRepos stops naming them, but it isn't announced: a syncer that already holds
+  their repo keeps it, and one that starts later never pulls it. Hiding by `settings.removed` gives
+  every appview the same board.
 - A comment whose post is gone isn't shown. A reply whose parent is gone hangs under a `[removed]`
   placeholder.
 - Score is ups minus downs over each member's latest vote. Karma is the score of a member's posts and
@@ -77,9 +79,9 @@ The board rules, as `model.mjs` has them:
 | 0.bare-grant | a bare `space:dev.example.boards.board` grant. The consent screen says "Board spaces" and lists the declared collections, the token carries them, a post works and an undeclared collection is refused |
 | 1.create-board | alice makes "rustaceans", bob and carol write, dave lurks, eve isn't in it, and the appview indexes it |
 | 2.post-comment-vote | a post with an image, a two-deep thread, votes changed and taken back. Scores, threads, karma and the three sorts match the model and hand-counted numbers. The image comes back from `space.getBlob` and the appview, and `sync.getBlob` answers `BlobNotFound` |
-| 3.lurker-outsider | dave reads everything. His own-repo writes go untracked and never show (the reference rule), and he can't write into bob's repo. eve gets no credential, and the appview refuses her own board's credential and a stolen one signed with her key |
+| 3.lurker-outsider | dave reads everything. His own-repo writes go untracked and never show (the reference rule), and he can't write into bob's repo. eve gets no credential (`SpaceNotFound`), and the appview refuses her own board's credential and a stolen one signed with her key |
 | 4.edit-delete-converge | 40 edits, comments and deletes with the appview's poll off, so only notifies move it. Reports ack-to-visible p50 and p99 |
-| 5.remove-member | carol loses her credential and stays in listRepos at her last tracked rev. Her content disappears from the appview |
+| 5.remove-member | carol loses her credential (`SpaceNotFound`) and drops out of listRepos. Her content disappears from the appview |
 | 6.takedown | an operator takes bob's post down (vlpds only). It's gone from every read, its image answers `BlobNotFound`, and the appview converges without it. `vlpds.admin.getSpaceRecord` reads it flagged `takendown` and the read is audited. A reversal brings it all back |
 | 8.revoke | alice revokes a stolen credential on every member host and the appview. Reads with it fail with `CredentialRevoked` |
 | 10.scale | 20 members, 200 posts, 1,000 comments and 3,000 votes, 16 in flight. Nothing acked is lost, and the appview matches the model on every post, thread and karma. Reports throughput, appview catch-up and vlpds bucket ops per write |
@@ -89,7 +91,8 @@ The board rules, as `model.mjs` has them:
 
 The configs place people on hosts. all-vlpds puts everyone on vlpds. vlpds-owner has alice and bob on
 vlpds, carol on ref-b and dave on ref-a. ref-owner has alice on ref-a, bob and dave on vlpds and carol
-on ref-b. Story 10's crowd is spread over the config's hosts.
+on ref-b. all-ref has no vlpds at all, so it checks the stories and the app against the reference.
+Story 10's crowd is spread over the config's hosts.
 
 ## The web UI
 

@@ -138,7 +138,7 @@ async function main() {
       await putMember(S.A, S.space, S.R, true, false)
       for (let i = 0; i < 50; i++) await S.W.client.com.atproto.space.createRecord({ space: S.space, repo: S.W.did, collection: COLL, rkey: `seed${i}`, record: rec(i) })
       S.cred = await credentialFor(S.R, S.space)
-      S.wc = await S.cred.repoClient(S.W.did)
+      S.wc = await S.cred.macClient(S.W.did)
       await (await S.cred.hostClient()).com.atproto.space.registerNotify({ space: S.space, service: env.svc.serviceRef })
       check(true, 'space with a writer (50 records) and a registered syncer')
     })

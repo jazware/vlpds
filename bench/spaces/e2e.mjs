@@ -7,12 +7,25 @@
 //
 //   node e2e.mjs [config ...]     configs: ref-ref vlpds-authority ref-authority vlpds-only
 //   (VLPDS_BIN=... starts vlpds; CLUSTER=1 for 3 nodes; see run.sh)
-import { P256Keypair } from '@atproto/crypto'
-import { LtHash, createSpaceSigHeaders, verifyCommit, verifyRepoCarFull } from '@atproto/space'
+import { P256Keypair, Secp256k1Keypair } from '@atproto/crypto'
+import {
+  COMMIT_MAC_TYPE,
+  LtHash,
+  RECORD_MAC_TYPE,
+  RepoCommit,
+  WANT_MAC_HEADER,
+  createSpaceSigHeaders,
+  encapsulate,
+  formatWantMacHeader,
+  parseMacHeader,
+  verifyCommit,
+  verifyRecord,
+  verifyRepoStarFull,
+} from '@atproto/space'
 import { APP_SCOPE, Actor, RUN } from './lib/actor.mjs'
 import { COLL, COLL_ALT, HOSTS, PORTS, REF_ADMIN_PASSWORD, SPACE_TYPE, VLPDS_ADMIN_TOKEN, log } from './lib/env.mjs'
-import { NotImplemented, attempt, makeClient, rawXrpc, sleep, setTimingScope, waitFor } from './lib/http.mjs'
-import { signingKey, spaceHostEndpoint } from './lib/identity.mjs'
+import { NotImplemented, attempt, rawXrpc, sleep, setTimingScope, waitFor } from './lib/http.mjs'
+import { kemKey, pdsEndpoint } from './lib/identity.mjs'
 import { FirehoseTap, SENTINEL, checkAuthor } from './lib/leak.mjs'
 import { NotifyService } from './lib/notifysvc.mjs'
 import { Report, summarize } from './lib/report.mjs'
@@ -24,6 +37,7 @@ import {
   decodeJwt,
   delegationToken,
   exchange,
+  headOf,
   putMember,
   repoHost,
   spaceUri,
@@ -41,6 +55,9 @@ export const CONFIGS = {
 const usesVlpds = (cfg) => Object.values(CONFIGS[cfg]).includes('vlpds')
 const record = (text, extra = {}) => ({ $type: COLL, text, createdAt: new Date().toISOString(), ...extra })
 const errName = (r) => r.error ?? `HTTP ${r.status}`
+const rkeyOf = (uri) => uri.split('/').pop()
+// the digest clearRecords leaves (an empty repo's LtHash)
+const EMPTY_DATA = 'e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad'
 
 /** Ground truth of acked space writes: space -> did -> path -> cid. */
 class Truth {
@@ -89,6 +106,17 @@ function ltOf(paths) {
   return h.digest()
 }
 
+const hex = (b) => Buffer.from(b ?? []).toString('hex')
+const bytesOf = (lexBytes) => Buffer.from(lexBytes?.$bytes ?? '', 'base64')
+
+/** getRepo of `did` with a MAC: the STAR bytes and the verified archive (null when it doesn't verify). */
+async function repoOf(cred, space, did) {
+  const { res, sharedSecret, mac } = await cred.macRead(did, COMMIT_MAC_TYPE, (cl, opts) => cl.com.atproto.space.getRepo({ space, repo: did }, opts))
+  const bytes = Buffer.from(res.data)
+  const verified = mac ? await verifyRepoStarFull([bytes], { space, repo: did, sharedSecret, mac }) : null
+  return { bytes, verified, res }
+}
+
 /** rawXrpc as a vlpds OAuth account (DPoP), for methods the typed client has no lexicon for. */
 async function dpopXrpc(actor, nsid, opts = {}) {
   const signer = actor.oauth.signer()
@@ -120,8 +148,10 @@ function highS(sig) {
   const s = big(sig.subarray(32))
   return Buffer.concat([Buffer.from(sig.subarray(0, 32)), be32(s > N / 2n ? s : N - s)])
 }
-function withSig(h, sigBytes) {
-  return { ...h, signature: `atproto-space=:${Buffer.from(sigBytes).toString('base64')}:` }
+const LABEL = 'atproto-space-credential'
+function withSig(h, sigBytes, { pad = true } = {}) {
+  const b64 = Buffer.from(sigBytes).toString('base64')
+  return { ...h, signature: `${LABEL}=:${pad ? b64 : b64.replace(/=+$/, '')}:` }
 }
 function sigOf(h) {
   return Buffer.from(/=:([^:]+):/.exec(h.signature)[1], 'base64')
@@ -155,6 +185,10 @@ export async function runConfig(rep, cfg, env) {
         rep.note(`${cfg}: vlpds granted "${S[role].oauth.scope}" for a request of "${APP_SCOPE}" (the space: permission was dropped)`)
       }
     }
+    for (const role of ['W1', 'W2']) {
+      const k = await attempt(() => kemKey(S[role].did).then((data) => ({ data })))
+      check(k.ok && /^did:key:zDn/.test(k.data), `${role}'s DID document publishes a P-256 #atproto_kem key`, k.ok ? k.data : k.error ?? '')
+    }
     S.skey = `${SENTINEL}${cfg.replace(/[^a-z]/g, '')}`
     S.space = spaceUri(S.A.did, S.skey)
     S.taps = []
@@ -172,21 +206,18 @@ export async function runConfig(rep, cfg, env) {
     async (check) => {
       const uri = await createSpace(S.A, S.skey)
       check(uri === S.space, 'createSpace answers the space URI anchored on the caller', uri)
-      const got = await S.A.client.com.atproto.simplespace.getSpace({ space: S.space })
-      check(got.data.readPolicy?.$type === POLICY.members.$type, 'getSpace readPolicy is member-list', JSON.stringify(got.data))
-      check(got.data.appAccess?.$type === POLICY.open.$type, 'getSpace appAccess is open')
+      const got = await S.A.client.com.atproto.space.getSpace({ space: S.space })
+      const pol = got.data.policy ?? {}
+      check(got.data.uri === S.space && pol.$type === 'com.atproto.memberspace.policy', 'getSpace answers the memberspace policy', JSON.stringify(got.data))
+      check(
+        pol.publicRead === false && pol.publicWrite === false && pol.publishPolicy === false && pol.publishMembers === false && pol.allowedApps === undefined,
+        'with its defaults filled in (stored as enforced)',
+        JSON.stringify(pol),
+      )
       const dup = await attempt(() => createSpace(S.A, S.skey).then((data) => ({ data })))
       check(!dup.ok && dup.error === 'SpaceAlreadyExists', 'a second createSpace answers SpaceAlreadyExists', errName(dup))
-      const unsupported = await attempt(() =>
-        S.A.client.com.atproto.simplespace.createSpace({
-          spaceType: SPACE_TYPE,
-          skey: `${S.skey}x`,
-          readPolicy: { $type: 'com.example.policy#made-up' },
-          writePolicy: POLICY.members,
-          appAccess: POLICY.open,
-        }),
-      )
-      check(!unsupported.ok, 'an unknown policy variant is refused', errName(unsupported))
+      const unsupported = await attempt(() => createSpace(S.A, `${S.skey}x`, { policy: { $type: 'com.example.policy' } }).then((data) => ({ data })))
+      check(!unsupported.ok && unsupported.error === 'UnsupportedPolicy', 'an unknown policy $type answers UnsupportedPolicy', errName(unsupported))
     },
     { needs: ['setup.accounts'] },
   )
@@ -197,12 +228,12 @@ export async function runConfig(rep, cfg, env) {
       await putMember(S.A, S.space, S.W1, true, true)
       await putMember(S.A, S.space, S.W2, true, true)
       await putMember(S.A, S.space, S.R, true, false)
-      const r = await S.A.client.com.atproto.simplespace.listMembers({ space: S.space })
+      const r = await S.A.client.com.atproto.memberspace.listMembers({ space: S.space })
       const got = Object.fromEntries(r.data.members.map((m) => [m.did, `${m.read}/${m.write}`]))
       check(got[S.W1.did] === 'true/true' && got[S.W2.did] === 'true/true', 'writers listed read+write', JSON.stringify(got))
       check(got[S.R.did] === 'true/false', 'reader listed read-only', JSON.stringify(got))
       check(!got[S.X.did], 'outsider not listed')
-      const notOwner = await attempt(() => S.W1.client.com.atproto.simplespace.putMember({ space: S.space, did: S.X.did, read: true, write: true }))
+      const notOwner = await attempt(() => S.W1.client.com.atproto.memberspace.putMember({ space: S.space, did: S.X.did, read: true, write: true }))
       check(!notOwner.ok, 'a non-owner cannot putMember', errName(notOwner))
     },
     { needs: ['space.create'] },
@@ -215,12 +246,14 @@ export async function runConfig(rep, cfg, env) {
       for (const w of [S.W1, S.W2]) pub0[w.did] = (await rawXrpc(w.base, 'com.atproto.sync.getLatestCommit', { params: { did: w.did } })).json?.rev
       const c = S.W1.client.com.atproto.space
       const a = await c.createRecord({ space: S.space, repo: S.W1.did, collection: COLL, record: record(`hello ${SENTINEL}`) })
-      const aPath = `${COLL}/${a.data.uri.split('/').pop()}`
+      const aPath = `${COLL}/${rkeyOf(a.data.uri)}`
       truth.set(S.space, S.W1.did, aPath, a.data.cid)
       check(a.data.uri.startsWith(`${S.space}/${S.W1.did}/${COLL}/`), 'the record URI is the 7-segment space form', a.data.uri)
       const srk = `${SENTINEL}-rk`
       const b = await c.createRecord({ space: S.space, repo: S.W1.did, collection: COLL, rkey: srk, record: record('sentinel rkey') })
       truth.set(S.space, S.W1.did, `${COLL}/${srk}`, b.data.cid)
+      S.srk = srk
+      S.srkUri = b.data.uri
       const p1 = await c.putRecord({ space: S.space, repo: S.W1.did, collection: COLL_ALT, rkey: 'self', record: { ...record('v1'), $type: COLL_ALT } })
       const p2 = await c.putRecord({ space: S.space, repo: S.W1.did, collection: COLL_ALT, rkey: 'self', record: { ...record('v2'), $type: COLL_ALT } })
       check(String(p1.data.cid) !== String(p2.data.cid), 'putRecord replaces the value')
@@ -232,6 +265,14 @@ export async function runConfig(rep, cfg, env) {
       check(!dup.ok && dup.error === 'RecordAlreadyExists', 'a duplicate create answers RecordAlreadyExists', errName(dup))
       const other = await attempt(() => c.createRecord({ space: S.space, repo: S.W2.did, collection: COLL, record: record('not mine') }))
       check(!other.ok, "writing into someone else's repo is refused", errName(other))
+      // published policy and member records are the authority's PDS's to write
+      for (const [collection, rkey] of [
+        ['com.atproto.space.policy', 'self'],
+        ['com.atproto.memberspace.member', S.W1.did],
+      ]) {
+        const direct = await attempt(() => c.putRecord({ space: S.space, repo: S.W1.did, collection, rkey, record: { $type: collection, read: true, write: true } }))
+        check(!direct.ok && direct.status === 400, `a direct write to ${collection} is refused`, errName(direct))
+      }
 
       const w2 = S.W2.client.com.atproto.space
       const aw = await w2.applyWrites({
@@ -277,7 +318,7 @@ export async function runConfig(rep, cfg, env) {
       }
       const g = await S.W1.client.com.atproto.space.getRecord({ space: S.space, repo: S.W1.did, collection: COLL, rkey: srk })
       check(String(g.data.cid) === String(b.data.cid) && g.data.value?.text === 'sentinel rkey', 'getRecord (read_self) returns the value')
-      // An OAuth caller's filters are the scope target (ref listSpaces.ts:19-26): a
+      // An OAuth caller's filters are the scope target (ref listSpaces.ts): a
       // grant for one space type lists only with spaceType set, and is refused
       // unfiltered or for another type. A password session (the ref) skips the check.
       const oauth = !!S.W1.oauth
@@ -301,6 +342,14 @@ export async function runConfig(rep, cfg, env) {
       const r = await attempt(() => S.W1.client.com.atproto.space.listRecords({ space: S.space, repo: S.W2.did }))
       check(!r.ok, "an OAuth/session read of another member's repo is refused (needs a credential)", errName(r))
       if (P.W1 === P.W2) check(r.error === 'RepoNotFound', 'with RepoNotFound (indistinguishable from absent)', errName(r))
+      // a MAC is optional on a read of one's own data, and only answered when asked for
+      const c = S.W1.client.com.atproto.space
+      const plain = await c.getLatestCommit({ space: S.space, repo: S.W1.did })
+      check(plain.headers['atproto-space-mac'] === undefined, "an own-data read that doesn't ask for a MAC gets none", plain.headers['atproto-space-mac'])
+      const { keyShare, sharedSecret } = await encapsulate(await kemKey(S.W1.did))
+      const asked = await c.getLatestCommit({ space: S.space, repo: S.W1.did }, { headers: { [WANT_MAC_HEADER]: formatWantMacHeader(COMMIT_MAC_TYPE, keyShare) } })
+      const mac = asked.headers['atproto-space-mac'] ? parseMacHeader(asked.headers['atproto-space-mac'], COMMIT_MAC_TYPE) : null
+      check(mac && verifyCommit(asked.data.commit, { space: S.space, repo: S.W1.did, sharedSecret, mac }), 'and one that asks gets a MAC that verifies')
     },
     { needs: ['records.write'] },
   )
@@ -311,36 +360,35 @@ export async function runConfig(rep, cfg, env) {
       const tok = await delegationToken(S.R, S.space)
       const d = decodeJwt(tok)
       check(d.header.typ === 'atproto-space-delegation+jwt', 'delegation typ', d.header.typ)
+      check(d.header.kid === '#atproto', 'delegation kid is exactly #atproto', d.header.kid)
       check(d.payload.iss === S.R.did && d.payload.sub === S.space, 'delegation iss=user sub=space', JSON.stringify(d.payload))
-      check(d.payload.aud === `${S.A.did}#atproto_space_host`, 'delegation aud = authority#atproto_space_host', d.payload.aud)
+      check(d.payload.aud === `${S.A.did}#atproto_pds`, 'delegation aud = authority#atproto_pds', d.payload.aud)
       check(d.payload.exp - d.payload.iat <= 60, 'delegation lives at most 60 s', d.payload.exp - d.payload.iat)
       const key = await P256Keypair.create()
       const cred = await exchange(S.space, tok, { key })
       const c = cred.claims
       check(c.header.typ === 'atproto-space-credential+jwt', 'credential typ', c.header.typ)
+      check(c.header.kid === '#atproto', 'credential kid is exactly #atproto', c.header.kid)
       check(c.payload.iss === S.A.did && c.payload.sub === S.space, 'credential iss=authority sub=space')
       check(c.payload.aud === undefined, 'credential carries no aud', c.payload.aud)
-      check(c.payload.cnf?.kid === key.did(), 'credential cnf.kid is the signing key', JSON.stringify(c.payload.cnf))
+      check(c.payload.cnf?.kid === key.did(), 'credential cnf.kid is the credentialKid', JSON.stringify(c.payload.cnf))
       const life = c.payload.exp - c.payload.iat
       check(life > 0 && life <= 3600, 'credential lifetime within (0, 3600] s', life)
       check(life === 600, 'credential lifetime is the 600 s default', life)
       check(typeof c.payload.jti === 'string' && c.payload.jti.length > 0, 'credential has a jti')
       const again = await attempt(() => exchange(S.space, tok).then(() => ({ data: 1 })))
-      check(!again.ok, 'a delegation token is single-use', errName(again))
+      check(!again.ok && again.error === 'InvalidDelegationToken', 'a delegation token is single-use (InvalidDelegationToken)', errName(again))
       const outsider = await attempt(() => credentialFor(S.X, S.space).then(() => ({ data: 1 })))
-      check(!outsider.ok && outsider.error === 'UserNotAuthorized', 'an outsider gets UserNotAuthorized', errName(outsider))
-      const badSig = await attempt(async () => {
-        const t = await delegationToken(S.R, S.space)
-        const k = await P256Keypair.create()
-        const h = await createSpaceSigHeaders(k, { authorization: `Bearer ${t}` })
-        return exchange(S.space, t, { key: k, headers: withSig(h, highS(sigOf(h)).fill(1, 0, 4)) }).then(() => ({ data: 1 }))
-      })
-      check(!badSig.ok, 'an exchange with a bad HTTP signature is refused', errName(badSig))
-      const noSig = await attempt(async () => {
-        const t = await delegationToken(S.R, S.space)
-        return exchange(S.space, t, { headers: { authorization: `Bearer ${t}` } }).then(() => ({ data: 1 }))
-      })
-      check(!noSig.ok, 'an exchange without an HTTP signature is refused', errName(noSig))
+      check(!outsider.ok && outsider.error === 'SpaceNotFound', 'an outsider gets SpaceNotFound', errName(outsider))
+      const tokenless = await attempt(() => exchange(S.space, undefined).then(() => ({ data: 1 })))
+      check(!tokenless.ok && tokenless.error === 'SpaceNotFound', 'without a delegation token a members-only space answers SpaceNotFound', errName(tokenless))
+      const k256 = await Secp256k1Keypair.create()
+      const notP256 = await attempt(async () => exchange(S.space, await delegationToken(S.R, S.space), { credentialKid: k256.did() }).then(() => ({ data: 1 })))
+      check(!notP256.ok && notP256.status === 400, 'a credentialKid that is not a P-256 did:key is refused', errName(notP256))
+      const garbage = await attempt(() => exchange(S.space, `${tok.split('.').slice(0, 2).join('.')}.AAAA`).then(() => ({ data: 1 })))
+      check(!garbage.ok && garbage.error === 'InvalidDelegationToken', 'a badly signed delegation token answers InvalidDelegationToken', errName(garbage))
+      const otherSub = await attempt(async () => exchange(S.space, await delegationToken(S.R, `${S.space}x`)).then(() => ({ data: 1 })))
+      check(!otherSub.ok && otherSub.error === 'InvalidDelegationToken', 'a delegation token for another space answers InvalidDelegationToken', errName(otherSub))
       S.cred = cred
     },
     { needs: ['members'] },
@@ -354,15 +402,34 @@ export async function runConfig(rep, cfg, env) {
         const got = await listAll(cl, S.space, w.did)
         const d = mapDiff(truth.repo(S.space, w.did), got)
         check(!d.length, `credential listRecords of ${w} equals the acked writes`, d.join(', '))
-        const lc = await cl.com.atproto.space.getLatestCommit({ space: S.space, repo: w.did })
-        const commit = lc.data.commit
-        const ok = await verifyCommit(commit, { space: S.space, author: w.did, rev: commit.rev }, await signingKey(w.did))
-        check(ok, `getLatestCommit of ${w} verifies (sig + MAC) with the author's key`)
-        const h = new LtHash()
-        for (const [p, cid] of truth.repo(S.space, w.did)) h.add(`${p}/${cid}`)
-        check(hashEq(h.digest(), commit.hash), `its hash equals the LtHash of the acked records (${w})`)
+        const { res, sharedSecret, mac } = await S.cred.macRead(w.did, COMMIT_MAC_TYPE, (c, opts) => c.com.atproto.space.getLatestCommit({ space: S.space, repo: w.did }, opts))
+        const commit = res.data.commit
+        check(commit.ver === 1 && commit.repo === w.did && commit.space === S.space, `getLatestCommit of ${w} names its repo and space`, JSON.stringify({ ver: commit.ver, repo: commit.repo, space: commit.space }))
+        check(mac && verifyCommit(commit, { space: S.space, repo: w.did, sharedSecret, mac }), `its MAC verifies with the secret encapsulated to ${w}'s #atproto_kem key`)
+        check(mac && !verifyCommit(commit, { space: S.space, repo: w.did, sharedSecret: new Uint8Array(32), mac }), 'and not with another secret')
+        check(/atproto-space-want-mac/i.test(res.headers.vary ?? ''), 'the response varies on Atproto-Space-Want-Mac', res.headers.vary)
+        check(hashEq(commit.data, ltOf(truth.repo(S.space, w.did))), `its data equals the LtHash of the acked records (${w})`)
       }
       const host1 = await repoHost(S.W1.did)
+      const cl1 = await S.cred.repoClient(S.W1.did)
+      const noMac = await attempt(() => cl1.com.atproto.space.getLatestCommit({ space: S.space, repo: S.W1.did }))
+      check(!noMac.ok && noMac.error === 'BadSpaceMac', 'a credential read of getLatestCommit without Want-Mac answers BadSpaceMac', errName(noMac))
+      const opsNoMac = await attempt(() => cl1.com.atproto.space.listRepoOps({ space: S.space, repo: S.W1.did }))
+      check(!opsNoMac.ok && opsNoMac.error === 'BadSpaceMac', 'and listRepoOps', errName(opsNoMac))
+      const badHeader = await attempt(() => cl1.com.atproto.space.getLatestCommit({ space: S.space, repo: S.W1.did }, { headers: { [WANT_MAC_HEADER]: 'type="atproto-space-repo", ver=1, key_share="did:key:zQ3notakey"' } }))
+      check(!badHeader.ok && badHeader.error === 'BadSpaceMac', 'a key_share that is not a P-256 did:key answers BadSpaceMac', errName(badHeader))
+      const { keyShare } = await encapsulate(await kemKey(S.W1.did))
+      const wrongType = await attempt(() => cl1.com.atproto.space.getLatestCommit({ space: S.space, repo: S.W1.did }, { headers: { [WANT_MAC_HEADER]: formatWantMacHeader(RECORD_MAC_TYPE, keyShare) } }))
+      check(!wrongType.ok && wrongType.error === 'BadSpaceMac', 'the record MAC type on getLatestCommit answers BadSpaceMac', errName(wrongType))
+      const wrongVer = await attempt(() => cl1.com.atproto.space.getLatestCommit({ space: S.space, repo: S.W1.did }, { headers: { [WANT_MAC_HEADER]: `type="atproto-space-repo", ver=2, key_share="${keyShare}"` } }))
+      check(!wrongVer.ok && wrongVer.error === 'BadSpaceMac', 'an unsupported MAC version answers BadSpaceMac', errName(wrongVer))
+
+      const uri = S.srkUri
+      const rec = await S.cred.macRead(S.W1.did, RECORD_MAC_TYPE, (c, opts) => c.com.atproto.space.getRecord({ space: S.space, repo: S.W1.did, collection: COLL, rkey: S.srk }, opts))
+      check(rec.mac && (await verifyRecord({ uri: rec.res.data.uri, cid: String(rec.res.data.cid), value: rec.res.data.value }, { uri, sharedSecret: rec.sharedSecret, mac: rec.mac })), 'getRecord with a credential answers a record MAC that verifies (uri, cid, value)')
+      const recNoMac = await attempt(() => cl1.com.atproto.space.getRecord({ space: S.space, repo: S.W1.did, collection: COLL, rkey: S.srk }))
+      check(!recNoMac.ok && recNoMac.error === 'BadSpaceMac', 'and getRecord without Want-Mac answers BadSpaceMac', errName(recNoMac))
+
       const wrongAud = await attempt(() =>
         S.cred.client(host1, { audience: S.W2.did }).com.atproto.space.listRecords({ space: S.space, repo: S.W1.did }),
       )
@@ -373,6 +440,8 @@ export async function runConfig(rep, cfg, env) {
       check(!der.ok, 'a DER signature is refused', `${der.status} ${der.error}`)
       const hs = await raw(withSig(h0, highS(sigOf(h0))))
       check(hs.ok, 'a high-S signature is accepted', `${hs.status} ${hs.error} ${hs.message}`)
+      const unpadded = await raw(withSig(h0, sigOf(h0), { pad: false }))
+      check(unpadded.ok, 'an unpadded base64 signature is accepted', `${unpadded.status} ${unpadded.error} ${unpadded.message}`)
       const nosig = await raw({ authorization: h0.authorization, 'atproto-space-audience': S.W1.did })
       check(!nosig.ok, 'a credential without its HTTP signature is refused', `${nosig.status} ${nosig.error}`)
       const dupAud = await raw({ ...h0, 'atproto-space-audience': `${S.W1.did}, ${S.W2.did}` })
@@ -382,7 +451,20 @@ export async function runConfig(rep, cfg, env) {
         'signature-input': `other=("authorization");keyid="did:key:zx", ${h0['signature-input']}`,
         signature: `other=:AAAA:, ${h0.signature}`,
       })
-      check(otherLabel.ok, 'the atproto-space label is found next to another signature label', `${otherLabel.status} ${otherLabel.error}`)
+      check(otherLabel.ok, 'the atproto-space-credential label is found next to another signature label', `${otherLabel.status} ${otherLabel.error}`)
+      const noTag = await raw({ ...h0, 'signature-input': h0['signature-input'].replace(/;tag="[^"]*"/, '') })
+      check(!noTag.ok, 'a signature without tag="atproto-space-credential" is refused', `${noTag.status} ${noTag.error}`)
+      const lower = await createSpaceSigHeaders(S.cred.key, { authorization: `atproto-space-credential ${S.cred.credential}`, audience: S.W1.did })
+      const lc = await raw(lower)
+      check(lc.ok, 'the scheme is recognized in lower case, signed over the value as sent', `${lc.status} ${lc.error} ${lc.message}`)
+      const old = await createSpaceSigHeaders(S.cred.key, { authorization: `Atproto-Space ${S.cred.credential}`, audience: S.W1.did })
+      const oldRes = await raw({ ...old, 'signature-input': old['signature-input'].replace(`${LABEL}=`, 'atproto-space='), signature: old.signature.replace(`${LABEL}=`, 'atproto-space=') })
+      check(!oldRes.ok && oldRes.status === 400, 'the old Atproto-Space scheme is refused (400)', `${oldRes.status} ${oldRes.error}`)
+      const cors = await rawXrpc(host1, 'com.atproto.space.getLatestCommit', {
+        params: { space: S.space, repo: S.W1.did },
+        headers: { ...h0, origin: 'https://app.example', [WANT_MAC_HEADER]: formatWantMacHeader(COMMIT_MAC_TYPE, (await encapsulate(await kemKey(S.W1.did))).keyShare) },
+      })
+      check(cors.ok && /atproto-space-mac/i.test(cors.headers.get('access-control-expose-headers') ?? ''), 'browsers may read Atproto-Space-Mac (Access-Control-Expose-Headers)', `${cors.status} ${cors.headers.get('access-control-expose-headers')}`)
       const tok = await delegationToken(S.R, S.space)
       const asCred = new SpaceCred(S.space, tok, S.cred.key)
       const conf = await attempt(() => asCred.client(host1).com.atproto.space.listRecords({ space: S.space, repo: S.W1.did }))
@@ -390,6 +472,8 @@ export async function runConfig(rep, cfg, env) {
       const otherKey = new SpaceCred(S.space, S.cred.credential, await P256Keypair.create())
       const stolen = await attempt(() => otherKey.client(host1).com.atproto.space.listRecords({ space: S.space, repo: S.W1.did }))
       check(!stolen.ok, 'a credential signed with a key other than cnf.kid is refused', errName(stolen))
+      const gs = await attempt(async () => (await S.cred.hostClient()).com.atproto.space.getSpace({ space: S.space }))
+      check(!gs.ok, 'getSpace is owner-only: a space credential is refused', errName(gs))
     },
     { needs: ['credential.issue', 'records.write'] },
   )
@@ -407,19 +491,30 @@ export async function runConfig(rep, cfg, env) {
         check(!d.length, `syncer's copy of ${w} equals the acked writes`, d.join(', '))
       }
       check(!S.syncer.violations.length, 'no protocol violations', S.syncer.violations.join('; '))
-      const cl = await S.cred.repoClient(S.W1.did)
-      const car = await cl.com.atproto.space.getRepo({ space: S.space, repo: S.W1.did })
-      const v = await verifyRepoCarFull([car.data], { space: S.space, author: S.W1.did, didKey: await signingKey(S.W1.did) })
-      check(v.records.length === truth.repo(S.space, S.W1.did).size, 'getRepo CAR verifies and holds every record', v.records.length)
-      const idx = await cl.com.atproto.space.getRepo({ space: S.space, repo: S.W1.did, excludeValues: true })
-      const vi = await verifyRepoCarFull([idx.data], { space: S.space, author: S.W1.did, didKey: await signingKey(S.W1.did), expectValues: false })
-      check(Object.keys(vi.index).length === truth.repo(S.space, S.W1.did).size && vi.records.length === 0, 'getRepo excludeValues: index only, still verifies')
-      const ops = await cl.com.atproto.space.listRepoOps({ space: S.space, repo: S.W1.did })
-      check(!!ops.data.commit, 'a short listRepoOps page carries the commit')
+      const { bytes, verified, res } = await repoOf(S.cred, S.space, S.W1.did)
+      check(String(res.headers['content-type']).startsWith('application/octet-stream'), 'getRepo answers application/octet-stream', res.headers['content-type'])
+      check(bytes[0] === 0x2a && bytes.at(-1) === 0x00, 'a STAR archive: the magic up front and the end byte last', `${bytes.subarray(0, 4).toString('hex')} .. ${bytes.subarray(-1).toString('hex')}`)
+      check(verified?.records.length === truth.repo(S.space, S.W1.did).size, 'getRepo verifies (MAC + digest) and holds every record', verified?.records.length)
+      const paths = (verified?.records ?? []).map((r) => `${r.collection}/${r.rkey}`)
+      check(paths.every((p, i) => i === 0 || Buffer.compare(Buffer.from(paths[i - 1]), Buffer.from(p)) < 0), 'its records are in strict path order')
+      check(verified && hashEq(RepoCommit.fromRecords(verified.records).setHash.digest(), verified.commit.data), "and fold to the commit's data")
+      const { sharedSecret, mac } = await S.cred.macRead(S.W1.did, COMMIT_MAC_TYPE, (c, opts) => c.com.atproto.space.getRepo({ space: S.space, repo: S.W1.did }, opts))
+      const truncated = await verifyRepoStarFull([bytes.subarray(0, -1)], { space: S.space, repo: S.W1.did, sharedSecret, mac }).then(
+        () => null,
+        (e) => e,
+      )
+      check(truncated, 'an archive cut before its end byte is rejected', 'accepted')
+      const noMac = await attempt(async () => (await S.cred.repoClient(S.W1.did)).com.atproto.space.getRepo({ space: S.space, repo: S.W1.did }))
+      check(!noMac.ok && noMac.error === 'BadSpaceMac', 'getRepo with a credential and no Want-Mac answers BadSpaceMac', errName(noMac))
+      const ops = await S.cred.macRead(S.W1.did, COMMIT_MAC_TYPE, (c, opts) => c.com.atproto.space.listRepoOps({ space: S.space, repo: S.W1.did }, opts))
+      check(!!ops.res.data.commit, 'a short listRepoOps page carries the commit')
+      check(ops.mac && verifyCommit(ops.res.data.commit, { space: S.space, repo: S.W1.did, sharedSecret: ops.sharedSecret, mac: ops.mac }), 'with a MAC that verifies')
       // values are inlined for ops whose record is still current (stale ones are omitted)
       const cur = truth.repo(S.space, S.W1.did)
-      const live = ops.data.ops.filter((o) => o.cid && cur.get(`${o.collection}/${o.rkey}`) === String(o.cid))
-      check(live.length > 0 && live.every((o) => o.value !== undefined), 'listRepoOps inlines current values by default', JSON.stringify(ops.data.ops.map((o) => [o.rkey, !!o.cid, o.value !== undefined])))
+      const live = ops.res.data.ops.filter((o) => o.cid && cur.get(`${o.collection}/${o.rkey}`) === String(o.cid))
+      check(live.length > 0 && live.every((o) => o.value !== undefined), 'listRepoOps inlines current values by default', JSON.stringify(ops.res.data.ops.map((o) => [o.rkey, !!o.cid, o.value !== undefined])))
+      const page = await S.cred.macRead(S.W1.did, COMMIT_MAC_TYPE, (c, opts) => c.com.atproto.space.listRepoOps({ space: S.space, repo: S.W1.did, limit: 1 }, opts))
+      if (page.res.data.cursor && !page.res.data.commit) check(page.mac === null, 'a listRepoOps page without the commit carries no MAC', 'got one')
     },
     { needs: ['credential.read'] },
   )
@@ -448,12 +543,12 @@ export async function runConfig(rep, cfg, env) {
       const t = {}
       for (const w of [S.W2, S.W1]) {
         const r = await w.client.com.atproto.space.createRecord({ space: S.space, repo: w.did, collection: COLL, record: record(`n ${SENTINEL}`) })
-        truth.set(S.space, w.did, `${COLL}/${r.data.uri.split('/').pop()}`, r.data.cid)
+        truth.set(S.space, w.did, `${COLL}/${rkeyOf(r.data.uri)}`, r.data.cid)
         t[w.did] = performance.now()
       }
       const lat = []
       for (const w of [S.W1, S.W2]) {
-        const head = (await (await S.cred.repoClient(w.did)).com.atproto.space.getLatestCommit({ space: S.space, repo: w.did })).data.commit
+        const head = await headOf(S.cred, S.space, w.did)
         const call = await waitFor(
           `forwarded notifyWrite for ${w}`,
           () => S.svc.callsTo('com.atproto.space.notifyWrite', S.space).slice(before).find((c) => c.body.repo === w.did && c.body.repoRev === head.rev),
@@ -463,7 +558,8 @@ export async function runConfig(rep, cfg, env) {
         lat.push(call.at - t[w.did])
         check(!call.authErr, `forwarded notify for ${w} carries valid service auth (iss=authority, aud=service)`, call.authErr)
         check(typeof call.body.spaceRev === 'string', 'it carries a spaceRev')
-        check(hashEq(Buffer.from(call.body.hash?.$bytes ?? '', 'base64'), head.hash), 'its hash is the repo digest')
+        check(hashEq(bytesOf(call.body.data), head.data), 'its data is the repo digest', JSON.stringify(call.body).slice(0, 300))
+        check(call.body.hash === undefined, 'and no hash field', JSON.stringify(call.body.hash))
       }
       const all = S.svc.callsTo('com.atproto.space.notifyWrite', S.space)
       for (let i = 1; i < all.length; i++) {
@@ -474,9 +570,10 @@ export async function runConfig(rep, cfg, env) {
       const host = await S.cred.hostClient()
       const lr = await host.com.atproto.space.listRepos({ space: S.space })
       for (const w of [S.W1, S.W2]) {
-        const head = (await (await S.cred.repoClient(w.did)).com.atproto.space.getLatestCommit({ space: S.space, repo: w.did })).data.commit
+        const head = await headOf(S.cred, S.space, w.did)
         const e = lr.data.repos.find((x) => x.did === w.did)
         check(e?.repoRev === head.rev, `listRepos has ${w} at its latest repoRev`, `${e?.repoRev} vs ${head.rev}`)
+        check(e && hashEq(e.data, head.data), `with its data`, `${hex(e?.data)} vs ${hex(head.data)}`)
       }
       const revs = lr.data.repos.map((x) => x.spaceRev)
       check(revs.every((r, i) => i === 0 || r > revs[i - 1]), 'listRepos is in ascending spaceRev')
@@ -499,10 +596,11 @@ export async function runConfig(rep, cfg, env) {
       }
       check(S.syncer.stats.opsPulls > 0, 'it pulled with listRepoOps', JSON.stringify(S.syncer.stats))
       check(S.syncer.stats.mismatchFallbacks === 0, 'no LtHash mismatch fell back to getRepo', JSON.stringify(S.syncer.stats))
+      check(S.syncer.stats.macRetries === 0, 'every MAC verified on the first try', JSON.stringify(S.syncer.stats))
       check(!S.syncer.violations.length, 'no protocol violations', S.syncer.violations.join('; '))
       const rev = S.syncer.repos.get(S.W1.did).rev
-      const noop = await (await S.cred.repoClient(S.W1.did)).com.atproto.space.listRepoOps({ space: S.space, repo: S.W1.did, since: rev })
-      check(noop.data.ops.length === 0 && noop.data.commit?.rev === rev, 'a no-op poll answers no ops and the current commit', JSON.stringify({ n: noop.data.ops.length, rev: noop.data.commit?.rev }))
+      const noop = await S.cred.macRead(S.W1.did, COMMIT_MAC_TYPE, (c, opts) => c.com.atproto.space.listRepoOps({ space: S.space, repo: S.W1.did, since: rev }, opts))
+      check(noop.res.data.ops.length === 0 && noop.res.data.commit?.rev === rev, 'a no-op poll answers no ops and the current commit', JSON.stringify({ n: noop.res.data.ops.length, rev: noop.res.data.commit?.rev }))
     },
     { needs: ['notify.write'] },
   )
@@ -529,10 +627,10 @@ export async function runConfig(rep, cfg, env) {
       const blob = up.data.blob
       const cid = blob.ref.toString()
       const r = await S.W1.client.com.atproto.space.createRecord({ space: S.space, repo: S.W1.did, collection: COLL, record: record('with blob', { file: blob }) })
-      truth.set(S.space, S.W1.did, `${COLL}/${r.data.uri.split('/').pop()}`, r.data.cid)
+      truth.set(S.space, S.W1.did, `${COLL}/${rkeyOf(r.data.uri)}`, r.data.cid)
       const cl = await S.cred.repoClient(S.W1.did)
       const got = await cl.com.atproto.space.getBlob({ space: S.space, repo: S.W1.did, cid })
-      check(Buffer.from(got.data).equals(bytes), 'space.getBlob with a credential returns the bytes')
+      check(Buffer.from(got.data).equals(bytes), 'space.getBlob with a credential returns the bytes (no MAC)')
       const lb = await cl.com.atproto.space.listBlobs({ space: S.space, repo: S.W1.did })
       check(lb.data.cids.includes(cid), 'space.listBlobs lists it')
       const sync = await rawXrpc(S.W1.base, 'com.atproto.sync.getBlob', { params: { did: S.W1.did, cid } })
@@ -595,24 +693,31 @@ export async function runConfig(rep, cfg, env) {
   await step(
     'notify.direct',
     async (check) => {
-      const host = await spaceHostEndpoint(S.A.did)
-      const sa = async () =>
-        (await S.W1.client.com.atproto.server.getServiceAuth({ aud: `${S.A.did}#atproto_space_host`, lxm: 'com.atproto.space.notifyWrite' })).data.token
-      const head = (await (await S.cred.repoClient(S.W1.did)).com.atproto.space.getLatestCommit({ space: S.space, repo: S.W1.did })).data.commit
-      const hash = { $bytes: Buffer.from(head.hash).toString('base64') }
+      const host = await pdsEndpoint(S.A.did)
+      const sa = async (aud = `${S.A.did}#atproto_pds`, who = S.W1) =>
+        (await who.client.com.atproto.server.getServiceAuth({ aud, lxm: 'com.atproto.space.notifyWrite' })).data.token
+      const head = await headOf(S.cred, S.space, S.W1.did)
+      const data = { $bytes: Buffer.from(head.data).toString('base64') }
+      const send = async (body, token) => rawXrpc(host, 'com.atproto.space.notifyWrite', { method: 'POST', body: { space: S.space, repo: S.W1.did, data, ...body }, headers: token ? { authorization: `Bearer ${token}` } : {} })
       const future = tidAt(Date.now() + 10 * 60_000)
-      const f = await rawXrpc(host, 'com.atproto.space.notifyWrite', { method: 'POST', body: { space: S.space, repo: S.W1.did, repoRev: future, hash }, headers: { authorization: `Bearer ${await sa()}` } })
+      const f = await send({ repoRev: future }, await sa())
       check(!f.ok && f.error === 'FutureRev', 'a repoRev 10 min ahead answers FutureRev', `${f.status} ${f.error}`)
       const lr0 = await (await S.cred.hostClient()).com.atproto.space.listRepos({ space: S.space })
-      const stale = tidAt(Date.now() - 3600_000)
-      const s = await rawXrpc(host, 'com.atproto.space.notifyWrite', { method: 'POST', body: { space: S.space, repo: S.W1.did, repoRev: stale, hash }, headers: { authorization: `Bearer ${await sa()}` } })
+      const s = await send({ repoRev: tidAt(Date.now() - 3600_000) }, await sa())
       check(s.ok, 'a stale repoRev is accepted', `${s.status} ${s.error}`)
       const lr1 = await (await S.cred.hostClient()).com.atproto.space.listRepos({ space: S.space })
       check(JSON.stringify(lr0.data.repos) === JSON.stringify(lr1.data.repos), 'and ignored: listRepos is unchanged (no resequencing)')
-      const noAuth = await rawXrpc(host, 'com.atproto.space.notifyWrite', { method: 'POST', body: { space: S.space, repo: S.W1.did, repoRev: head.rev, hash } })
+      const noAuth = await send({ repoRev: head.rev })
       check(!noAuth.ok, 'notifyWrite without service auth is refused', `${noAuth.status}`)
-      const xsa = (await S.X.client.com.atproto.server.getServiceAuth({ aud: `${S.A.did}#atproto_space_host`, lxm: 'com.atproto.space.notifyWrite' })).data.token
-      const xn = await rawXrpc(host, 'com.atproto.space.notifyWrite', { method: 'POST', body: { space: S.space, repo: S.X.did, repoRev: tidAt(Date.now()), hash }, headers: { authorization: `Bearer ${xsa}` } })
+      const oldAud = await send({ repoRev: tidAt(Date.now() - 3600_000) }, await sa(`${S.A.did}#atproto_space_host`))
+      check(!oldAud.ok, 'service auth for the old #atproto_space_host audience is refused', `${oldAud.status} ${oldAud.error}`)
+      const bare = await send({ repoRev: tidAt(Date.now() - 3600_000) }, await sa(S.A.did))
+      rep.note(`${cfg}: notifyWrite with the bare authority DID as aud: ${bare.ok ? 'accepted (as the reference does)' : `refused (${bare.status} ${bare.error})`}`)
+      const xn = await rawXrpc(host, 'com.atproto.space.notifyWrite', {
+        method: 'POST',
+        body: { space: S.space, repo: S.X.did, repoRev: tidAt(Date.now()), data },
+        headers: { authorization: `Bearer ${await sa(undefined, S.X)}` },
+      })
       check(!xn.ok, 'a notify from a non-member writer is refused', `${xn.status} ${xn.error}`)
     },
     { needs: ['notify.write'] },
@@ -621,23 +726,14 @@ export async function runConfig(rep, cfg, env) {
   await step(
     'takedown',
     async (check) => {
-      const t = S.W2
-      const set = (applied) =>
+      const set = (t, applied) =>
         rawXrpc(t.base, 'com.atproto.admin.updateSubjectStatus', {
           method: 'POST',
           headers: { authorization: adminAuth(t.host) },
           body: { subject: { $type: 'com.atproto.admin.defs#repoRef', did: t.did }, takedown: { applied, ref: applied ? 'spaces-e2e' : undefined } },
         })
-      const on = await set(true)
-      check(on.ok, 'admin takedown of a writer', `${on.status} ${on.error} ${on.message}`)
-      const cred = await credentialFor(S.R, S.space)
-      const r = await attempt(async () => (await cred.repoClient(t.did)).com.atproto.space.listRecords({ space: S.space, repo: t.did }))
-      check(!r.ok && r.error === 'RepoTakendown', 'credential reads of a taken-down repo answer RepoTakendown', errName(r))
-      const off = await set(false)
-      check(off.ok, 'reversal', `${off.status} ${off.error}`)
-      const r2 = await attempt(async () => (await cred.repoClient(t.did)).com.atproto.space.listRecords({ space: S.space, repo: t.did }))
-      check(r2.ok, 'reads work again after reversal', errName(r2))
-      if (HOSTS[t.host].kind === 'vlpds' && t.oauth) {
+      const reauth = async (t) => {
+        if (HOSTS[t.host].kind !== 'vlpds' || !t.oauth) return
         // vlpds revokes an account's OAuth sessions at takedown and a reversal
         // doesn't bring them back (the reference keeps them): a recorded divergence
         const old = await attempt(() => t.client.com.atproto.space.getDelegationToken({ space: S.space }))
@@ -645,16 +741,47 @@ export async function runConfig(rep, cfg, env) {
         await t.authorize(APP_SCOPE)
         rep.note(`${cfg}: ${t} re-authorized after the takedown reversal (vlpds revokes OAuth sessions at takedown)`)
       }
+      const t = S.W2
+      const on = await set(t, true)
+      check(on.ok, 'admin takedown of a writer', `${on.status} ${on.error} ${on.message}`)
+      const cred = await credentialFor(S.R, S.space)
+      const r = await attempt(async () => (await cred.repoClient(t.did)).com.atproto.space.listRecords({ space: S.space, repo: t.did }))
+      check(!r.ok && r.error === 'RepoTakendown', 'credential reads of a taken-down repo answer RepoTakendown', errName(r))
+      const off = await set(t, false)
+      check(off.ok, 'reversal', `${off.status} ${off.error}`)
+      const r2 = await attempt(async () => (await cred.repoClient(t.did)).com.atproto.space.listRecords({ space: S.space, repo: t.did }))
+      check(r2.ok, 'reads work again after reversal', errName(r2))
+      await reauth(t)
+
+      // a taken-down authority suspends its spaces: no new credentials, no
+      // listRepos, while credentials already issued keep reading members' repos
+      const held = await credentialFor(S.R, S.space)
+      const aon = await set(S.A, true)
+      check(aon.ok, 'admin takedown of the authority', `${aon.status} ${aon.error} ${aon.message}`)
+      try {
+        const c = await attempt(async () => exchange(S.space, await delegationToken(S.R, S.space)).then(() => ({ data: 1 })))
+        check(!c.ok && c.error === 'RepoTakendown', 'getSpaceCredential for a taken-down authority answers RepoTakendown', errName(c))
+        const lr = await attempt(async () => (await held.hostClient()).com.atproto.space.listRepos({ space: S.space }))
+        check(!lr.ok && lr.error === 'RepoTakendown', 'and listRepos', errName(lr))
+        const still = await attempt(async () => (await held.repoClient(S.W1.did)).com.atproto.space.listRecords({ space: S.space, repo: S.W1.did }))
+        check(still.ok, "a credential issued before keeps reading a member's repo (suspended, not deleted)", errName(still))
+      } finally {
+        const aoff = await set(S.A, false)
+        check(aoff.ok, 'reversal', `${aoff.status} ${aoff.error}`)
+      }
+      const back = await attempt(() => credentialFor(S.R, S.space).then(() => ({ data: 1 })))
+      check(back.ok, 'the space resumes: credentials issue again', errName(back))
+      await reauth(S.A)
     },
     { needs: ['credential.read'] },
   )
 
   // vlpds's record takedown of a space record ("option e"): the record leaves
-  // the signed view (getRepo verifies without it, the digest is the remaining
-  // records'), so a syncer converges on that view and back after reversal.
-  // A vlpds that hides the record but keeps it in the digest (the public-repo
-  // semantics) hasn't got option e yet: not impl., unless the hiding it does
-  // already have regressed.
+  // the authenticated view (getRepo verifies without it, the data is the
+  // remaining records'), so a syncer converges on that view and back after
+  // reversal. A vlpds that hides the record but keeps it in the digest (the
+  // public-repo semantics) hasn't got option e yet: not impl., unless the
+  // hiding it does already have regressed.
   await step(
     'takedown.record',
     async (check0) => {
@@ -697,27 +824,24 @@ export async function runConfig(rep, cfg, env) {
       check(on.ok, 'admin takedown of a space record (strongRef with the 7-segment URI)', `${on.status} ${on.error} ${on.message}`)
       if (!on.ok) return
 
-      const takenDownView = async (check, cl, head, blob) => {
-        check(hashEq(head.hash, ltOf(without)), "while taken down, getLatestCommit's hash is the LtHash of the remaining records")
-        check(await verifyCommit(head, { space: S.space, author: w.did, rev: head.rev }, await signingKey(w.did)), 'and that commit verifies')
+      const takenDownView = async (check, cred, cl, head, blob) => {
+        check(hashEq(head.data, ltOf(without)), "while taken down, getLatestCommit's data is the LtHash of the remaining records")
         check(!blob.ok && blob.error === 'BlobNotFound', "space.getBlob of the taken-down record's blob answers BlobNotFound", errName(blob))
         const lb = await cl.com.atproto.space.listBlobs({ space: S.space, repo: w.did })
         check(!lb.data.cids.includes(blobCid), 'space.listBlobs does not list it')
-        const car = await cl.com.atproto.space.getRepo({ space: S.space, repo: w.did })
-        const v = await verifyRepoCarFull([car.data], { space: S.space, author: w.did, didKey: await signingKey(w.did) })
-        const got = new Map(v.records.map((r) => [`${r.collection}/${r.rkey}`, r.cid.toString()]))
+        const { verified } = await repoOf(cred, S.space, w.did)
+        const got = new Map((verified?.records ?? []).map((r) => [`${r.collection}/${r.rkey}`, r.cid.toString()]))
         const d = mapDiff(without, got)
-        check(!d.length, 'getRepo verifies and holds every record but the taken-down one', d.join(', '))
-        check(!Object.keys(v.index).includes(path), "the getRepo index doesn't name it")
-        check(hashEq(v.commit.hash, ltOf(without)), "getRepo's commit hash is the remaining records' LtHash")
+        check(verified && !d.length, 'getRepo verifies and holds every record but the taken-down one', verified ? d.join(', ') : 'did not verify')
+        check(verified && hashEq(verified.commit.data, ltOf(without)), "getRepo's commit data is the remaining records' LtHash")
         let opsHead
         let cursor
         do {
-          const page = await cl.com.atproto.space.listRepoOps({ space: S.space, repo: w.did, cursor, limit: 100 })
-          opsHead = page.data.commit ?? opsHead
-          cursor = page.data.cursor
+          const page = await cred.macRead(w.did, COMMIT_MAC_TYPE, (c, opts) => c.com.atproto.space.listRepoOps({ space: S.space, repo: w.did, cursor, limit: 100 }, opts))
+          opsHead = page.res.data.commit ?? opsHead
+          cursor = page.res.data.cursor
         } while (cursor && !opsHead)
-        check(opsHead && hashEq(opsHead.hash, head.hash), "listRepoOps's commit agrees with getLatestCommit")
+        check(opsHead && hashEq(opsHead.data, head.data), "listRepoOps's commit agrees with getLatestCommit")
         const before = syncer.stats.fullPulls
         await syncer.pull(w.did)
         const sd = mapDiff(without, syncer.view(w.did))
@@ -730,19 +854,19 @@ export async function runConfig(rep, cfg, env) {
       try {
         const cred = await credentialFor(S.R, S.space)
         const cl = await cred.repoClient(w.did)
-        const g = await attempt(() => cl.com.atproto.space.getRecord({ space: S.space, repo: w.did, collection: COLL, rkey }))
+        const g = await attempt(() => cred.macRead(w.did, RECORD_MAC_TYPE, (c, opts) => c.com.atproto.space.getRecord({ space: S.space, repo: w.did, collection: COLL, rkey }, opts)).then((r) => r.res))
         check(!g.ok && g.error === 'RecordNotFound', 'getRecord of the taken-down record answers RecordNotFound', errName(g))
         const listed = await listAll(cl, S.space, w.did)
         check(!listed.has(path), 'listRecords omits it')
-        const ops = await cl.com.atproto.space.listRepoOps({ space: S.space, repo: w.did })
+        const ops = await cred.macRead(w.did, COMMIT_MAC_TYPE, (c, opts) => c.com.atproto.space.listRepoOps({ space: S.space, repo: w.did }, opts))
         check(
-          !ops.data.ops.some((o) => `${o.collection}/${o.rkey}` === path && o.value !== undefined),
+          !ops.res.data.ops.some((o) => `${o.collection}/${o.rkey}` === path && o.value !== undefined),
           'listRepoOps carries no value for it',
         )
-        const head = (await cl.com.atproto.space.getLatestCommit({ space: S.space, repo: w.did })).data.commit
+        const head = await headOf(cred, S.space, w.did)
         const blob = await attempt(() => cl.com.atproto.space.getBlob({ space: S.space, repo: w.did, cid: blobCid }))
-        optionE = !hashEq(head.hash, ltOf(full))
-        if (optionE) await takenDownView(check, cl, head, blob)
+        optionE = !hashEq(head.data, ltOf(full))
+        if (optionE) await takenDownView(check, cred, cl, head, blob)
         else
           rep.note(
             `${cfg}: space record takedown keeps the record in the digest (public-repo semantics, option e not landed); space.getBlob of its blob ${blob.ok ? 'is still served' : `answers ${errName(blob)}`}`,
@@ -753,15 +877,15 @@ export async function runConfig(rep, cfg, env) {
       }
       const cred = await credentialFor(S.R, S.space)
       const cl = await cred.repoClient(w.did)
-      const g = await attempt(() => cl.com.atproto.space.getRecord({ space: S.space, repo: w.did, collection: COLL, rkey }))
+      const g = await attempt(() => cred.macRead(w.did, RECORD_MAC_TYPE, (c, opts) => c.com.atproto.space.getRecord({ space: S.space, repo: w.did, collection: COLL, rkey }, opts)).then((r) => r.res))
       check(g.ok && String(g.data.cid) === String(made.data.cid), 'after reversal getRecord returns it again', errName(g))
       const listed = await listAll(cl, S.space, w.did)
       check(!mapDiff(full, listed).length, 'and listRecords is the full view', mapDiff(full, listed).join(', '))
-      const head = (await cl.com.atproto.space.getLatestCommit({ space: S.space, repo: w.did })).data.commit
-      check(hashEq(head.hash, ltOf(full)), "getLatestCommit's hash is the full view's again")
+      const head = await headOf(cred, S.space, w.did)
+      check(hashEq(head.data, ltOf(full)), "getLatestCommit's data is the full view's again")
       if (!optionE) {
-        // what vlpds hides today passed; the record-free signed view isn't there yet
-        if (clean) throw new NotImplemented('space record takedown (option e)', '(the record stays in the signed digest)')
+        // what vlpds hides today passed; the record-free view isn't there yet
+        if (clean) throw new NotImplemented('space record takedown (option e)', '(the record stays in the digest)')
         return
       }
       await syncer.pull(w.did)
@@ -780,7 +904,7 @@ export async function runConfig(rep, cfg, env) {
     'operator.read',
     async (check) => {
       const w = S.W1
-      const rkey = `${SENTINEL}-rk`
+      const rkey = S.srk
       const params = { space: S.space, repo: w.did, collection: COLL, rkey }
       const auditOf = async () => {
         const r = await rawXrpc(w.base, 'vlpds.admin.getAuditLog', { params: { did: w.did, limit: 100 }, headers: { authorization: adminAuth(w.host) } }).catch((e) => ({ ok: false, error: e.message }))
@@ -825,14 +949,14 @@ export async function runConfig(rep, cfg, env) {
         const c = w.bearer(jwt)
         const write = await attempt(() => c.com.atproto.space.createRecord({ space: S.space, repo: w.did, collection: COLL, record: record('via app password') }))
         const del = await attempt(() => c.com.atproto.space.getDelegationToken({ space: S.space }))
-        if (write.ok) truth.set(S.space, w.did, `${COLL}/${write.data.uri.split('/').pop()}`, write.data.cid)
+        if (write.ok) truth.set(S.space, w.did, `${COLL}/${rkeyOf(write.data.uri)}`, write.data.cid)
         if (HOSTS[w.host].kind === 'vlpds') {
           check(!write.ok, `${w}: an app password cannot write space records (OAuth-only)`, errName(write))
           check(!del.ok, `${w}: an app password cannot mint delegation tokens`, errName(del))
           // not settled whether "OAuth-only" also refuses the account password's own session; recorded, not judged
           const sess = await attempt(() => w.sessionClient.com.atproto.space.getDelegationToken({ space: S.space }))
           const sw = await attempt(() => w.sessionClient.com.atproto.space.createRecord({ space: S.space, repo: w.did, collection: COLL, record: record('via password session') }))
-          if (sw.ok) truth.set(S.space, w.did, `${COLL}/${sw.data.uri.split('/').pop()}`, sw.data.cid)
+          if (sw.ok) truth.set(S.space, w.did, `${COLL}/${rkeyOf(sw.data.uri)}`, sw.data.cid)
           rep.note(`${cfg}: ${w} password session: space write ${sw.ok ? 'accepted' : `refused (${errName(sw)})`}, getDelegationToken ${sess.ok ? 'accepted' : `refused (${errName(sess)})`}`)
         } else {
           check(write.ok, `${w}: the reference lets an app password write (ACCESS_STANDARD)`, errName(write))
@@ -846,38 +970,157 @@ export async function runConfig(rep, cfg, env) {
   await step(
     'members.remove',
     async (check) => {
-      await S.A.client.com.atproto.simplespace.removeMember({ space: S.space, did: S.W2.did })
-      const m = await S.A.client.com.atproto.simplespace.listMembers({ space: S.space })
-      check(!m.data.members.some((x) => x.did === S.W2.did), 'removed from listMembers')
-      const c = await attempt(() => credentialFor(S.W2, S.space).then(() => ({ data: 1 })))
-      check(!c.ok && c.error === 'UserNotAuthorized', 'a removed member gets no credential', errName(c))
       const fresh = await credentialFor(S.R, S.space)
       const lr0 = await (await fresh.hostClient()).com.atproto.space.listRepos({ space: S.space })
-      const w2rev0 = lr0.data.repos.find((x) => x.did === S.W2.did)?.repoRev
-      const w = await S.W2.client.com.atproto.space.createRecord({ space: S.space, repo: S.W2.did, collection: COLL, record: record('after removal') })
-      truth.set(S.space, S.W2.did, `${COLL}/${w.data.uri.split('/').pop()}`, w.data.cid)
-      await sleep(2500)
+      check(lr0.data.repos.some((x) => x.did === S.W2.did), 'W2 is a tracked writer before removal')
+      await S.A.client.com.atproto.memberspace.removeMember({ space: S.space, did: S.W2.did })
+      const m = await S.A.client.com.atproto.memberspace.listMembers({ space: S.space })
+      check(!m.data.members.some((x) => x.did === S.W2.did), 'removed from listMembers')
+      const c = await attempt(() => credentialFor(S.W2, S.space).then(() => ({ data: 1 })))
+      check(!c.ok && c.error === 'SpaceNotFound', 'a removed member gets no credential (SpaceNotFound)', errName(c))
       const lr1 = await (await fresh.hostClient()).com.atproto.space.listRepos({ space: S.space })
-      const w2rev1 = lr1.data.repos.find((x) => x.did === S.W2.did)?.repoRev
-      check(w2rev0 === w2rev1, "the authority no longer advances a removed writer's repoRev", `${w2rev0} -> ${w2rev1}`)
+      check(!lr1.data.repos.some((x) => x.did === S.W2.did), 'removeMember also drops it from the writer set (listRepos)')
+      const w = await S.W2.client.com.atproto.space.createRecord({ space: S.space, repo: S.W2.did, collection: COLL, record: record('after removal') })
+      truth.set(S.space, S.W2.did, `${COLL}/${rkeyOf(w.data.uri)}`, w.data.cid)
+      await sleep(2500)
+      const lr2 = await (await fresh.hostClient()).com.atproto.space.listRepos({ space: S.space })
+      check(!lr2.data.repos.some((x) => x.did === S.W2.did), 'and a write after removal does not track it again')
     },
     { needs: ['notify.write'] },
   )
 
   await step(
-    'policy.public+managing-app',
+    'writers.clear',
     async (check) => {
-      const pubSpace = await createSpace(S.A, `${S.skey}pub`, { readPolicy: POLICY.public })
+      const w = S.W1
+      const c = w.client.com.atproto.space
+      await S.syncer.idle()
+      const mf0 = S.syncer.stats.mismatchFallbacks
+      const head0 = await headOf(S.cred, S.space, w.did)
+      const cleared = await c.clearRecords({ space: S.space, repo: w.did })
+      check(!!cleared, 'clearRecords succeeds')
+      truth.repo(S.space, w.did).clear()
+      const own = await listAll(w.client, S.space, w.did)
+      check(own.size === 0, 'the repo is empty', [...own.keys()].join(', '))
+      const head = await headOf(S.cred, S.space, w.did)
+      check(head.rev > head0.rev, 'at a new rev', `${head0.rev} -> ${head.rev}`)
+      check(hex(head.data) === EMPTY_DATA, "with the empty repo's digest", hex(head.data))
+      const noop = await c.clearRecords({ space: S.space, repo: w.did })
+      check(!!noop && (await headOf(S.cred, S.space, w.did)).rev === head.rev, 'clearing an empty repo is a no-op (no new rev)')
+      const other = await attempt(() => c.clearRecords({ space: S.space, repo: S.W2.did }))
+      check(!other.ok, "clearing someone else's repo is refused", errName(other))
+      const listed = await waitFor('listRepos to see the clear', async () => {
+        const lr = await (await S.cred.hostClient()).com.atproto.space.listRepos({ space: S.space })
+        const e = lr.data.repos.find((x) => x.did === w.did)
+        return e?.repoRev === head.rev && e
+      }, { timeoutMs: 20_000 }).catch(() => null)
+      check(listed && hex(listed.data) === EMPTY_DATA, 'the writer stays listed, at the cleared rev and the empty digest', listed ? hex(listed.data) : 'not seen')
+      // the forwarded notify may have pulled it already
+      await S.syncer.idle()
+      await S.syncer.pull(w.did)
+      check(S.syncer.view(w.did)?.size === 0, "the syncer's copy is emptied", [...(S.syncer.view(w.did) ?? new Map()).keys()].join(', '))
+      check(S.syncer.stats.mismatchFallbacks > mf0, 'by resyncing from getRepo after the data mismatch', JSON.stringify(S.syncer.stats))
+      const again = await c.createRecord({ space: S.space, repo: w.did, collection: COLL, rkey: S.srk, record: record('sentinel rkey') })
+      truth.set(S.space, w.did, `${COLL}/${S.srk}`, again.data.cid)
+      await S.syncer.pull(w.did)
+      check(!mapDiff(truth.repo(S.space, w.did), S.syncer.view(w.did)).length, 'a write afterwards repopulates it')
+    },
+    { needs: ['sync.full'] },
+  )
+
+  await step(
+    'writers.remove',
+    async (check) => {
+      const w = S.W1
+      const lr = async () => (await (await S.cred.hostClient()).com.atproto.space.listRepos({ space: S.space })).data.repos
+      const r = await S.A.client.com.atproto.space.removeWriter({ space: S.space, did: w.did })
+      check(!!r, 'removeWriter succeeds for the owner')
+      check(!(await lr()).some((x) => x.did === w.did), 'the writer is gone from listRepos')
+      const again = await attempt(() => S.A.client.com.atproto.space.removeWriter({ space: S.space, did: w.did }))
+      check(again.ok, 'removeWriter is idempotent', errName(again))
+      const notOwner = await attempt(() => S.R.client.com.atproto.space.removeWriter({ space: S.space, did: w.did }))
+      check(!notOwner.ok, 'a non-owner cannot removeWriter', errName(notOwner))
+      const own = await listAll(w.client, S.space, w.did)
+      check(!mapDiff(truth.repo(S.space, w.did), own).length, "its records stay on its repo host")
+      const n = await w.client.com.atproto.space.createRecord({ space: S.space, repo: w.did, collection: COLL, record: record('tracked again') })
+      truth.set(S.space, w.did, `${COLL}/${rkeyOf(n.data.uri)}`, n.data.cid)
+      const back = await waitFor('the writer to be tracked again', async () => (await lr()).some((x) => x.did === w.did), { timeoutMs: 20_000 }).catch(() => false)
+      check(back, 'a write the policy authorizes tracks it again')
+    },
+    { needs: ['notify.write'] },
+  )
+
+  await step(
+    'policies',
+    async (check) => {
+      const pubSpace = await createSpace(S.A, `${S.skey}pub`, { policy: POLICY.public })
       const c = await attempt(() => credentialFor(S.X, pubSpace).then((x) => ({ data: x })))
-      check(c.ok, 'a public read policy issues credentials to anyone', errName(c))
+      check(c.ok, 'publicRead issues credentials to anyone', errName(c))
+      const anon = await attempt(() => exchange(pubSpace, undefined).then((x) => ({ data: x })))
+      check(anon.ok, 'and without a delegation token', errName(anon))
+      await S.A.client.com.atproto.space.updateSpace({ space: pubSpace, policy: POLICY.members() })
+      const after = await S.A.client.com.atproto.space.getSpace({ space: pubSpace })
+      check(after.data.policy?.publicRead === false, 'updateSpace replaces the policy wholesale (publicRead back to false)', JSON.stringify(after.data.policy))
+      const closed = await attempt(() => credentialFor(S.X, pubSpace).then((x) => ({ data: x })))
+      check(!closed.ok && closed.error === 'SpaceNotFound', 'and an outsider gets SpaceNotFound again', errName(closed))
+
+      const appsSpace = await createSpace(S.A, `${S.skey}apps`, { policy: POLICY.members({ allowedApps: ['https://app.example/client-metadata.json'] }) })
+      await putMember(S.A, appsSpace, S.R, true, false)
+      const noAtt = await attempt(() => credentialFor(S.R, appsSpace).then((x) => ({ data: x })))
+      check(!noAtt.ok, 'allowedApps: a member without a client attestation is refused', errName(noAtt))
+      if (!noAtt.ok) rep.note(`${cfg}: allowedApps without an attestation answers ${errName(noAtt)}`)
+      const outsider = await attempt(() => credentialFor(S.X, appsSpace).then((x) => ({ data: x })))
+      check(!outsider.ok && outsider.error === 'SpaceNotFound', 'and a non-member gets SpaceNotFound (the user is checked before the app)', errName(outsider))
+
       env.svc.access = (space, user, access) => space === S.appSpace && user === S.R.did && access === 'read'
-      S.appSpace = await createSpace(S.A, `${S.skey}app`, { readPolicy: POLICY.app(env.svc.serviceRef) })
+      S.appSpace = await createSpace(S.A, `${S.skey}app`, { policy: POLICY.managed(env.svc.serviceRef) })
       const ok = await attempt(() => credentialFor(S.R, S.appSpace).then((x) => ({ data: x })))
-      check(ok.ok, 'a managing-app policy asks the app (checkUserAccess) and issues when it says yes', errName(ok))
+      check(ok.ok, 'managedspace asks the app (checkUserAccess) and issues when it says yes', errName(ok))
       const no = await attempt(() => credentialFor(S.X, S.appSpace).then((x) => ({ data: x })))
       check(!no.ok, 'and refuses when it says no', errName(no))
-      const asked = env.svc.callsTo('com.atproto.simplespace.checkUserAccess', S.appSpace)
-      check(asked.length >= 2 && asked.every((a) => !a.authErr), 'checkUserAccess came with service auth from the authority', asked.map((a) => a.authErr).join(','))
+      const mine = await attempt(() => credentialFor(S.A, S.appSpace).then((x) => ({ data: x })))
+      check(mine.ok, 'the authority itself is authorized without asking', errName(mine))
+      const tokenless = await attempt(() => exchange(S.appSpace, undefined).then((x) => ({ data: x })))
+      check(!tokenless.ok && tokenless.error === 'SpaceNotFound', 'managedspace never issues without a delegation token', errName(tokenless))
+      const asked = env.svc.callsTo('com.atproto.managedspace.checkUserAccess', S.appSpace)
+      check(asked.length >= 2 && asked.every((a) => !a.authErr), 'checkUserAccess came with service auth from the authority (lxm com.atproto.managedspace.checkUserAccess)', asked.map((a) => a.authErr).join(','))
+      check(asked.every((a) => a.body.access === 'read'), 'as read checks', JSON.stringify(asked.map((a) => a.body.access)))
+      const pm = await attempt(() => S.A.client.com.atproto.memberspace.putMember({ space: S.appSpace, did: S.X.did, read: true, write: true }))
+      check(!pm.ok && pm.error === 'PolicyMismatch', 'member methods on a managedspace answer PolicyMismatch', errName(pm))
+
+      const persSpace = await createSpace(S.A, `${S.skey}pers`, { policy: POLICY.members() })
+      await putMember(S.A, persSpace, S.R, true, false)
+      await S.A.client.com.atproto.space.updateSpace({ space: persSpace, policy: POLICY.personal })
+      const pr = await attempt(() => credentialFor(S.R, persSpace).then((x) => ({ data: x })))
+      check(!pr.ok && pr.error === 'SpaceNotFound', 'personalspace: a former member gets SpaceNotFound', errName(pr))
+      const po = await attempt(() => credentialFor(S.A, persSpace).then((x) => ({ data: x })))
+      check(po.ok, 'and the owner still gets a credential', errName(po))
+      await S.A.client.com.atproto.space.updateSpace({ space: persSpace, policy: POLICY.members() })
+      const ml = await S.A.client.com.atproto.memberspace.listMembers({ space: persSpace })
+      check(ml.data.members.length === 0, 'migrating away from memberspace discarded the member list', JSON.stringify(ml.data.members))
+    },
+    { needs: ['members'] },
+  )
+
+  await step(
+    'policy.publish',
+    async (check) => {
+      const sp = await createSpace(S.A, `${S.skey}publ`, { policy: POLICY.members({ publishPolicy: true, publishMembers: true }) })
+      await putMember(S.A, sp, S.R, true, false)
+      const memberKey = S.R.did.replace(/%3A/gi, ':')
+      const want = (own) => [own.has('com.atproto.space.policy/self'), own.has(`com.atproto.memberspace.member/${memberKey}`)]
+      const own = await waitFor('the published records', async () => {
+        const o = await listAll(S.A.client, sp, S.A.did)
+        return want(o).every(Boolean) && o
+      }, { timeoutMs: 10_000 }).catch(() => listAll(S.A.client, sp, S.A.did))
+      const [pol, mem] = want(own)
+      check(pol, "publishPolicy writes com.atproto.space.policy/self into the authority's repo", [...own.keys()].join(', '))
+      check(mem, 'publishMembers writes a com.atproto.memberspace.member record per member', [...own.keys()].join(', '))
+      const rec = await attempt(() => S.A.client.com.atproto.space.getRecord({ space: sp, repo: S.A.did, collection: 'com.atproto.memberspace.member', rkey: memberKey }))
+      check(rec.ok && rec.data.value?.read === true && rec.data.value?.write === false, 'with the member\'s read and write', rec.ok ? JSON.stringify(rec.data.value) : errName(rec))
+      await S.A.client.com.atproto.space.updateSpace({ space: sp, policy: POLICY.members() })
+      const after = await listAll(S.A.client, sp, S.A.did)
+      check(!want(after).some(Boolean), 'clearing the flags withdraws them', [...after.keys()].join(', '))
     },
     { needs: ['members'] },
   )
@@ -886,48 +1129,76 @@ export async function runConfig(rep, cfg, env) {
     'import',
     async (check) => {
       const w = S.W1
-      const car = await w.client.com.atproto.space.getRepo({ space: S.space, repo: w.did })
-      const r = await dpopXrpc(w, 'vlpds.space.importRepo', {
-        method: 'POST',
-        params: { space: S.space },
-        body: Buffer.from(car.data),
-        contentType: 'application/vnd.ipld.car',
-      })
-      if (r.status === 404 || r.status === 501) throw new NotImplemented('vlpds.space.importRepo', `(${r.status})`)
-      check(r.ok, 'importRepo of the identical snapshot is an idempotent success', `${r.status} ${r.error} ${r.message}`)
+      const c = w.client.com.atproto.space
+      const snap = Buffer.from((await c.getRepo({ space: S.space, repo: w.did })).data)
+      const want = new Map(truth.repo(S.space, w.did))
+      const head0 = (await c.getLatestCommit({ space: S.space, repo: w.did })).data.commit
+      const imp = await attempt(() => c.importRepo(snap, { encoding: 'application/octet-stream' }))
+      check(imp.ok, 'importRepo of its own getRepo archive succeeds', errName(imp))
       const after = await listAll(w.client, S.space, w.did)
-      const d = mapDiff(truth.repo(S.space, w.did), after)
-      check(!d.length, 'and the repo is unchanged', d.join(', '))
-      // a space repo's rev only moves forward (syncers rely on it), so an
-      // older snapshot is refused once the repo has moved on
-      const extra = await w.client.com.atproto.space.createRecord({ space: S.space, repo: w.did, collection: COLL, record: record('after the export') })
-      truth.set(S.space, w.did, `${COLL}/${extra.data.uri.split('/').pop()}`, extra.data.cid)
-      const old = await dpopXrpc(w, 'vlpds.space.importRepo', {
-        method: 'POST',
-        params: { space: S.space },
-        body: Buffer.from(car.data),
-        contentType: 'application/vnd.ipld.car',
-      })
-      check(!old.ok && old.status === 400, 'an older snapshot is refused', `${old.status} ${old.error} ${old.message}`)
-      const d2 = mapDiff(truth.repo(S.space, w.did), await listAll(w.client, S.space, w.did))
-      check(!d2.length, 'and the newer repo stays', d2.join(', '))
+      check(!mapDiff(want, after).length, 'and the repo is unchanged', mapDiff(want, after).join(', '))
+      const head1 = (await c.getLatestCommit({ space: S.space, repo: w.did })).data.commit
+      check(head1.rev > head0.rev && hashEq(head1.data, head0.data), 'at a new rev with the same data', `${head0.rev} -> ${head1.rev}`)
+      const extra = await c.createRecord({ space: S.space, repo: w.did, collection: COLL, record: record('after the export') })
+      const old = await attempt(() => c.importRepo(snap, { encoding: 'application/octet-stream' }))
+      check(old.ok, 'an older archive is imported too (an import replaces the repo, so a failed step can be retried)', errName(old))
+      const after2 = await listAll(w.client, S.space, w.did)
+      check(!after2.has(`${COLL}/${rkeyOf(extra.data.uri)}`) && !mapDiff(want, after2).length, "and replaces what's there", mapDiff(want, after2).join(', '))
+      const cut = await attempt(() => c.importRepo(snap.subarray(0, -1), { encoding: 'application/octet-stream' }))
+      check(!cut.ok && cut.status === 400, 'an archive cut before its end byte is refused', errName(cut))
+      const afterCut = await listAll(w.client, S.space, w.did)
+      if (!check(!mapDiff(want, afterCut).length, 'and the refused import leaves the repo as it was', `${want.size} records before, ${afterCut.size} after`)) {
+        // put it back, so the later steps test their own thing
+        await c.importRepo(snap, { encoding: 'application/octet-stream' })
+      }
+      const notMine = await attempt(() => S.X.client.com.atproto.space.importRepo(snap, { encoding: 'application/octet-stream' }))
+      check(!notMine.ok, "another account can't import an archive whose commit names someone else", errName(notMine))
     },
-    { needs: ['records.write'], skip: vl('W1') ? undefined : 'vlpds-only endpoint; W1 is not on vlpds' },
+    { needs: ['records.write'] },
+  )
+
+  await step(
+    'space.meta',
+    async (check) => {
+      const c = S.A.client.com.atproto.space
+      const members0 = (await S.A.client.com.atproto.memberspace.listMembers({ space: S.space })).data.members
+      const w1Before = await listAll(S.W1.client, S.space, S.W1.did)
+      const ex = await c.exportSpaceMeta({ space: S.space })
+      const bytes = Buffer.from(ex.data)
+      check(bytes[0] === 0x2a && bytes.at(-1) === 0x00, 'exportSpaceMeta answers a STAR archive (magic, end byte)', `${bytes.length} bytes`)
+      const imp = await attempt(() => c.importSpaceMeta(bytes, { encoding: 'application/octet-stream' }))
+      check(imp.ok, 'importSpaceMeta of it on the same host succeeds', errName(imp))
+      const members1 = (await S.A.client.com.atproto.memberspace.listMembers({ space: S.space })).data.members
+      const norm = (ms) => JSON.stringify(ms.map((m) => `${m.did} ${m.read} ${m.write}`).sort())
+      check(norm(members0) === norm(members1), 'and leaves the member list as it was', `${norm(members0)} vs ${norm(members1)}`)
+      const w1After = await listAll(S.W1.client, S.space, S.W1.did)
+      check(w1Before.size > 0 && !mapDiff(w1Before, w1After).length, "and a member's repo as it was", `${w1Before.size} records before, ${w1After.size} after`)
+      const cut = await attempt(() => c.importSpaceMeta(bytes.subarray(0, -1), { encoding: 'application/octet-stream' }))
+      check(!cut.ok && cut.status === 400, 'a truncated meta archive is refused', errName(cut))
+      const notOwner = await attempt(() => S.W1.client.com.atproto.space.importSpaceMeta(bytes, { encoding: 'application/octet-stream' }))
+      check(!notOwner.ok, "an account can't import another authority's space", errName(notOwner))
+      const exOther = await attempt(() => S.W1.client.com.atproto.space.exportSpaceMeta({ space: S.space }))
+      check(!exOther.ok, 'exportSpaceMeta is owner-only', errName(exOther))
+    },
+    { needs: ['members'] },
   )
 
   await step(
     'space.delete',
     async (check) => {
       const fresh = await credentialFor(S.R, S.space)
-      await S.A.client.com.atproto.simplespace.deleteSpace({ space: S.space })
+      const own0 = await listAll(S.W1.client, S.space, S.W1.did)
+      await S.A.client.com.atproto.space.deleteSpace({ space: S.space })
       const c = await attempt(() => credentialFor(S.R, S.space).then(() => ({ data: 1 })))
       check(!c.ok && c.error === 'SpaceDeleted', 'getSpaceCredential answers SpaceDeleted', errName(c))
+      const anon = await attempt(() => exchange(S.space, undefined).then(() => ({ data: 1 })))
+      check(!anon.ok && anon.error === 'SpaceDeleted', 'with or without a delegation token', errName(anon))
       const lr = await attempt(async () => (await fresh.hostClient()).com.atproto.space.listRepos({ space: S.space }))
       check(!lr.ok && lr.error === 'SpaceNotFound', 'listRepos answers SpaceNotFound', errName(lr))
-      const told = await waitFor('notifySpaceDeleted', () => env.svc.callsTo('com.atproto.space.notifySpaceDeleted', S.space).length > 0, { timeoutMs: 10_000 }).catch(() => false)
-      check(told, 'the registered syncer got notifySpaceDeleted (best effort)')
-      const own = await attempt(() => S.W1.client.com.atproto.space.listRecords({ space: S.space, repo: S.W1.did }))
-      check(own.ok && own.data.records.length > 0, "members' own repos stay (the writer can still read its repo)", errName(own))
+      const told = await waitFor('notifySpaceDeleted', () => env.svc.callsTo('com.atproto.space.notifySpaceDeleted', S.space).length > 0, { timeoutMs: 15_000 }).catch(() => false)
+      check(told, 'the registered syncer got notifySpaceDeleted')
+      const own = await attempt(() => listAll(S.W1.client, S.space, S.W1.did).then((data) => ({ data })))
+      check(own.ok && own.data.size === own0.size && own0.size > 0, "members' own repos stay (the writer can still read its repo)", own.ok ? `${own0.size} records before, ${own.data.size} after` : errName(own))
     },
     { needs: ['notify.register'] },
   )
@@ -990,7 +1261,7 @@ async function main() {
   const rep = new Report(process.env.REPORT ?? 'e2e', {
     run: RUN,
     vlpds: process.env.VLPDS_REV ?? '(none)',
-    reference: 'bluesky-social/atproto 5b95b2f2 (@atproto/* 0.0.0-spaces-alpha-20261001173819)',
+    reference: 'bluesky-social/atproto 98ef3a6b (@atproto/* 0.0.0-spaces-alpha-20261105160032)',
     cluster: !!process.env.CLUSTER,
     configs,
   })

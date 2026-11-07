@@ -11,8 +11,8 @@
 #   bench/spaces/run.sh boards-ui               (just spaces-boards-ui; UI_E2E=1 runs the headless check and exits)
 #   bench/spaces/run.sh boards-prod             (just spaces-boards-prod; the production server; UI_E2E=1 likewise)
 #
-# Env: VLPDS_BIN (skip the build), BRANCH (build that ref instead of this
-# checkout), CLUSTER=1 (3 vlpds nodes on MinIO behind a balancer),
+# Env: VLPDS_BIN (skip the build; "none" for reference-only configs), BRANCH
+# (build that ref instead of this checkout), CLUSTER=1 (3 vlpds nodes on MinIO behind a balancer),
 # MEMORY=1 (vlpds --memory), KEEP=1, REF_PDS_IMAGE (use a prebuilt image),
 # STORE=r2 (vlpds on a real bucket under bench/<run-id>/, keys from R2_ENV,
 # default ~/.config/cloudflare/vlpds-bench-r2.env; README.md "Real R2").
@@ -72,8 +72,19 @@ done
 echo "harness: ports $PORT_BASE-$(( PORT_BASE + 39 )) (vlpds :$VLPDS_PORT, boards :$(( PORT_BASE + 28 ))/:$(( PORT_BASE + 29 ))), stack $COMPOSE_PROJECT_NAME, out $OUT"
 
 ui=""
+bridge=""
+# only our own children, never pid 0 or 1
+stop_child() {
+  local pid="$1" comm="$2"
+  case "$pid" in "" | 0 | 1) return 0 ;; esac
+  # node names its main thread node-MainThread
+  case "$(ps -o comm= -p "$pid" 2>/dev/null)" in "$comm" | "$comm"-*) ;; *) return 0 ;; esac
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
 cleanup() {
-  if [ -n "$ui" ]; then kill "$ui" 2>/dev/null || true; wait "$ui" 2>/dev/null || true; fi
+  stop_child "$ui" node
+  stop_child "$bridge" node
   release setup
   if [ "${KEEP:-}" = 1 ]; then
     echo "KEEP=1: stack left up; stop with: docker compose -p $COMPOSE_PROJECT_NAME down -v (PORT_BASE=$PORT_BASE reuses it)"
@@ -89,10 +100,14 @@ trap 'exit 143' TERM
 # shared by every run of this checkout: the images, the vlpds build, node_modules
 until claim setup; do sleep 1; done
 ./refpds.sh
-if [ -z "${VLPDS_BIN:-}" ]; then
-  VLPDS_BIN="$(./build-vlpds.sh | tail -1)"
+if [ "${VLPDS_BIN:-}" = none ]; then
+  unset VLPDS_BIN
+else
+  if [ -z "${VLPDS_BIN:-}" ]; then
+    VLPDS_BIN="$(./build-vlpds.sh | tail -1)"
+  fi
+  export VLPDS_BIN
 fi
-export VLPDS_BIN
 export VLPDS_REV="$(cat .scratch/built-branch 2>/dev/null || echo '?') $(cut -c1-12 .scratch/built-rev 2>/dev/null || echo '?')"
 npm install --no-audit --no-fund --silent
 # lib/space.mjs and lib/syncer.mjs run on the boards app's Spaces code (packages/boards)
@@ -120,6 +135,14 @@ if [ "${STORE:-minio}" = r2 ]; then
 else
   docker compose up -d --wait ref-a ref-b minio
   docker compose run --rm minio-init >/dev/null
+fi
+
+# Docker on Linux has no route from a container to the host's 127.0.0.1
+# (Docker Desktop does): lib/hostbridge.mjs listens on the bridge gateway
+if [ "$(uname -s)" = Linux ]; then
+  gw="$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')"
+  node lib/hostbridge.mjs "$gw" "$FWD_FIRST" "$FWD_LAST" "$REF_A_PORT" "$REF_B_PORT" &
+  bridge=$!
 fi
 
 mkdir -p "$OUT"

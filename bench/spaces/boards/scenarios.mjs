@@ -4,13 +4,14 @@
 // on hosts. Assertions go against the appview's API (what a user sees) and
 // against direct space reads (what the hosts serve).
 //
-//   node boards/scenarios.mjs [config ...]   configs: all-vlpds vlpds-owner ref-owner
+//   node boards/scenarios.mjs [config ...]   configs: all-vlpds vlpds-owner ref-owner all-ref
 //   (VLPDS_BIN starts vlpds; CLUSTER=1 for 3 nodes; SEED, SCALE=small|r2|full)
 import { execFileSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { crc32, deflateSync } from 'node:zlib'
 import { P256Keypair } from '@atproto/crypto'
+import { RECORD_MAC_TYPE } from '@atproto/space'
 import { Actor, RUN } from '../lib/actor.mjs'
 import { HOSTS, PORTS, VLPDS_ADMIN_TOKEN, log } from '../lib/env.mjs'
 import { NotImplemented, attempt, hfetch, rawXrpc, setTimingScope, sleep, waitFor } from '../lib/http.mjs'
@@ -18,7 +19,7 @@ import { DpopKey, asPost } from '../lib/oauth.mjs'
 import { FirehoseTap, SENTINEL, checkAuthor } from '../lib/leak.mjs'
 import { NotifyService } from '../lib/notifysvc.mjs'
 import { Report, summarize } from '../lib/report.mjs'
-import { SpaceCred, credentialFor } from '../lib/space.mjs'
+import { SpaceCred, credentialFor, headOf } from '../lib/space.mjs'
 import { Vlpds } from '../lib/vlpds.mjs'
 import { SCOPES, revokeCredentials, tid, voteRkey } from '../../../../boards/src/client.mjs'
 import { C, boardView, materialize, parseRecordUri, sortPosts, thread } from '../../../../boards/src/model.mjs'
@@ -28,7 +29,10 @@ export const CONFIGS = {
   'all-vlpds': { alice: 'vlpds', bob: 'vlpds', carol: 'vlpds', dave: 'vlpds', eve: 'vlpds', bot: 'vlpds', crowd: ['vlpds'] },
   'vlpds-owner': { alice: 'vlpds', bob: 'vlpds', carol: 'ref-b', dave: 'ref-a', eve: 'ref-a', bot: 'ref-b', crowd: ['vlpds', 'ref-a', 'ref-b'] },
   'ref-owner': { alice: 'ref-a', bob: 'vlpds', carol: 'ref-b', dave: 'vlpds', eve: 'vlpds', bot: 'vlpds', crowd: ['ref-a', 'ref-b', 'vlpds'] },
+  // the reference alone: checks the stories and the boards app, not vlpds
+  'all-ref': { alice: 'ref-a', bob: 'ref-b', carol: 'ref-a', dave: 'ref-b', eve: 'ref-a', bot: 'ref-b', crowd: ['ref-a', 'ref-b'] },
 }
+const usesVlpds = (cfg) => Object.values(CONFIGS[cfg]).flat().includes('vlpds')
 
 const CLUSTER = !!process.env.CLUSTER
 const SEED = Number(process.env.SEED ?? 7)
@@ -430,7 +434,7 @@ export async function runConfig(rep, cfg, env) {
     check(!other.ok, "dave can't write into bob's repo", errName(other))
 
     const eveCred = await attempt(() => credentialFor(S.eve, B).then((data) => ({ data })))
-    check(!eveCred.ok && eveCred.error === 'UserNotAuthorized', 'eve (not a member) gets no credential', errName(eveCred))
+    check(!eveCred.ok && eveCred.error === 'SpaceNotFound', 'eve (not a member) gets no credential (SpaceNotFound)', errName(eveCred))
     const eveRead = await attempt(() => S.eve.client.com.atproto.space.listRecords({ space: B, repo: S.bob.did }))
     check(!eveRead.ok, "eve can't read bob's board repo with her own auth", errName(eveRead))
     const evil = await S.eveC.createBoard(`${SENTINEL}evil`, { name: 'evil' })
@@ -492,12 +496,12 @@ export async function runConfig(rep, cfg, env) {
     const members = await S.aliceC.listMembers(B)
     check(!members.some((m) => m.did === S.carol.did), 'carol is off the member list')
     const c = await attempt(() => credentialFor(S.carol, B).then((data) => ({ data })))
-    check(!c.ok && c.error === 'UserNotAuthorized', 'carol gets no new credential', errName(c))
+    check(!c.ok && c.error === 'SpaceNotFound', 'carol gets no new credential (SpaceNotFound)', errName(c))
     const late = await attempt(() => S.carolC.comment(B, S.P1, `after removal ${SENTINEL}`))
     rep.note(`${label}: carol's write after removal: ${late.ok !== false ? 'accepted by her host' : `refused (${errName(late)})`}`)
     await sleep(2500)
     const listed1 = (await listReposAll(daveCred, B)).get(S.carol.did)
-    check(listed1 && listed1.repoRev === listed0?.repoRev, 'listRepos keeps carol at her last tracked repoRev (reference)', `${listed0?.repoRev} -> ${listed1?.repoRev}`)
+    check(listed0 && !listed1, 'removeMember drops carol from the writer set: listRepos no longer names her', `${listed0?.repoRev} -> ${listed1?.repoRev}`)
     const conv = await converge(() => compareView(S.av.dave, B, model(), { karma: [S.alice.did, S.bob.did, S.carol.did] }))
     check(!conv.diffs.length, `the appview hides carol's posts, comments and votes (${conv.ms} ms)`, conv.diffs.slice(0, 4).join('; '))
     const p1 = (await S.av.dave.getPosts(B, 'new')).posts.find((p) => p.uri === S.P1)
@@ -506,9 +510,9 @@ export async function runConfig(rep, cfg, env) {
     check(th.replies[0]?.deleted && th.replies[0].uri === S.c1 && th.replies[0].replies[0]?.uri === S.r1, "r1 hangs under a placeholder for carol's hidden c1", JSON.stringify(normTree(th.replies)))
     const oldRead = await attempt(async () => (await oldCred.repoClient(S.bob.did)).com.atproto.space.listRecords({ space: B, repo: S.bob.did }))
     rep.note(`${label}: carol's credential minted before removal ${oldRead.ok ? `still reads bob's repo until it expires (${Math.round(oldCred.expiresInMs() / 1000)} s left)` : `is refused (${errName(oldRead)})`}; the credential names no holder, so neither host nor appview can tell it's hers without a revocation`)
-    // what a fresh syncer would see: listRepos has no rev to read at, so it reads carol's head
-    const fresh = await (await daveCred.repoClient(S.carol.did)).com.atproto.space.getLatestCommit({ space: B, repo: S.carol.did }).catch((e) => ({ error: e.error }))
-    if (fresh.data) rep.note(`${label}: carol's repo head is ${fresh.data.commit.rev}, listRepos says ${listed1?.repoRev}: a syncer starting now reads past the last tracked rev (no read-at-rev in the protocol), which is why boards hides removed members by settings`)
+    // the appview's syncer still holds the copy it had (removal isn't announced), which is why boards hides removed members by settings
+    const held = S.appview.boards.get(B)?.syncer.repos.has(S.carol.did)
+    rep.note(`${label}: after carol's removal the appview's syncer ${held ? 'still holds' : 'no longer holds'} her repo; a syncer starting now never pulls it (listRepos doesn't name her)`)
   }, { needs: ['2.post-comment-vote'] })
 
   await step('6.takedown', async (check) => {
@@ -528,15 +532,15 @@ export async function runConfig(rep, cfg, env) {
       const cred = await credentialFor(S.dave, B)
       const cl = await cred.repoClient(S.bob.did)
       const u = parseRecordUri(S.P1)
-      const g = await attempt(() => cl.com.atproto.space.getRecord({ space: B, repo: S.bob.did, collection: u.collection, rkey: u.rkey }))
+      const g = await attempt(() => cred.macRead(S.bob.did, RECORD_MAC_TYPE, (c, opts) => c.com.atproto.space.getRecord({ space: B, repo: S.bob.did, collection: u.collection, rkey: u.rkey }, opts)).then((r) => r.res))
       check(!g.ok && g.error === 'RecordNotFound', 'getRecord answers RecordNotFound', errName(g))
       const lr = await cl.com.atproto.space.listRecords({ space: B, repo: S.bob.did, limit: 100 })
       check(!lr.data.records.some((r) => r.uri === S.P1 || String(r.rkey) === u.rkey), 'listRecords leaves it out')
       const blob = await attempt(() => cl.com.atproto.space.getBlob({ space: B, repo: S.bob.did, cid: S.imgCid }))
       check(!blob.ok && blob.error === 'BlobNotFound', 'its image answers BlobNotFound', errName(blob))
-      const head = (await cl.com.atproto.space.getLatestCommit({ space: B, repo: S.bob.did })).data.commit
-      const listedHash = (await listReposAll(cred, B)).get(S.bob.did)?.hash
-      rep.note(`${label}: during the takedown, listRepos' hash for bob ${Buffer.from(listedHash ?? []).equals(Buffer.from(head.hash)) ? 'matches' : 'differs from'} his takedown-adjusted head (same rev ${head.rev}); syncers learn of a takedown only by pulling the repo`)
+      const head = await headOf(cred, B, S.bob.did)
+      const listedData = (await listReposAll(cred, B)).get(S.bob.did)?.data
+      rep.note(`${label}: during the takedown, listRepos' data for bob ${Buffer.from(listedData ?? []).equals(Buffer.from(head.data)) ? 'matches' : 'differs from'} his takedown-adjusted head (same rev ${head.rev}); syncers learn of a takedown only by pulling the repo`)
       const conv = await converge(() => compareView(av, B, model(), { karma: [S.alice.did, S.bob.did] }), 20_000, 200)
       check(!conv.diffs.length, `the appview converges on the board without P1 (${conv.ms} ms, poll-driven)`, conv.diffs.slice(0, 4).join('; '))
       rep.metrics[`${label}.takedown_to_appview_ms`] = conv.ms
@@ -550,7 +554,7 @@ export async function runConfig(rep, cfg, env) {
         const seen = new Set(before.json.entries.map((e) => e.id))
         check(after.json.entries.some((e) => !seen.has(e.id) && JSON.stringify(e).includes(u.rkey)), 'the read is in the audit log')
       } else rep.note(`${label}: getAuditLog ${before.status}; audit unchecked`)
-      const asMember = await attempt(() => cl.com.atproto.space.getRecord({ space: B, repo: S.bob.did, collection: u.collection, rkey: u.rkey }))
+      const asMember = await attempt(() => cred.macRead(S.bob.did, RECORD_MAC_TYPE, (c, opts) => c.com.atproto.space.getRecord({ space: B, repo: S.bob.did, collection: u.collection, rkey: u.rkey }, opts)).then((r) => r.res))
       check(!asMember.ok, 'members still can\'t read it')
     } finally {
       const off = await set(false)
@@ -823,7 +827,7 @@ export async function runConfig(rep, cfg, env) {
       behind = []
       for (const a of crowd) {
         if (!truth.repo(B, a.did).size && !listed.has(a.did)) continue
-        const head = (await (await cred.repoClient(a.did)).com.atproto.space.getLatestCommit({ space: B, repo: a.did })).data.commit
+        const head = await headOf(cred, B, a.did)
         if (listed.get(a.did)?.repoRev !== head.rev) behind.push(`${a}: listed ${listed.get(a.did)?.repoRev} head ${head.rev}`)
       }
       if (!behind.length || Date.now() > deadline) break
@@ -846,10 +850,10 @@ async function main() {
     configs,
   })
   const env = {}
-  env.vlpds = await new Vlpds({ cluster: CLUSTER, memory: !!process.env.MEMORY }).start()
+  if (configs.some(usesVlpds)) env.vlpds = await new Vlpds({ cluster: CLUSTER, memory: !!process.env.MEMORY }).start()
   try {
-    env.lexicons = await setupLexicons(env)
-    rep.meta.lexicons = env.lexicons ?? 'no --lexicon-authority-override in this binary'
+    env.lexicons = env.vlpds ? await setupLexicons(env) : null
+    rep.meta.lexicons = env.lexicons ?? (env.vlpds ? 'no --lexicon-authority-override in this binary' : 'no vlpds in this run')
     for (const cfg of configs) {
       if (!CONFIGS[cfg]) throw new Error(`unknown config ${cfg}`)
       setTimingScope(cfg)
@@ -857,7 +861,7 @@ async function main() {
     }
   } finally {
     log(`report: ${rep.write()}`)
-    if (process.env.KEEP !== '1') await env.vlpds.stop()
+    if (env.vlpds && process.env.KEEP !== '1') await env.vlpds.stop()
   }
   console.log(`\n${rep.markdown()}`)
   process.exit(rep.failed().length ? 1 : 0)

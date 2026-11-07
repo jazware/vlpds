@@ -23,23 +23,24 @@ function service(doc, id) {
   return doc.service?.find((s) => s.id === `#${id}` || s.id === `${doc.id}#${id}`)
 }
 
-/** The account's `#atproto` signing key as a did:key. */
-export async function signingKey(did) {
+/** The account's `#<id>` verification method as a did:key. */
+export async function didKey(did, id) {
   const doc = await resolveDid(did)
-  const vm = doc.verificationMethod?.find((m) => m.id === '#atproto' || m.id === `${did}#atproto`)
-  if (!vm) throw new Error(`${did}: no #atproto key`)
+  const vm = doc.verificationMethod?.find((m) => m.id === `#${id}` || m.id === `${did}#${id}`)
+  if (!vm) throw new Error(`${did}: no #${id} key`)
   return `did:key:${vm.publicKeyMultibase}`
 }
 
+/** The `#atproto` signing key. */
+export const signingKey = (did) => didKey(did, 'atproto')
+
+/** The `#atproto_kem` key a syncer encapsulates MAC secrets to. */
+export const kemKey = (did) => didKey(did, 'atproto_kem')
+
+/** The account's PDS, which is also where a space authority hosts its spaces. */
 export async function pdsEndpoint(did) {
   const doc = await resolveDid(did)
   return service(doc, 'atproto_pds')?.serviceEndpoint
-}
-
-/** Where to reach a space authority as space host: `#atproto_space_host`, else its PDS. */
-export async function spaceHostEndpoint(did) {
-  const doc = await resolveDid(did)
-  return (service(doc, 'atproto_space_host') ?? service(doc, 'atproto_pds'))?.serviceEndpoint
 }
 
 /** A fresh did:plc for a service (a syncer) with one service entry. */

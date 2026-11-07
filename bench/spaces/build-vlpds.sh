@@ -12,6 +12,25 @@ scratch="$here/.scratch"
 mkdir -p "$scratch"
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 
+# A delta (jj) checkout has no git: build this checkout as it is on disk,
+# every time (cargo's incremental build makes an unchanged tree cheap).
+if ! git -C "$here" rev-parse --git-dir >/dev/null 2>&1; then
+  [ -z "${BRANCH:-}" ] || { echo "BRANCH needs a git checkout; in a delta checkout, check the ref out (dj new <ref>) or pass VLPDS_BIN" >&2; exit 2; }
+  target="${VLPDS_TARGET_DIR:-$scratch/target}"
+  src="$(cd "$here/../.." && pwd)"
+  rev="$(jj -R "$src" log -r @ --no-graph -T commit_id 2>/dev/null || echo unknown)"
+  echo "building vlpds @ ${rev:0:12} from $src into $target" >&2
+  cd "$src"
+  (cd ui && npm install --no-audit --no-fund --silent && npm run build --silent) >&2
+  CARGO_TARGET_DIR="$target" nice cargo build --profile dev-release --bin vlpds >&2
+  cp "$target/dev-release/vlpds" "$scratch/vlpds"
+  echo "@" >"$scratch/built-branch"
+  echo "$rev" >"$scratch/built-rev"
+  rm -f "$scratch/built-key"
+  echo "$scratch/vlpds"
+  exit 0
+fi
+
 # One target dir for every checkout of the repo (the main one's), so a
 # worktree's first run reuses its compiled dependencies.
 common="$(git -C "$here" rev-parse --path-format=absolute --git-common-dir)"

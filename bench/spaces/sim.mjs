@@ -24,7 +24,7 @@ import { setService } from './lib/identity.mjs'
 import { FaultProxy } from './lib/faultproxy.mjs'
 import { NotifyService } from './lib/notifysvc.mjs'
 import { Report, summarize } from './lib/report.mjs'
-import { createSpace, credentialFor, putMember, spaceUri } from './lib/space.mjs'
+import { createSpace, credentialFor, headOf, putMember, spaceUri } from './lib/space.mjs'
 import { Syncer, hashEq } from './lib/syncer.mjs'
 import { Vlpds } from './lib/vlpds.mjs'
 
@@ -143,7 +143,8 @@ async function setup(check, env) {
     const authority = actors[n % actors.length]
     if (FAULTS && !env.hostProxies[authority.host]) {
       // the writer -> authority hop goes through a proxy: the authority's
-      // #atproto_space_host names it (signed with the host's test rotation key)
+      // #atproto_pds (its space host) names it, signed with the host's test
+      // rotation key; everything but notifyWrite passes straight through
       const port = PORTS.hostProxy[authority.host]
       const px = await new FaultProxy(port, HOSTS[authority.host].url, { match: /notifyWrite/ }).start()
       px.rand = mulberry32(seed + 200 + port)
@@ -151,9 +152,9 @@ async function setup(check, env) {
     }
     if (FAULTS && env.hostProxies[authority.host]) {
       try {
-        await setService(authority.did, authority.host, 'atproto_space_host', 'AtprotoSpaceHost', `http://localhost:${env.hostProxies[authority.host].port}`)
+        await setService(authority.did, authority.host, 'atproto_pds', 'AtprotoPersonalDataServer', `http://localhost:${env.hostProxies[authority.host].port}`)
       } catch (e) {
-        rep.note(`could not point ${authority}'s #atproto_space_host at the fault proxy (${e.message}); its inbound notifies go direct`)
+        rep.note(`could not point ${authority}'s #atproto_pds at the fault proxy (${e.message}); its inbound notifies go direct`)
       }
     }
     const skey = `sim${RUN}n${n}`
@@ -284,7 +285,7 @@ async function membership(sp, stats) {
   } else if (candidates.length > 1) {
     const w = pick(candidates)
     if (sp.removed.has(w.did)) return
-    await attempt(() => sp.authority.client.com.atproto.simplespace.removeMember({ space: sp.uri, did: w.did }))
+    await attempt(() => sp.authority.client.com.atproto.memberspace.removeMember({ space: sp.uri, did: w.did }))
     sp.removed.add(w.did)
   }
 }
@@ -367,7 +368,7 @@ async function invariants(world, env, check) {
       for (const w of sp.writers) {
         const rp = sp.repos.get(w.did)
         if (sp.removed.has(w.did) || rp.stale || !rp.acked) continue
-        const head = (await (await cred.repoClient(w.did)).com.atproto.space.getLatestCommit({ space: sp.uri, repo: w.did })).data.commit
+        const head = await headOf(cred, sp.uri, w.did)
         const e = listed.find((x) => x.did === w.did)
         if (e?.repoRev !== head.rev) behind.push(`${w}: listed ${e?.repoRev} head ${head.rev}`)
       }
@@ -398,7 +399,7 @@ async function invariants(world, env, check) {
         if (local.rev !== e.repoRev) wrong.push(`${e.did} at ${local.rev}, listed ${e.repoRev}`)
         const d = diff(repo.truth, s.view(e.did))
         if (d.length) wrong.push(`${e.did}: ${d.slice(0, 3).join(', ')}`)
-        if (!hashEq(local.hash.digest(), e.hash)) wrong.push(`${e.did}: LtHash differs from the listed hash`)
+        if (!hashEq(local.hash.digest(), e.data)) wrong.push(`${e.did}: LtHash differs from the listed data`)
       } else if (local.rev < e.repoRev) wrong.push(`${e.did} (removed) behind its listed repoRev`)
     }
     check(!wrong.length, `I3 ${s.name} converged on every listed repo`, wrong.slice(0, 5).join('; '))

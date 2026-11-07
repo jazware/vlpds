@@ -4,7 +4,7 @@
 // verifies each call's service auth (iss = the space's authority, aud = this
 // service's id, lxm) against the authority's key from the PLC, records it,
 // and hands notifyWrite / notifySpaceDeleted to listeners. It also answers
-// simplespace.checkUserAccess as a managing app.
+// managedspace.checkUserAccess as a managing app.
 import http from 'node:http'
 import { verifySignature } from '@atproto/crypto'
 import { createServiceDid, signingKey } from './identity.mjs'
@@ -93,7 +93,7 @@ export class NotifyService {
       this.authFailures.push(call)
       return reply(401, { error: 'AuthRequired', message: authErr })
     }
-    if (lxm === 'com.atproto.simplespace.checkUserAccess') {
+    if (lxm === 'com.atproto.managedspace.checkUserAccess') {
       const ok = !!this.access(body.space, body.user, body.access, body.clientId)
       return reply(200, { authorized: ok })
     }

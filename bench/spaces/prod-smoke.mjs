@@ -1,7 +1,7 @@
 // A one-off Spaces smoke test against a real vlpds (production), as one test
 // account: OAuth sign-in with a bare boards grant (the space type resolves
 // through real lexicon DNS), a space and a record with a sentinel, a credential
-// read, sync with a verified getRepo, a leak check on the public firehose and
+// read with MACs, a verified getRepo (STAR), a leak check on the public firehose and
 // repo, then cleanup. Reads the account from ~/.config/vlpds-test-account
 // (handle=, password=) and never prints the password.
 //
@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { P256Keypair } from '@atproto/crypto'
-import { createSpaceSigHeaders, verifyRepoCarFull } from '@atproto/space'
+import { COMMIT_MAC_TYPE, MAC_HEADER, RECORD_MAC_TYPE, WANT_MAC_HEADER, createSpaceSigHeaders, encapsulate, formatWantMacHeader, parseMacHeader, verifyCommit, verifyRecord, verifyRepoStarFull } from '@atproto/space'
 import { oauthLogin } from './lib/oauth.mjs'
 import { makeClient, rawXrpc } from './lib/http.mjs'
 
@@ -37,9 +37,10 @@ async function plcDoc(did) {
   return r.json()
 }
 const service = (doc, id, type) => doc.service?.find((s) => s.id === id || s.type === type)?.serviceEndpoint
-async function signingKey(did) {
+async function kemKey(did) {
   const doc = await plcDoc(did)
-  const vm = doc.verificationMethod?.find((m) => m.id.endsWith('#atproto'))
+  const vm = doc.verificationMethod?.find((m) => m.id.endsWith('#atproto_kem'))
+  if (!vm) throw new Error(`${did} publishes no #atproto_kem key`)
   return `did:key:${vm.publicKeyMultibase}`
 }
 
@@ -70,13 +71,7 @@ const me = makeClient(BASE, session.signer())
 const skey = `smoke${run}`
 let space
 try {
-  const cs = await me.com.atproto.simplespace.createSpace({
-    spaceType: TYPE,
-    skey,
-    readPolicy: { $type: 'com.atproto.simplespace.defs#memberListPolicy' },
-    writePolicy: { $type: 'com.atproto.simplespace.defs#memberListPolicy' },
-    appAccess: { $type: 'com.atproto.simplespace.defs#open' },
-  })
+  const cs = await me.com.atproto.space.createSpace({ spaceType: TYPE, skey, policy: { $type: 'com.atproto.memberspace.policy' } })
   space = cs.data.uri
   check(space === `at://${did}/space/${TYPE}/${skey}`, 'createSpace', space)
 
@@ -97,24 +92,33 @@ try {
   // the credential chain: delegation token here, credential at the authority (also here)
   const dt = await me.com.atproto.space.getDelegationToken({ space })
   const key = await P256Keypair.create()
-  const host = service(await plcDoc(did), '#atproto_space_host', 'AtprotoSpaceHost') ?? BASE
-  const exHeaders = await createSpaceSigHeaders(key, { authorization: `Bearer ${dt.data.token}` })
-  const ex = makeClient(host, ({ headers }) => {
-    for (const [k, v] of Object.entries(exHeaders)) headers.set(k, v)
-  })
-  const cred = (await ex.com.atproto.space.getSpaceCredential({ space })).data.credential
+  const host = service(await plcDoc(did), '#atproto_pds', 'AtprotoPersonalDataServer') ?? BASE
+  const ex = makeClient(host)
+  const cred = (await ex.com.atproto.space.getSpaceCredential({ space, credentialKid: key.did(), delegationToken: dt.data.token })).data.credential
   check(!!cred, 'delegation token → space credential')
-  const credHeaders = await createSpaceSigHeaders(key, { authorization: `Atproto-Space ${cred}`, audience: did })
+  const credHeaders = await createSpaceSigHeaders(key, { authorization: `Atproto-Space-Credential ${cred}`, audience: did })
   const reader = makeClient(BASE, ({ headers }) => {
     for (const [k, v] of Object.entries(credHeaders)) headers.set(k, v)
   })
-  const got = await reader.com.atproto.space.getRecord({ space, repo: did, collection: POST, rkey })
+  const kem = await kemKey(did)
+  // each MAC-bearing read gets its own key share
+  const withMac = async (type) => {
+    const { keyShare, sharedSecret } = await encapsulate(kem)
+    return { sharedSecret, opts: { headers: { [WANT_MAC_HEADER]: formatWantMacHeader(type, keyShare) } } }
+  }
+  const macOf = (res, type) => parseMacHeader(res.headers[MAC_HEADER], type)
+  let m = await withMac(RECORD_MAC_TYPE)
+  const got = await reader.com.atproto.space.getRecord({ space, repo: did, collection: POST, rkey }, m.opts)
   check(got.data.value?.body === `private ${SENTINEL}`, 'getRecord with the credential')
-  const ops = await reader.com.atproto.space.listRepoOps({ space, repo: did })
+  check(await verifyRecord({ uri: got.data.uri, cid: String(got.data.cid), value: got.data.value }, { uri: w.data.uri, sharedSecret: m.sharedSecret, mac: macOf(got, RECORD_MAC_TYPE) }), "and its record MAC verifies against the account's #atproto_kem key")
+  m = await withMac(COMMIT_MAC_TYPE)
+  const ops = await reader.com.atproto.space.listRepoOps({ space, repo: did }, m.opts)
   check((ops.data.ops ?? []).length >= 1, 'listRepoOps with the credential')
-  const car = await reader.com.atproto.space.getRepo({ space, repo: did })
-  const v = await verifyRepoCarFull([car.data], { space, author: did, didKey: await signingKey(did) })
-  check(v && Object.keys(v.records ?? v).length !== undefined, 'getRepo CAR verifies against the account key')
+  check(verifyCommit(ops.data.commit, { space, repo: did, sharedSecret: m.sharedSecret, mac: macOf(ops, COMMIT_MAC_TYPE) }), "and its commit's MAC verifies")
+  m = await withMac(COMMIT_MAC_TYPE)
+  const star = await reader.com.atproto.space.getRepo({ space, repo: did }, m.opts)
+  const v = await verifyRepoStarFull([star.data], { space, repo: did, sharedSecret: m.sharedSecret, mac: macOf(star, COMMIT_MAC_TYPE) })
+  check(v.records.length === 1, 'getRepo STAR verifies (MAC and digest)', v.records.length)
 
   // leaks: public repo and firehose
   await new Promise((r) => setTimeout(r, 3000))
@@ -129,7 +133,7 @@ try {
 } finally {
   if (space) {
     try {
-      await me.com.atproto.simplespace.deleteSpace({ space })
+      await me.com.atproto.space.deleteSpace({ space })
       check(true, 'deleteSpace (cleanup)')
     } catch (e) {
       check(false, 'deleteSpace (cleanup)', String(e?.message ?? e))

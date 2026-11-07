@@ -24,7 +24,8 @@ passwords and keys are generated per run (or are fixed test values in this direc
 
 - A PLC directory on `127.0.0.1:2860` (the `did-method-plc` image bench/migrate builds).
 - Two reference PDSes, `ref-a` on `localhost:2861` and `ref-b` on `localhost:2862`. They're built by
-  `refpds.sh` from bluesky-social/atproto at the pin `5b95b2f2` (PR #5187), cloned blobless into
+  `refpds.sh` from bluesky-social/atproto at the pin `98ef3a6b` (branch `permissioned-data`, the
+  wire of the `0.0.0-spaces-alpha-20261105160032` npm release), cloned blobless into
   `.scratch/atproto`. The published `pds-spaces-alpha` image has the same packages but is amd64
   only, so it doesn't run here. Set `REF_PDS_IMAGE` to use it on a host that can.
 - MinIO on `127.0.0.1:2868` (the repo's `vlpds-minio:local` image). vlpds keeps its state there, so a
@@ -33,13 +34,18 @@ passwords and keys are generated per run (or are fixed test values in this direc
 Every service URL is `http://localhost:<port>` everywhere. Each reference PDS shares the network
 namespace of a small socat container that forwards the other harness ports (2861-2889, or the run's block) to the other
 PDS or to the host. So a DID document points at the same URL whether the driver, vlpds or a
-reference PDS reads it.
+reference PDS reads it. Docker Desktop routes `host.docker.internal` to the host's loopback, and
+Linux Docker doesn't, so on Linux `run.sh` also starts `lib/hostbridge.mjs`, which listens on the
+default bridge's gateway address (reachable only from this host's containers) and forwards each
+harness port to 127.0.0.1.
 
 `build-vlpds.sh` builds this checkout's `packages/vlpds` as it is on disk (uncommitted changes
 included) with `--profile dev-release`, into the main checkout's `.scratch/target` so worktrees share
 compiled dependencies, and copies the binary to `.scratch/vlpds`. It skips the build when the source
 is clean and its tree hasn't changed since the last one. `VLPDS_BIN=...` skips it, and
 `BRANCH=<ref>` builds a detached checkout of that ref under `.scratch/vlpds-src` instead.
+`VLPDS_BIN=none` builds nothing, for the configs that only use the reference (`e2e ref-ref`,
+`boards all-ref`, `sim` with `HOSTS=ref-a,ref-b`).
 
 The drivers start vlpds themselves (`lib/vlpds.mjs`) with `--dev-mode --spaces` on port 2863, so the
 fault sim can kill it. `CLUSTER=1` starts 3 nodes on MinIO behind a small round-robin balancer on
@@ -90,29 +96,31 @@ bench/spaces/r2-clean.sh bench/<run-id>          # afterwards, with the prefix r
   bucket's 1-day expiry is only a backstop.
 - `SCALE=r2` shrinks boards story 10 to 10 members, 80 posts, 300 comments and 800 votes.
 
-On Linux, the reference PDS containers can't reach host ports bound to 127.0.0.1 (Docker Desktop's
-`host.docker.internal` can), so on a Linux host stick to configs where only vlpds holds spaces
-(the cost run on vlpds, boards all-vlpds).
-
 ## How the driver acts like an app
 
 The wire is what a real app sends. Calls go through `@atproto/api` at the Spaces alpha
-(`0.0.0-spaces-alpha-20261001173819`), which also validates every response against the lexicons.
-Credentials, HTTP message signatures, LtHash, commit verification and CAR verification come from
-`@atproto/space` at the same version.
+(`0.0.0-spaces-alpha-20261105160032`), which also validates every response against the lexicons.
+Credentials, HTTP message signatures, KEM encapsulation, MACs, LtHash and STAR verification come
+from `@atproto/space` at the same version.
 
 - On a reference PDS the driver uses a password session, as the reference's own tests do.
 - vlpds only takes OAuth for spaces, so each vlpds account also authorizes a loopback client
   headlessly (`lib/oauth.mjs`: PAR, PKCE, the sign-in and consent forms, DPoP). The scope asks for
   every space action on `com.example.group` at any authority, plus `blob:*/*`, `repo:*` and the two
   `rpc:` grants the revocation and notify tests need (`APP_SCOPE` in `lib/actor.mjs`).
+- A credential is requested with a body (`space`, `credentialKid`, `delegationToken`) at the
+  authority's `#atproto_pds`, and presented as `Authorization: Atproto-Space-Credential` with a
+  tagged RFC 9421 signature.
 - A syncer (`lib/syncer.mjs`) gets credentials through a read-only member's delegation token. It
   catches up with `listRepos` from a spaceRev checkpoint and pulls each repo from its own host with
-  `listRepoOps`. It keeps a running LtHash per repo and checks it against the verified commit,
-  falling back to a verified `getRepo` on a mismatch.
+  `listRepoOps`. Every getLatestCommit, getRepo, listRepoOps and getRecord it sends carries
+  `Atproto-Space-Want-Mac` with a key share encapsulated afresh to the author's `#atproto_kem` key,
+  and a commit counts only once the response's `Atproto-Space-Mac` verifies. It keeps a running
+  LtHash per repo and checks it against the commit's `data`, falling back to a verified STAR
+  `getRepo` on a mismatch (which is also how it sees a `clearRecords`).
 - Forwarded notifications land on `lib/notifysvc.mjs`. It's a real did:plc whose
   `#atproto_space_syncer` entry points at it, and it checks each call's service auth against the
-  authority's key. It also answers `checkUserAccess` as a managing app.
+  authority's key. It also answers `com.atproto.managedspace.checkUserAccess` as a managing app.
 
 ## The matrix (e2e)
 
@@ -126,21 +134,41 @@ Each configuration puts the roles on hosts and runs the same steps against them:
 | vlpds-only | vlpds | vlpds | vlpds | vlpds | vlpds |
 
 ref-ref runs first. It checks the harness, so a failure in another column points at vlpds. The
-steps cover space creation and policies, members, record writes (create, put, delete, applyWrites
-and its atomicity), self-reads, the credential chain (claims, single-use delegation, outsiders,
-DER refused, high-S accepted, wrong audience, wrong key, a second signature label), full and
-incremental sync with LtHash checks, notify registration and delivery (service auth, spaceRev and
-prevSpaceRev order, listRepos paging), read-only members not being tracked, blobs (the reference
-rule for `sync.getBlob`), revocation, `FutureRev` and stale notifies sent straight to the space
-host, admin takedowns, app passwords, member removal, `vlpds.space.importRepo`, space deletion and
-the leak check.
+steps cover:
+
+- spaces and policies: createSpace with a memberspace policy and its stored defaults,
+  `UnsupportedPolicy`, members, publicRead with and without a delegation token, allowedApps,
+  managedspace and `checkUserAccess`, personalspace, wholesale `updateSpace` and the member list
+  going with a policy change, `PolicyMismatch`, and published policy and member records
+- record writes (create, put, delete, applyWrites and its atomicity, direct writes to the published
+  collections refused), self-reads with an optional MAC
+- the credential chain: claims and `kid`s, `#atproto_pds` audiences, single-use delegation and
+  `InvalidDelegationToken`, `SpaceNotFound` for outsiders and token-less requests, a non-P-256
+  `credentialKid`; then the request signature (tag, label next to another, DER refused, high-S and
+  unpadded base64 accepted, a lower-case scheme, the old `Atproto-Space` scheme refused, wrong
+  audience, wrong key) and getSpace refusing a credential
+- MACs: commit and record MACs verified against the author's `#atproto_kem` key, `BadSpaceMac`
+  without the header or with a bad key share, type or version, `Vary` and
+  `Access-Control-Expose-Headers`
+- full and incremental sync with LtHash checks, the STAR archive (end byte, path order, a truncated
+  archive rejected)
+- notify registration and delivery (service auth, `data`, spaceRev and prevSpaceRev order,
+  listRepos paging), `FutureRev` and stale notifies sent straight to the space host, the old
+  `#atproto_space_host` audience refused
+- read-only members not being tracked, blobs (the reference rule for `sync.getBlob`), revocation,
+  admin takedowns of a writer and of the authority (`RepoTakendown` while held credentials keep
+  reading), app passwords
+- the writer set: member removal, `clearRecords` (the empty digest, a syncer resyncing),
+  `removeWriter` and re-tracking
+- `importRepo` (a new rev with the same data, an older archive replacing the repo),
+  `exportSpaceMeta` / `importSpaceMeta`, space deletion and the leak check
 
 Two steps cover vlpds extensions and run only when the writer (and, for the second, the space) is on
 vlpds:
 
 - `takedown.record`: an admin takedown of one space record (`updateSubjectStatus` with a strongRef
   to its 7-segment URI). While it's down, credential reads don't see it, `getRepo` verifies without
-  it, the commit hash is the LtHash of the remaining records, `listRepoOps` agrees, its blob answers
+  it, the commit's data is the LtHash of the remaining records, `listRepoOps` agrees, its blob answers
   `BlobNotFound`, and a syncer converges on that view, then back to the full one after reversal.
   A vlpds that hides the record but keeps it in the digest reports not impl.
 - `operator.read`: `vlpds.admin.getSpaceRecord` with admin auth reads a space record, a member's
@@ -179,7 +207,7 @@ After the workload it checks these invariants:
   eventually. With faults it waits up to 4 minutes (`CONVERGE_MS`), since dropped notifies are
   retried with backoff.
 - I3: every syncer, after catching up from its checkpoint, holds the acked state of every listed
-  repo, and its LtHash matches the listed hash.
+  repo, and its LtHash matches the listed data.
 - I4: no spaceRev is given to two different updates, and the prevSpaceRev chain never forks.
 - I5: no syncer saw a protocol violation (cursor rules, ordering, a rev going backwards).
 
@@ -187,8 +215,8 @@ After the workload it checks these invariants:
 
 - A fault proxy in front of every syncer drops 20% of forwarded notifies (as a 503), duplicates
   20% and delays them by up to 1.5 s.
-- On reference authorities, the authority's `#atproto_space_host` is pointed at a proxy that drops
-  30% of inbound `notifyWrite`s. That exercises the writer's retry path, which is the outbox on
+- The authority's `#atproto_pds` (its space host) is pointed at a proxy that passes everything
+  through but drops 30% of inbound `notifyWrite`s. That exercises the writer's retry path, which is the outbox on
   vlpds.
 - vlpds gets a `kill -9` at a third of the ops and a SIGTERM at two thirds, each restarted right
   away. With `CLUSTER=1`, node 1 is killed and stays down 20 s, so its shards move.

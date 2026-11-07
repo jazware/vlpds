@@ -29,13 +29,7 @@ const c = makeClient(BASE, s.signer())
 const now = () => new Date().toISOString()
 
 const space = (
-  await c.com.atproto.simplespace.createSpace({
-    spaceType: TYPE,
-    skey: SKEY,
-    readPolicy: { $type: 'com.atproto.simplespace.defs#memberListPolicy' },
-    writePolicy: { $type: 'com.atproto.simplespace.defs#memberListPolicy' },
-    appAccess: { $type: 'com.atproto.simplespace.defs#open' },
-  })
+  await c.com.atproto.space.createSpace({ spaceType: TYPE, skey: SKEY, policy: { $type: 'com.atproto.memberspace.policy' } })
 ).data.uri
 console.log('space', space)
 
@@ -54,8 +48,8 @@ await put(C.comment, { subject: q, body: 'A private group feed would be a fun fi
 await put(C.vote, { subject: welcome, direction: 'up', createdAt: now() })
 await put(C.vote, { subject: q, direction: 'up', createdAt: now() })
 
-await c.com.atproto.simplespace.putMember({ space, did: memberDid, read: true, write: true })
-const members = (await c.com.atproto.simplespace.listMembers({ space })).data.members
+await c.com.atproto.memberspace.putMember({ space, did: memberDid, read: true, write: true })
+const members = (await c.com.atproto.memberspace.listMembers({ space })).data.members
 console.log('members', members.map((m) => `${m.did}${m.write ? ' (read+write)' : ' (read)'}`).join(', '))
 const recs = (await c.com.atproto.space.listRecords({ space, repo: did, collection: C.post })).data.records.length
 console.log(`seeded: settings, ${recs} posts, 1 comment, 2 votes`)
