@@ -641,6 +641,7 @@ pub async fn build(cfg: Config) -> anyhow::Result<Arc<xrpc::App>> {
         s.outbox.start(Arc::downgrade(&app));
         s.fanout.start(Arc::downgrade(&app));
         crate::space::retention::start(&app);
+        crate::space::deleted::start(&app);
         s.start_revocations(app.store.clone()).await;
         crate::kem_backfill::start(&app);
     } else {

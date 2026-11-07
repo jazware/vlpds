@@ -55,7 +55,7 @@ pub(crate) fn http_error(what: &str, e: reqwest::Error) -> String {
 /// A call to `service` at `endpoint` as `iss` (an account hosted here):
 /// Ok(status, JSON body) once it answered.
 #[allow(clippy::too_many_arguments)]
-async fn call(
+pub(crate) async fn call(
     app: &App,
     client: vlatproto::http::Guarded,
     iss: &str,
@@ -232,24 +232,6 @@ pub async fn forward(app: &App, f: &Forward, prev: Option<Tid>) -> &'static str 
 /// Reference deleteSpace's notifySpaceDeleted: best effort, one service at a
 /// time; one that misses it learns of it from `SpaceDeleted` on its next
 /// credential renewal.
-pub async fn notify_space_deleted(app: &App, authority: &str, uri: &str, services: Vec<(String, NotifyRow)>) {
-    let lxm = "com.atproto.space.notifySpaceDeleted";
-    let body = json!({"space": uri});
-    for (service, row) in services {
-        let client = vlatproto::http::guarded_fanout(app.config.dev_mode);
-        let r =
-            call(app, client, authority, &service, &row.endpoint, lxm, reqwest::Method::POST, &[], Some(&body)).await;
-        match r {
-            Ok((s, _)) if (200..300).contains(&s) => {}
-            Ok((s, _)) => {
-                tracing::info!(space = %crate::state::space_log_id(uri), service, status = s, "notifySpaceDeleted refused")
-            }
-            Err(e) => {
-                tracing::info!(space = %crate::state::space_log_id(uri), service, "notifySpaceDeleted failed: {e}")
-            }
-        }
-    }
-}
 
 /// How long the authority waits on a writer's host to confirm a same-rev
 /// hash: well inside the writer's own 10 s notify timeout.
@@ -275,7 +257,8 @@ pub async fn check_served_hash(
             if !app.did_resolver.refresh(writer) {
                 return Err(e);
             }
-            let doc = app.did_resolver.resolve(writer).await.map_err(|e| format!("could not resolve the writer: {e:?}"))?;
+            let doc =
+                app.did_resolver.resolve(writer).await.map_err(|e| format!("could not resolve the writer: {e:?}"))?;
             check_commit(served_commit(app, &doc, space, authority, writer).await?, rev, hash)
         }
         r => check_commit(r?, rev, hash),

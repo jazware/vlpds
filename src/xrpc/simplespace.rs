@@ -301,8 +301,8 @@ async fn update_space(State(app): AppState, Auth(creds): Auth, Json(inp): Json<J
 /// Reference deleteSpace: the space becomes a tombstone (getSpaceCredential
 /// answers SpaceDeleted from then on), its member list, writer states and
 /// registrations go, and so does the authority's own repo in it; other
-/// members' repos are theirs and stay. Registered services are told, best
-/// effort. Deleting a deleted space finishes its sweep and is a no-op.
+/// members' repos are theirs and stay. Registered services are told, and
+/// a send that fails is retried ([`crate::space::deleted`]). Deleting a deleted space finishes its sweep and is a no-op.
 async fn delete_space(State(app): AppState, Auth(creds): Auth, Json(inp): Json<J>) -> XResult<StatusCode> {
     spaces(&app)?;
     let space = req_space(&inp)?;
@@ -314,7 +314,8 @@ async fn delete_space(State(app): AppState, Auth(creds): Auth, Json(inp): Json<J
         match crate::space::host::registrations(&app, &did, &space.sid).await {
             Ok((regs, _)) if !regs.is_empty() => {
                 let (app, uri) = (app.clone(), space.uri.clone());
-                tokio::spawn(async move { crate::space::host::notify_space_deleted(&app, &did, &uri, regs).await });
+                let sid = space.sid;
+                tokio::spawn(async move { crate::space::deleted::notify(&app, &did, &uri, sid, regs).await });
             }
             Ok(_) => {}
             Err(e) => {

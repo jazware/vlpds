@@ -12,8 +12,8 @@ use super::*;
 use crate::oauth::scopes::{SpaceAccess, SpaceTarget};
 use crate::space::commit::Commit;
 use crate::space::heads::DurableSpaceHead;
-use crate::space::mac::{self, MacType};
 use crate::space::lthash::LtHash;
+use crate::space::mac::{self, MacType};
 use crate::space::outbox::{Outcome, Pending};
 use crate::space::repo::{
     PutScopes, SameRev, SpaceAck, SpaceError, SpaceOp, SpaceOutcome, SpaceReq, SpaceWrite, MAX_WRITES,
@@ -1318,12 +1318,9 @@ async fn issue_credential(app: &App, inp: CredentialIn) -> XResult<Json<J>> {
     // told only to those it would otherwise admit: a non-member learns
     // nothing about the space from it
     let taken_down = space_takendown(app, &space).await?;
-    // vlpds: no credential names a taken-down authority or member (the
-    // reference admits both)
+    // vlpds also refuses a taken-down member (the reference admits one)
     let (key, status) = super::proxy::account_key_status(app, &space.authority).await?;
-    if matches!(status.as_deref(), Some("takendown" | "suspended")) {
-        return Err(XrpcError::bad("RepoTakendown", "Space authority has been taken down"));
-    }
+    authority_suspended(status.as_deref())?;
     if let Some(user) = user.as_deref().filter(|u| *u != space.authority) {
         match super::internal::account_anywhere(app, user).await {
             Ok(a) if matches!(a.status.as_deref(), Some("takendown" | "suspended")) => {
@@ -2167,15 +2164,19 @@ async fn host_credential(app: &App, headers: &HeaderMap, space: &Space) -> XResu
         }
         _ => return Err(XrpcError::internal("not a space credential")),
     }
-    // a credential minted before the authority's takedown outlives it by up
-    // to its 300 s; getSpaceCredential's gate alone wouldn't stop it. An
-    // authority not hosted here is left to the callers' own checks.
-    if let Ok((_, Some(st))) = super::proxy::account_key_status(app, &space.authority).await {
-        if st == "takendown" || st == "suspended" {
-            return Err(XrpcError::bad("RepoTakendown", "Space authority has been taken down"));
-        }
-    }
     Ok(cred)
+}
+
+/// Reference: a space whose authority is taken down or deactivated is
+/// suspended, not deleted. getSpaceCredential and listRepos refuse it with
+/// the public repo's errors, while notifies and registrations still land so
+/// its writer state stays current.
+pub(super) fn authority_suspended(status: Option<&str>) -> XResult<()> {
+    match status {
+        Some("takendown" | "suspended") => Err(XrpcError::bad("RepoTakendown", "Space authority has been taken down")),
+        Some("deactivated") => Err(XrpcError::bad("RepoDeactivated", "Space authority has been deactivated")),
+        _ => Ok(()),
+    }
 }
 
 #[derive(Deserialize)]
@@ -2215,6 +2216,10 @@ async fn list_repos(State(app): AppState, headers: HeaderMap, Query(q): Query<Li
     let space = Space::parse(&q.space)?;
     let limit = super::extract::limit_param(q.limit, 100, 1, 1000)?;
     host_credential(&app, &headers, &space).await?;
+    // a credential minted before the authority's takedown outlives it by up
+    // to its 300 s; getSpaceCredential's gate alone wouldn't stop it
+    let (_, status) = super::proxy::account_key_status(&app, &space.authority).await?;
+    authority_suspended(status.as_deref())?;
     super::simplespace::live_space(&app, &space).await?;
     if space_takendown(&app, &space).await? {
         return Err(super::simplespace::space_not_found());

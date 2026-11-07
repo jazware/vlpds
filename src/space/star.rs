@@ -85,7 +85,10 @@ pub fn write_end(out: &mut Vec<u8>) {
 pub enum Item {
     /// The metadata map, checked canonical.
     Meta(Value),
-    Pair { key: Vec<u8>, value: Vec<u8> },
+    Pair {
+        key: Vec<u8>,
+        value: Vec<u8>,
+    },
     /// The end byte, and nothing after it (checked at EOF).
     End,
 }
@@ -350,11 +353,10 @@ mod tests {
             }
             let ctx = &s["ctx"];
             let c = parse_repo_meta(&meta).unwrap();
-            assert_eq!((c.space.as_str(), c.repo.as_str(), c.rev.as_str()), (
-                ctx["space"].as_str().unwrap(),
-                ctx["repo"].as_str().unwrap(),
-                ctx["rev"].as_str().unwrap()
-            ));
+            assert_eq!(
+                (c.space.as_str(), c.repo.as_str(), c.rev.as_str()),
+                (ctx["space"].as_str().unwrap(), ctx["repo"].as_str().unwrap(), ctx["rev"].as_str().unwrap())
+            );
             assert_eq!(hex::encode(c.data), s["data"].as_str().unwrap());
             // and writing the same commit and records gives the same bytes
             let mut out = Vec::new();

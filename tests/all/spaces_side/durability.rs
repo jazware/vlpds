@@ -311,7 +311,9 @@ async fn kill_around_segment_put(stage: Stage, act: Act) -> (Option<u16>, bool) 
     assert_eq!(after.len(), before.len() + if whole { 2 } else { 0 }, "{ctx}: records");
     match whole {
         true => assert!(c.rev > head.rev, "{ctx}: the batch landed but the head is still {}", head.rev),
-        false => assert_eq!((c.rev.as_str(), &c.data.to_vec()), (head.rev.as_str(), &head.hash), "{ctx}: the head moved"),
+        false => {
+            assert_eq!((c.rev.as_str(), &c.data.to_vec()), (head.rev.as_str(), &head.hash), "{ctx}: the head moved")
+        }
     }
 
     // the restarted head takes writes on from where it is

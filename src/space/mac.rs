@@ -97,8 +97,8 @@ const KEM_PREFIX: &[u8] = b"HPKE-v1KEM\x00\x10";
 
 fn shared_secret(dh: &[u8], syncer: &p256::PublicKey, author: &p256::PublicKey) -> [u8; 32] {
     let input = [KEM_PREFIX, b"eae_prk", dh].concat();
-    let info = [&32u16.to_be_bytes()[..], KEM_PREFIX, b"shared_secret", &uncompressed(syncer), &uncompressed(author)]
-        .concat();
+    let info =
+        [&32u16.to_be_bytes()[..], KEM_PREFIX, b"shared_secret", &uncompressed(syncer), &uncompressed(author)].concat();
     hkdf_sha256(&input, &info)
 }
 
@@ -282,8 +282,14 @@ mod tests {
 
         assert!(parse_want_mac(None, MacType::Repo).is_err());
         assert!(parse_want_mac(Some("???"), MacType::Repo).is_err());
-        assert!(parse_want_mac(Some("type=\"atproto-space-repo\", ver=1"), MacType::Repo).unwrap_err().0.contains("key_share"));
-        assert!(parse_mac(Some("type=\"atproto-space-repo\", ver=1, mac=\"abc\""), MacType::Repo).unwrap_err().0.contains("mac"));
+        assert!(parse_want_mac(Some("type=\"atproto-space-repo\", ver=1"), MacType::Repo)
+            .unwrap_err()
+            .0
+            .contains("key_share"));
+        assert!(parse_mac(Some("type=\"atproto-space-repo\", ver=1, mac=\"abc\""), MacType::Repo)
+            .unwrap_err()
+            .0
+            .contains("mac"));
         assert!(parse_want_mac(Some(&want), MacType::Repo).unwrap_err().0.contains("unsupported MAC type"));
         assert!(parse_want_mac(Some("type=\"atproto-space-repo\", ver=2, key_share=\"did:key:zDnaX\""), MacType::Repo)
             .unwrap_err()

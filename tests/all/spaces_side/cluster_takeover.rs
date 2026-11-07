@@ -141,7 +141,8 @@ async fn takeover_mid_burst(authority_on_victim: bool) {
             .iter()
             .all(|w| {
                 let c = &heads[&(w.did.clone(), local.as_str())];
-                rows.get(&w.did).is_some_and(|r| r["repoRev"] == json!(c.rev) && bytes_field(&r["data"]) == c.data.to_vec())
+                rows.get(&w.did)
+                    .is_some_and(|r| r["repoRev"] == json!(c.rev) && bytes_field(&r["data"]) == c.data.to_vec())
             })
             .then_some(())
     })

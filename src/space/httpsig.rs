@@ -85,7 +85,8 @@ pub fn verify(headers: &HeaderMap, credential_key: &str) -> Result<(), SigError>
     if input_header.len() > MAX_FIELD || sig_header.len() > MAX_FIELD {
         return Err(INVALID);
     }
-    let inputs = sfv::parse_dictionary(&input_header).map_err(|_| SigError("missing or malformed signature headers"))?;
+    let inputs =
+        sfv::parse_dictionary(&input_header).map_err(|_| SigError("missing or malformed signature headers"))?;
     let sigs = sfv::parse_dictionary(&sig_header).map_err(|_| SigError("missing or malformed signature headers"))?;
     let (Some(Member::InnerList(components, params)), Some(Member::Item(Bare::Bytes(sig_b64), sig_params))) =
         (sfv::get(&inputs, LABEL), sfv::get(&sigs, LABEL))
@@ -249,7 +250,11 @@ mod tests {
         let (sk, did) = key();
         for tag in ["", ";tag=\"other\"", ";tag=atproto-space-credential"] {
             let mut h = signed(&sk);
-            set(&mut h, "signature-input", format!("{LABEL}={}", INPUT.replace(";tag=\"atproto-space-credential\"", tag)));
+            set(
+                &mut h,
+                "signature-input",
+                format!("{LABEL}={}", INPUT.replace(";tag=\"atproto-space-credential\"", tag)),
+            );
             assert!(verify(&to_map(&h), &did).unwrap_err().0.contains("tag must be"), "{tag}");
         }
     }
@@ -279,7 +284,11 @@ mod tests {
         assert_eq!(verify(&to_map(&h), &did), Ok(()));
 
         let der = p256::ecdsa::Signature::from_slice(&sig).unwrap().to_der();
-        set(&mut h, "signature", format!("{LABEL}=:{}:", base64::engine::general_purpose::STANDARD.encode(der.as_bytes())));
+        set(
+            &mut h,
+            "signature",
+            format!("{LABEL}=:{}:", base64::engine::general_purpose::STANDARD.encode(der.as_bytes())),
+        );
         assert_eq!(verify(&to_map(&h), &did), Err(INVALID));
 
         // unpadded base64

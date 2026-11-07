@@ -123,7 +123,8 @@ impl StarBody {
 /// stored as is, so another encoding of it would match neither its CID nor
 /// the commit.
 fn record_blobs(path: &str, bytes: &[u8]) -> XResult<Vec<Cid>> {
-    let v = vlatproto::cbor::Value::decode(bytes).map_err(|_| invalid(format!("Could not parse record at '{path}'")))?;
+    let v =
+        vlatproto::cbor::Value::decode(bytes).map_err(|_| invalid(format!("Could not parse record at '{path}'")))?;
     let mut again = Vec::with_capacity(bytes.len());
     v.encode(&mut again);
     if again != bytes {
@@ -146,12 +147,7 @@ impl Drop for Claim<'_> {
     }
 }
 
-async fn import_repo(
-    State(app): AppState,
-    Auth(creds): Auth,
-    headers: HeaderMap,
-    body: Body,
-) -> XResult<StatusCode> {
+async fn import_repo(State(app): AppState, Auth(creds): Auth, headers: HeaderMap, body: Body) -> XResult<StatusCode> {
     let r = import(&app, &creds, &headers, body).await;
     crate::metrics::space_import(match &r {
         Ok(_) => "ok",
@@ -273,7 +269,10 @@ async fn stage(
         let cid = Cid::dag_cbor(&value);
         set.add(&commit::element(collection, rkey, &cid.to_string()));
         for blob in &blobs {
-            muts.push(put(state::space_blob_key(did, &space.sid, blob, path), Bytes::copy_from_slice(&0u64.to_be_bytes())));
+            muts.push(put(
+                state::space_blob_key(did, &space.sid, blob, path),
+                Bytes::copy_from_slice(&0u64.to_be_bytes()),
+            ));
             muts.push(put(state::space_blob_cid_key(did, blob, &space.sid, path), Bytes::new()));
         }
         muts.push(put(state::space_record_key(did, &space.sid, path), state::record_value(&cid, 0, &value)));

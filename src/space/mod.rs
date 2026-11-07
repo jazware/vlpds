@@ -29,6 +29,7 @@ pub mod attestation;
 pub mod check;
 pub mod commit;
 pub mod credcache;
+pub mod deleted;
 pub mod fanout;
 pub mod heads;
 pub mod host;
