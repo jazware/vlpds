@@ -17,14 +17,14 @@
 //!   is left to the outbox's own tests.
 
 use super::ref_net::*;
-use crate::common::spaces::SpaceClient;
+use crate::common::spaces::{commit_of, kem_key_at, resp, verify_star, xrpc_url, SpaceClient};
 use crate::common::*;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
-use vlpds::space::commit::{self, Commit};
 use vlpds::space::lthash::LtHash;
 use vlpds::space::token::space_host_aud;
+use vlpds::space::{commit, mac};
 
 const NOTIFY_WRITE: &str = "com.atproto.space.notifyWrite";
 
@@ -164,9 +164,10 @@ async fn rejects_a_malformed_cursor() {
 // incremental catch-up
 // ---------------------------------------------------------------------------
 
-/// incremental catch-up: "replays the oplog to the repo signed commit"
+/// incremental catch-up: "replays the oplog to the repo commit" (the
+/// commit's MAC verified as it's served)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn replays_the_oplog_to_the_signed_commit() {
+async fn replays_the_oplog_to_the_repo_commit() {
     let net = Net::new(0).await;
     let (alice, space, cred) = authority_space(&net).await;
     write(&alice, &space, W::new().rkey("one").text("one")).await.ok();
@@ -174,7 +175,8 @@ async fn replays_the_oplog_to_the_signed_commit() {
     put(&alice, &space, W::new().rkey("two").text("two revised")).await.ok();
     del(&alice, &space, None, "one").await.ok();
     let page = ops_page(&net, &cred, &space, &alice.did, &[("limit", "100")]).await;
-    assert!(page["commit"].is_object());
+    let c = commit_of(&page["commit"]);
+    assert_eq!((c.space.as_str(), c.repo.as_str()), (space.as_str(), alice.did.as_str()));
     assert!(commit_matches(&replay(page["ops"].as_array().unwrap()), &page["commit"]));
 }
 
@@ -231,67 +233,16 @@ async fn recovers_full_state_via_list_records() {
 // getRepo
 // ---------------------------------------------------------------------------
 
-fn cbor_bytes(v: &Value, k: &str) -> Vec<u8> {
-    match v.get(k) {
-        Some(Value::Bytes(b)) => b.clone(),
-        other => panic!("commit {k}: {other:?}"),
-    }
-}
-
-/// `verifyRepoCarFull`: the commit verifies under the author's key, the
-/// index folds to its hash; the record blocks (none with excludeValues)
-/// follow in index order. Returns (commit, index paths, record blocks).
-fn verify_repo_car(car: &[u8], space: &str, author: &str, did_key: &str) -> (Commit, Vec<String>, Vec<Value>) {
-    let (roots, blocks) = vlatproto::car::read_car(car).expect("a CAR");
-    assert_eq!(roots.len(), 2, "roots: the signed commit and the index");
-    assert!(blocks.len() >= 2 && blocks[0].0 == roots[0] && blocks[1].0 == roots[1]);
-    for (c, b) in &blocks {
-        assert!(vlatproto::car::block_matches(c, b), "block {c} doesn't hash");
-    }
-    let c = Value::decode(blocks[0].1).expect("commit block");
-    let rev = match c.get("rev") {
-        Some(Value::Text(r)) => r.clone(),
-        other => panic!("commit rev: {other:?}"),
-    };
-    let sc = Commit {
-        ver: match c.get("ver") {
-            Some(Value::Int(v)) => *v,
-            other => panic!("commit ver: {other:?}"),
-        },
-        hash: cbor_bytes(&c, "hash"),
-        ikm: cbor_bytes(&c, "ikm"),
-        sig: cbor_bytes(&c, "sig"),
-        mac: cbor_bytes(&c, "mac"),
-        rev,
-    };
-    assert!(commit::verify(&sc, &CommitCtx { space, author, rev: &sc.rev }, did_key), "commit signature");
-    let Ok(Value::Map(index)) = Value::decode(blocks[1].1) else { panic!("index isn't a map") };
-    let mut set = LtHash::default();
-    let mut order = Vec::new();
-    for (path, link) in &index {
-        let Value::Link(cid) = link else { panic!("index {path} isn't a link") };
-        let (coll, rkey) = path.split_once('/').unwrap();
-        set.add(&commit::element(coll, rkey, &cid.to_string()));
-        order.push(cid.to_string());
-    }
-    assert!(commit::matches(&set, &sc), "the index doesn't fold to the commit");
-    let records: Vec<Value> = blocks[2..].iter().map(|(_, b)| Value::decode(b).unwrap()).collect();
-    if !records.is_empty() {
-        let got: Vec<String> = blocks[2..].iter().map(|(c, _)| c.to_string()).collect();
-        assert_eq!(got, order, "record blocks in index order");
-    }
-    (sc, index.iter().map(|(p, _)| p.clone()).collect(), records)
-}
-
-/// getRepo: "serves a verifiable CAR for full-state recovery"
+/// getRepo: "serves a verifiable STAR archive for full-state recovery"
+/// (`verifyRepoStarFull`: the MAC as it's served, then the archive)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn get_repo_serves_a_verifiable_car() {
+async fn get_repo_serves_a_verifiable_star_archive() {
     let net = Net::new(2).await;
     let (alice, bob, carol) = (net.actor("alice", 0).await, net.actor("bob", 1).await, net.actor("carol", 2).await);
     let space = net.create_space(&alice, SpaceOpts { members: &[&bob, &carol], ..Default::default() }).await;
     for coll in [TEST_COLLECTION, TEST_COLLECTION_ALT] {
         for i in 0..2 {
-            write(&bob, &space, W::new().collection(coll).rkey(&format!("car-{i}")).text(&format!("car {i}")))
+            write(&bob, &space, W::new().collection(coll).rkey(&format!("star-{i}")).text(&format!("star {i}")))
                 .await
                 .ok();
         }
@@ -299,44 +250,26 @@ async fn get_repo_serves_a_verifiable_car() {
     let cred = net.credential_for(&carol, &space).await;
     let r = cred.get(&net.pds[1].url, "com.atproto.space.getRepo", &[("space", &space), ("repo", &bob.did)]).await;
     assert_eq!(r.status, 200, "{}", r.text());
-    assert!(r.header("content-type").unwrap_or_default().contains("application/vnd.ipld.car"));
-    let key = did_key(&net.pds[1], &bob.did).await;
-    let (sc, paths, records) = verify_repo_car(&r.body, &space, &bob.did, &key);
-    assert_eq!((paths.len(), records.len()), (4, 4));
+    assert!(r.header("content-type").unwrap_or_default().contains("application/octet-stream"));
+    assert!(r.headers.contains_key(vlpds::space::mac::MAC_HEADER), "a MAC");
+    let got = verify_star(&r.body, &space, &bob.did);
+    assert_eq!(got.records.len(), 4);
     let (rev, hash) = repo_state(&bob, &space).await.unwrap();
-    assert_eq!((sc.rev, sc.data.to_vec()), (rev, hash));
-    let mut texts: Vec<String> = paths
+    assert_eq!((got.commit.rev, got.commit.data.to_vec()), (rev, hash));
+    let mut texts: Vec<String> = got
+        .records
         .iter()
-        .zip(&records)
-        .filter(|(p, _)| p.starts_with(&format!("{TEST_COLLECTION}/")))
-        .map(|(_, v)| match v.get("text") {
+        .filter(|(p, _, _)| p.starts_with(&format!("{TEST_COLLECTION}/")))
+        .map(|(_, _, b)| match Value::decode(b).unwrap().get("text") {
             Some(Value::Text(t)) => t.clone(),
             other => panic!("text: {other:?}"),
         })
         .collect();
     texts.sort();
-    assert_eq!(texts, ["car 0", "car 1"]);
+    assert_eq!(texts, ["star 0", "star 1"]);
 }
 
-/// getRepo: "serves an index-only CAR with excludeValues"
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn get_repo_serves_an_index_only_car_with_exclude_values() {
-    let net = Net::new(2).await;
-    let (alice, bob, carol) = (net.actor("alice", 0).await, net.actor("bob", 1).await, net.actor("carol", 2).await);
-    let space = net.create_space(&alice, SpaceOpts { members: &[&bob, &carol], ..Default::default() }).await;
-    for i in 0..2 {
-        write(&bob, &space, W::new().rkey(&format!("idx-{i}")).text(&format!("idx {i}"))).await.ok();
-    }
-    let cred = net.credential_for(&carol, &space).await;
-    let q = [("space", space.as_str()), ("repo", bob.did.as_str()), ("excludeValues", "true")];
-    let r = cred.get(&net.pds[1].url, "com.atproto.space.getRepo", &q).await;
-    assert_eq!(r.status, 200, "{}", r.text());
-    let key = did_key(&net.pds[1], &bob.did).await;
-    let (_, paths, records) = verify_repo_car(&r.body, &space, &bob.did, &key);
-    assert_eq!((paths.len(), records.len()), (2, 0));
-}
-
-/// getRepo: "refuses a CAR without a credential for that space"
+/// getRepo: "refuses a repo without a credential for that space"
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn get_repo_refuses_a_credential_for_another_space() {
     let net = Net::new(2).await;
@@ -362,6 +295,169 @@ async fn reports_repo_not_found_for_an_unwritten_repo() {
     cred.get(&net.pds[0].url, "com.atproto.space.getLatestCommit", &[("space", &space), ("repo", &alice.did)])
         .await
         .err(400, "RepoNotFound");
+}
+
+// ---------------------------------------------------------------------------
+// MACs
+// ---------------------------------------------------------------------------
+
+/// A GET on `sc`'s own OAuth grant with extra headers.
+async fn oauth_get_with(sc: &SpaceClient, nsid: &str, query: &[(&str, &str)], extra: &[(String, String)]) -> Resp {
+    let url = xrpc_url(&sc.srv.base, nsid, query);
+    for attempt in 0..2 {
+        let mut rb = sc
+            .srv
+            .http
+            .get(&url)
+            .header("dpop", sc.key.proof("GET", &url, Some(&sc.access)))
+            .header("authorization", format!("DPoP {}", sc.access));
+        for (k, v) in extra {
+            rb = rb.header(k, v);
+        }
+        let r = resp(rb.send().await.unwrap()).await;
+        sc.key.update_nonce(&r.headers);
+        if attempt == 0 && r.json["error"] == "use_dpop_nonce" {
+            continue;
+        }
+        return r;
+    }
+    unreachable!()
+}
+
+fn want_mac(ty: mac::MacType, share: &str) -> (String, String) {
+    (mac::WANT_MAC_HEADER.to_string(), mac::format_want_mac(ty, share))
+}
+
+/// MACs: "publishes a KEM key for each account": the key the account's
+/// host holds is the one its DID document names and the one
+/// getRecommendedDidCredentials recommends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn publishes_a_kem_key_for_each_account() {
+    let net = Net::new(0).await;
+    let bob = net.actor("bob", 0).await;
+    let s = &net.pds[0];
+    let held = s.app.account(&bob.did).await.ok().unwrap().kem_pubkey.expect("a KEM key");
+    let held = format!("did:key:{}", held.trim_start_matches("did:key:"));
+    assert_eq!(kem_key_at(&bob.srv.http, &s.url, &bob.did).await, Some(held.clone()), "the DID document's");
+    let rec = s
+        .xrpc
+        .get("com.atproto.identity.getRecommendedDidCredentials", &[], &Auth::Bearer(bob.session_jwt.clone()))
+        .await
+        .ok();
+    assert_eq!(rec["verificationMethods"]["atproto_kem"], json!(held));
+    assert_ne!(rec["verificationMethods"]["atproto_kem"], rec["verificationMethods"]["atproto"], "its own key");
+}
+
+/// MACs: "macs a record served to a syncer", and the MAC is bound to that
+/// one record's URI.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn macs_a_record_served_to_a_syncer() {
+    let net = Net::new(1).await;
+    let (alice, bob, carol) = (net.actor("alice", 0).await, net.actor("bob", 1).await, net.actor("carol", 0).await);
+    let space = net.create_space(&alice, SpaceOpts { members: &[&bob, &carol], ..Default::default() }).await;
+    write(&bob, &space, W::new().rkey("maced")).await.ok();
+    let cred = net.credential_for(&carol, &space).await;
+    let host = &net.pds[1].url;
+    let kem = kem_key_at(&cred.http, host, &bob.did).await.expect("bob's KEM key");
+    let (share, secret) = mac::encapsulate(&kem).unwrap();
+    let mut headers = cred.headers(&bob.did);
+    headers.push(want_mac(mac::MacType::Record, &share));
+    let q = [("space", space.as_str()), ("repo", bob.did.as_str()), ("collection", TEST_COLLECTION), ("rkey", "maced")];
+    let r = raw_get(host, "com.atproto.space.getRecord", &q, &headers).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let header = r.headers.get(mac::MAC_HEADER).and_then(|v| v.to_str().ok());
+    assert!(header.unwrap().starts_with("type=\"atproto-space-record\""), "{header:?}");
+    let m = mac::parse_mac(header, mac::MacType::Record).unwrap();
+    let uri = format!("{space}/{}/{TEST_COLLECTION}/maced", bob.did);
+    assert_eq!(r.json["uri"], json!(uri));
+    let cid = vlatproto::cid::Cid::parse(r.json["cid"].as_str().unwrap()).unwrap().to_bytes();
+    assert!(commit::verify_record(&secret, &uri, &cid, &m));
+    assert!(!commit::verify_record(&secret, &format!("{uri}x"), &cid, &m), "bound to this one record");
+    // and the record's encoding is the CID's
+    let bytes = Value::from_json(&r.json["value"]).unwrap().to_cbor();
+    assert_eq!(vlatproto::cid::Cid::dag_cbor(&bytes).to_bytes(), cid);
+}
+
+/// MACs: "omits the MAC from an oplog page without a commit" (the page was
+/// still asked for one, as every page must be).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn omits_the_mac_from_an_oplog_page_without_a_commit() {
+    let net = Net::new(0).await;
+    let (alice, bob) = (net.actor("alice", 0).await, net.actor("bob", 0).await);
+    let space = net.create_space(&alice, SpaceOpts { members: &[&bob], ..Default::default() }).await;
+    write(&bob, &space, W::new().rkey("page-0")).await.ok();
+    write(&bob, &space, W::new().rkey("page-1")).await.ok();
+    let cred = net.credential_for(&bob, &space).await;
+    let host = &net.pds[0].url;
+    let q = [("space", space.as_str()), ("repo", bob.did.as_str()), ("limit", "1")];
+    let page = cred.get(host, "com.atproto.space.listRepoOps", &q).await;
+    assert!(page.ok().get("commit").is_none(), "{}", page.text());
+    assert!(page.headers.get(mac::MAC_HEADER).is_none());
+    // the page without a commit still needed the request header
+    let r = raw_get(host, "com.atproto.space.listRepoOps", &q, &cred.headers(&bob.did)).await;
+    r.err(400, "BadSpaceMac");
+}
+
+/// MACs: "requires a MAC request with a space credential": none, a record
+/// MAC asked of a method that returns a commit, and a key share that isn't
+/// a key are each 400 BadSpaceMac.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn requires_a_mac_request_with_a_space_credential() {
+    let net = Net::new(0).await;
+    let (alice, bob) = (net.actor("alice", 0).await, net.actor("bob", 0).await);
+    let space = net.create_space(&alice, SpaceOpts { members: &[&bob], ..Default::default() }).await;
+    write(&bob, &space, W::new()).await.ok();
+    let cred = net.credential_for(&bob, &space).await;
+    let host = &net.pds[0].url;
+    let q = [("space", space.as_str()), ("repo", bob.did.as_str())];
+    let signed = cred.headers(&bob.did);
+    raw_get(host, "com.atproto.space.getLatestCommit", &q, &signed).await.err(400, "BadSpaceMac");
+    let kem = kem_key_at(&cred.http, host, &bob.did).await.unwrap();
+    let (share, _) = mac::encapsulate(&kem).unwrap();
+    for (what, header) in [
+        ("a record MAC type", want_mac(mac::MacType::Record, &share)),
+        ("a key share that isn't a key", want_mac(mac::MacType::Repo, "did:key:nope")),
+    ] {
+        let mut h = signed.clone();
+        h.push(header);
+        let r = raw_get(host, "com.atproto.space.getLatestCommit", &q, &h).await;
+        assert_eq!((r.status, r.error_name()), (400, Some("BadSpaceMac")), "{what}: {}", r.text());
+    }
+    // with the right one, it verifies
+    cred.get(host, "com.atproto.space.getLatestCommit", &q).await.ok();
+}
+
+/// MACs: "macs an account its own data only when asked": OAuth reads of
+/// its own repo carry no MAC (but `Vary`) unless the header asks, then one
+/// that verifies and that a browser may read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn macs_an_account_its_own_data_only_when_asked() {
+    let net = Net::new(0).await;
+    let (alice, bob) = (net.actor("alice", 0).await, net.actor("bob", 0).await);
+    let space = net.create_space(&alice, SpaceOpts { members: &[&bob], ..Default::default() }).await;
+    write(&bob, &space, W::new()).await.ok();
+    let q = [("space", space.as_str()), ("repo", bob.did.as_str())];
+    let unasked = oauth_get_with(&bob, "com.atproto.space.getLatestCommit", &q, &[]).await;
+    assert_eq!(unasked.status, 200, "{}", unasked.text());
+    assert!(unasked.headers.get(mac::MAC_HEADER).is_none());
+    let vary = |r: &Resp| r.headers.get_all("vary").iter().any(|v| v.to_str().unwrap().contains(mac::WANT_MAC_HEADER));
+    assert!(vary(&unasked), "Vary names the MAC request header");
+
+    let kem = kem_key_at(&bob.srv.http, &net.pds[0].url, &bob.did).await.unwrap();
+    let (share, secret) = mac::encapsulate(&kem).unwrap();
+    let asked =
+        oauth_get_with(&bob, "com.atproto.space.getLatestCommit", &q, &[want_mac(mac::MacType::Repo, &share)]).await;
+    assert_eq!(asked.status, 200, "{}", asked.text());
+    let expose = asked
+        .headers
+        .get_all("access-control-expose-headers")
+        .iter()
+        .map(|v| v.to_str().unwrap().to_lowercase())
+        .collect::<Vec<_>>();
+    assert!(expose.iter().any(|v| v.contains(mac::MAC_HEADER)), "{expose:?}");
+    let m =
+        mac::parse_mac(asked.headers.get(mac::MAC_HEADER).and_then(|v| v.to_str().ok()), mac::MacType::Repo).unwrap();
+    assert!(commit::verify(&commit_of(&asked.json["commit"]), &space, &bob.did, &secret, &m));
 }
 
 // ---------------------------------------------------------------------------
@@ -577,25 +673,33 @@ async fn chains_forwarded_notifications() {
     assert_eq!(repos.iter().map(|r| r["spaceRev"].as_str().unwrap()).collect::<BTreeSet<_>>().len(), 3);
 }
 
-/// space catch-up: "resolves a dedicated space host and falls back only when
-/// it is absent". Observed at the hosts: a notify goes to
-/// `#atproto_space_host` when the authority names one, to `#atproto_pds`
-/// when it doesn't, and nowhere when the space host entry is unusable.
+/// space catch-up: "resolves a space host through the authority's
+/// #atproto_pds entry". Observed at the hosts: a notify goes to the
+/// authority's `#atproto_pds` with that as its audience, and an authority
+/// naming only the retired `#atproto_space_host` hears nothing. (The
+/// reference's other half, resolving a syncer's own service entry, is its
+/// resolver's unit and has no wire effect here.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn notify_resolves_the_space_host_and_falls_back_to_the_pds() {
+async fn notify_resolves_the_space_host_through_atproto_pds() {
     let net = Net::new(0).await;
     let writer = net.actor("writer", 0).await;
-    let dedicated = MockService::spawn(&[("atproto_space_host", "AtprotoSpaceHost")]).await;
-    let pds_only = MockService::spawn(&[("atproto_pds", "AtprotoPersonalDataServer")]).await;
-    for host in [&dedicated, &pds_only] {
-        let space = format!("at://{}/space/{TEST_SPACE_TYPE}/resolve", host.did);
-        write(&writer, &space, W::new()).await.ok();
-        let (rev, _) = repo_state(&writer, &space).await.unwrap();
-        let got = host.await_calls(NOTIFY_WRITE, 1, Duration::from_secs(10)).await.expect("notified");
-        assert_eq!(got[0].body["repoRev"], json!(rev));
-        let claims = jwt_claims(got[0].auth.as_deref().unwrap().trim_start_matches("Bearer "));
-        assert_eq!(claims["aud"], json!(space_host_aud(&host.did)));
-    }
+    let pds = MockService::spawn(&[("atproto_pds", "AtprotoPersonalDataServer")]).await;
+    let retired = MockService::spawn(&[("atproto_space_host", "AtprotoSpaceHost")]).await;
+    let space = format!("at://{}/space/{TEST_SPACE_TYPE}/resolve", pds.did);
+    write(&writer, &space, W::new()).await.ok();
+    let (rev, _) = repo_state(&writer, &space).await.unwrap();
+    let got = pds.await_calls(NOTIFY_WRITE, 1, Duration::from_secs(10)).await.expect("notified");
+    assert_eq!(got[0].body["repoRev"], json!(rev));
+    let claims = jwt_claims(got[0].auth.as_deref().unwrap().trim_start_matches("Bearer "));
+    assert_eq!(claims["aud"], json!(format!("{}#atproto_pds", pds.did)));
+    assert_eq!(space_host_aud(&pds.did), format!("{}#atproto_pds", pds.did));
+
+    let space = format!("at://{}/space/{TEST_SPACE_TYPE}/resolve", retired.did);
+    write(&writer, &space, W::new()).await.ok();
+    assert!(
+        retired.await_calls(NOTIFY_WRITE, 1, Duration::from_secs(2)).await.is_none(),
+        "#atproto_space_host is used"
+    );
 }
 
 /// space catch-up: "retries the latest state after delivery failure and
@@ -641,7 +745,7 @@ async fn notify(net: &Net, signer: &SpaceClient, aud: Option<&str>, body: J) -> 
 }
 
 fn notify_body(space: &str, repo: &str, rev: &str, hash: &[u8]) -> J {
-    json!({"space": space, "repo": repo, "repoRev": rev, "hash": json_bytes(hash)})
+    json!({"space": space, "repo": repo, "repoRev": rev, "data": json_bytes(hash)})
 }
 
 /// notifyWrite: "ignores duplicate and older revisions without forwarding

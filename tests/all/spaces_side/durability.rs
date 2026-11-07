@@ -312,7 +312,11 @@ async fn kill_around_segment_put(stage: Stage, act: Act) -> (Option<u16>, bool) 
     match whole {
         true => assert!(c.rev > head.rev, "{ctx}: the batch landed but the head is still {}", head.rev),
         false => {
-            assert_eq!((c.rev.as_str(), &c.data.to_vec()), (head.rev.as_str(), &head.hash), "{ctx}: the head moved")
+            assert_eq!(
+                (c.rev.as_str(), &c.data.to_vec()),
+                (head.rev.as_str(), &head.data.to_vec()),
+                "{ctx}: the head moved"
+            )
         }
     }
 
@@ -416,9 +420,9 @@ async fn outbox_survives_a_kill(resume: Resume) {
     assert_eq!(n.body["space"], json!(space));
     assert_eq!(n.body["repo"], json!(sc.did));
     assert_eq!(n.body["repoRev"], json!(head.rev), "{resume:?}: not the newest rev");
-    assert_eq!(bytes_field(&n.body["data"]), head.hash, "{resume:?}: not the newest hash");
+    assert_eq!(bytes_field(&n.body["data"]), head.data.to_vec(), "{resume:?}: not the newest hash");
     assert_eq!(n.claims["iss"], json!(sc.did));
-    assert_eq!(n.claims["aud"], json!(format!("{}#atproto_space_host", authority.did)));
+    assert_eq!(n.claims["aud"], json!(format!("{}#atproto_pds", authority.did)));
     assert_eq!(n.claims["lxm"], json!(NOTIFY));
 
     // the new incarnation's outbox carries on, and the old row stays delivered
@@ -638,8 +642,8 @@ async fn takeover_mid_burst_with_the_authority_on_the_victim() {
 
 /// A remote writer's notifyWrite to a vlpds authority, as its PDS sends it.
 async fn notify(n: &OneNode, writer: &StubDid, rev: &str, hash: &[u8]) -> Resp {
-    let jwt = writer.service_jwt(&format!("{}#atproto_space_host", n.sc.did), NOTIFY);
-    let body = json!({"space": n.space, "repo": writer.did, "repoRev": rev, "hash": b64(hash)});
+    let jwt = writer.service_jwt(&format!("{}#atproto_pds", n.sc.did), NOTIFY);
+    let body = json!({"space": n.space, "repo": writer.did, "repoRev": rev, "data": b64(hash)});
     let r = n.sc.srv.http.post(format!("{}/xrpc/{NOTIFY}", n.front.url)).bearer_auth(jwt).json(&body).send().await;
     crate::common::spaces::resp(r.unwrap()).await
 }
@@ -766,7 +770,7 @@ async fn the_stub_did_resolves_and_records_notifies() {
     let http = reqwest::Client::new();
     for refuse in [true, false] {
         stub.refuse(refuse);
-        let jwt = stub.service_jwt(&format!("{}#atproto_space_host", stub.did), NOTIFY);
+        let jwt = stub.service_jwt(&format!("{}#atproto_pds", stub.did), NOTIFY);
         let r = http.post(format!("{host}/xrpc/{NOTIFY}")).bearer_auth(jwt).json(&json!({"repoRev": "x"})).send();
         assert_eq!(r.await.unwrap().status().as_u16(), if refuse { 503 } else { 200 });
     }

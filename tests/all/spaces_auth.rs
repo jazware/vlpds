@@ -86,7 +86,7 @@ impl Stub {
                 "controller": did,
                 "publicKeyMultibase": key.public_multibase(),
             }],
-            "service": [{"id": "#atproto_space_host", "type": "AtprotoSpaceHost", "serviceEndpoint": base}],
+            "service": [{"id": "#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": base}],
         });
         let notifies: Arc<Mutex<Vec<J>>> = Default::default();
         let status = Arc::new(Mutex::new(200u16));
@@ -407,7 +407,7 @@ async fn record_takedown_hides_the_record() {
                 assert_eq!(rkeys, ["shown", "hidden"]);
                 assert_eq!(op.unwrap()["value"]["text"], json!("x"));
             }
-            ops["commit"]["hash"].clone()
+            ops["commit"]["data"].clone()
         }
     };
     let before = check(false).await;

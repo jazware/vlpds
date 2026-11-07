@@ -890,7 +890,7 @@ Divergences, also in DESIGN.md's Spaces section:
   newest rev), and the cases about its retry table, backoff timing and deadline are left to the outbox's own tests.
 - **Record takedowns are pushed.** A space record takedown or its reversal changes the hash the author's repo serves at the
   same rev, and its host notifies the authority with it. So the authority sequences the same repoRev with another hash again
-  and forwards it, once the writer's PDS serves a signed commit with that hash at that rev (at most 3 per writer and space in
+  and forwards it, once the writer's PDS serves a commit with that hash at that rev (at most 3 per writer and space in
   10 min). The same repoRev with the same hash is a no-op, as in the reference, which ignores every repoRev at or below the
   last.
 - **300 s single-use token cap.** Delegation tokens and client attestations live at most 300 s. The reference takes any lifetime.
@@ -905,13 +905,19 @@ Divergences, also in DESIGN.md's Spaces section:
 - **Account takedowns revoke OAuth sessions for good.** As for every vlpds account, a takedown revokes the account's OAuth
   sessions and a reversal doesn't bring them back, so an app signs in again. The reference's sessions work again.
 - **Takedowns reach space data.** A taken-down account mints no delegation token, and getSpaceCredential refuses a taken-down
-  member (`AccountTakedown`) or authority (`RepoTakendown`). Record takedowns (a takedown-adjusted, consistently signed view)
+  member (`AccountTakedown`) or authority (`RepoTakendown`). Record takedowns (a takedown-adjusted, consistently MACed view)
   and space takedowns are vlpds extensions. The reference has neither, so its suites have no cases for them. They're tested in
   `spaces_admin`, `spaces_sync::record_takedown_serves_a_consistent_view` and `spaces_blobs`.
-- **vlpds-only methods.** `vlpds.space.importRepo` and the audited operator reads (`vlpds.admin.getSpaceRepo`,
-  `listSpaceRecords`, `getSpaceRecord`, `checkSpace`) have no upstream counterpart (`spaces_admin`). importRepo is
-  OAuth-only like every space method, and takes a CAR signed by any `#atproto` key the DID's PLC history says it held at
-  the commit's rev (`spaces_side::import_repo`).
+- **vlpds-only methods.** The audited operator reads (`vlpds.admin.getSpaceRepo`, `listSpaceRecords`, `getSpaceRecord`,
+  `checkSpace`) have no upstream counterpart (`spaces_admin`).
+- **importRepo.** `com.atproto.space.importRepo` takes the getRepo STAR archive as the reference does (no MAC, the commit
+  naming the account, the records folding to its `data`, `create` granted per collection). It's OAuth-only like every space
+  method, the new rev follows the archive's as well as the one held, an archive whose rev is past the FutureRev window is
+  refused, and the authority's own repo needs its live space. The records stream in as the body arrives, so an import over
+  a repo that fails part way has already taken the old head away: the repo serves nothing until a retry succeeds, where the
+  reference's import is one transaction (`spaces_side::import_repo`). These cases are vlpds's own, not a reference suite's.
+- **1,000,000-byte space records.** A space record's encoding is capped at 1,000,000 bytes, as a public repo record's is.
+  The reference caps it at 1 MiB, its STAR value limit, which an import still allows.
 
 The notification retry rows and the registration expiry row run through test hooks: `Outbox::set_retry_base` shortens the
 1 min retry pause, and `xrpc::space::set_registration_expiry` expires a registration through the authority's worker (the
@@ -920,14 +926,15 @@ minutes-to-hours timing or a mocked clock stay N/A and are covered by the outbox
 
 | | Cases |
 |---|---:|
-| ported | 196 |
-| ported + divergent | 6 |
+| ported | 197 |
+| ported + divergent | 7 |
 | divergent | 1 |
 | N/A | 8 |
-| **total** | **211** |
+| **total** | **213** |
 
-Counted per `it()` case, with each `it.each` row counted once per value. Two more rows (marked "(vlpds)") are vlpds-only
-tests of the 300 s cap and aren't counted.
+Counted per `it()` case, with each `it.each` row counted once per value. Three more rows (marked "(vlpds)") are vlpds-only
+tests (the 300 s cap, the old credential scheme) and aren't counted. The sync, records and auth rows follow the reference at
+98ef3a6b (the October 22 wire: MACs, STAR, credentials in the request body).
 
 ### space/records.test.ts
 
@@ -950,6 +957,7 @@ tests of the 300 s cap and aren't counted.
 | rejects a record whose $type disagrees with its collection | ported | `..::rejects_a_record_whose_type_disagrees_with_its_collection` (C1) |
 | reports unknown for a collection with no resolvable schema | ported | `..::reports_unknown_for_a_collection_with_no_resolvable_schema` (C1) |
 | refuses an unvalidatable record when validation is demanded | ported | `..::refuses_an_unvalidatable_record_when_validation_is_demanded` (C1) |
+| refuses a record over the size limit | ported + divergent | `..::refuses_a_record_over_the_size_limit`: vlpds caps the encoding at 1,000,000 bytes (1 MiB in the reference). As in the reference the request body limit comes first (413), so the port writes one just under the cap and one at it, where the reference calls `prepareCreate` |
 | listRecords paginates across collections | ported | `..::list_records_paginates_across_collections` (C2) |
 | listRecords filters to one collection | ported | `..::list_records_filters_to_one_collection` (C2) |
 | listRecords reverses the listing order | ported | `..::list_records_reverses_the_listing_order` (C2) |
@@ -975,8 +983,9 @@ tests of the 300 s cap and aren't counted.
 | reads another member repo across PDSes | ported | `..::reads_another_member_repo_across_pdses` (C3) |
 | refuses a credential presented as a bearer token | ported | `..::refuses_a_credential_presented_as_a_bearer_token` (C3) |
 | refuses a credential without a signature | ported | `..::refuses_a_credential_without_a_signature` (C1, the authority's own credential) |
-| responds 401 to repeated authorization fields | ported | `..::responds_to_repeated_signature_fields` (C1) |
-| responds 401 to repeated atproto-space-audience fields | ported | same |
+| recognizes the credential scheme regardless of case | ported | `..::recognizes_the_credential_scheme_regardless_of_case`, plus a signature over another casing than the one sent refused (the base is byte-exact) |
+| (vlpds) refuses the old `Atproto-Space` scheme | ported | `..::refuses_the_old_credential_scheme`: 400 InvalidToken "Unsupported authorization type", the migration note's section 2 (no reference case) |
+| responds 401 to repeated atproto-space-audience fields | ported | `..::responds_to_repeated_signature_fields` (C1, over listRecords as the reference now reads; a repeated authorization, no longer a reference row, is still refused) |
 | responds 200 to repeated signature-input fields | ported | same |
 | responds 200 to repeated signature fields | ported | same |
 | refuses a credential presented with a key of the holder own | ported | `..::refuses_a_credential_presented_with_another_key` (C3) |
@@ -987,7 +996,6 @@ tests of the 300 s cap and aren't counted.
 | reuses one credential across many hosts, each with its own audience signature | ported | `..::reuses_one_credential_across_many_hosts` (C3) |
 | is scoped to one space | ported | `..::credential_is_scoped_to_one_space` (C3) |
 | refuses one the space authority did not issue | ported | `..::refuses_a_credential_the_authority_did_not_issue` (C3). The forger is a did:web, not a member's account key |
-| refuses one whose kid names a key the authority does not publish | ported | `..::refuses_a_credential_whose_kid_the_authority_does_not_publish` (C2). The authority is a did:web publishing `#atproto` only |
 | refuses one for a revoked member | ported | `..::refuses_a_credential_for_a_removed_member` (C3) |
 | revokes a batch idempotently on a remote repo host | ported | `..::revokes_a_batch_idempotently_on_a_remote_repo_host` (C3). The row count is the refusals |
 | requires service auth from the authority addressed to a local repo and method | ported | `..::revocation_requires_service_auth_from_the_authority` (C3) |
@@ -995,10 +1003,8 @@ tests of the 300 s cap and aren't counted.
 | persists revocations for an hour including clock skew, and prunes expired entries | N/A | mocks `Date.now` over the account DB. vlpds keeps `until = now + 3610 s` in `spaces/revocations` (core unit tests) |
 | keeps the revocation when background cleanup fails | N/A | the reference's background queue. vlpds prunes in the CAS write |
 | delegation tokens are useless at a host that does not govern the space | ported | `..::delegation_tokens_are_useless_at_a_host_that_does_not_govern_the_space` (C3) |
-| requires proof of possession when exchanging a delegation token | ported | `..::exchange_requires_proof_of_possession` (C1) |
-| binds the credential to the key that signed the exchange | ported | `..::binds_the_credential_to_the_exchange_key` (C3) |
-| binds the exchange signature to the delegation token | ported | `..::binds_the_exchange_signature_to_the_delegation_token` (C1) |
-| refuses a replayed credential exchange | ported | `..::refuses_a_replayed_credential_exchange` (C3) |
+| binds the credential to the requested key | ported | `..::binds_the_credential_to_the_requested_key` (`credentialKid` in the body) |
+| refuses to bind the credential to a key that is not P-256 | ported | `..::refuses_to_bind_the_credential_to_a_key_that_is_not_p256` |
 | are refused when the audience names another authority | ported | `..::delegation_tokens_are_refused_when_the_audience_names_another_authority` (C1). The user is a did:web |
 | are single-use — a replayed jti is refused | ported | `..::delegation_tokens_are_single_use` (C3) |
 | are refused for a space other than their subject | ported | `..::delegation_tokens_are_refused_for_a_space_other_than_their_subject` (C1) |
@@ -1109,14 +1115,18 @@ The oplog cases have the authority write and read with its own credential (a co-
 | inlines only a record current value | ported | `..::inlines_only_a_record_current_value` (C1) |
 | omits values entirely with excludeValues | ported | `..::omits_values_with_exclude_values` (C1) |
 | rejects a malformed cursor | ported | `..::rejects_a_malformed_cursor` (C1) |
-| replays the oplog to the repo signed commit | ported | `..::replays_the_oplog_to_the_signed_commit` (C1) |
+| replays the oplog to the repo commit | ported | `..::replays_the_oplog_to_the_repo_commit` (C1, the commit's MAC verified as it's served) |
 | detects divergence when an op is missed | ported | `..::detects_divergence_when_an_op_is_missed` (C1) |
 | (todo) prunes the oplog on its own, past a retention window | divergent | `it.todo` upstream. vlpds prunes past 7 days (C4, oplog retention) |
 | recovers from a pruned oplog via listRecords | ported + divergent | `..::recovers_full_state_via_list_records` (C3): the recovery half. Nothing over XRPC prunes early, so the forced-prune mismatch isn't ported (oplog retention) |
-| serves a verifiable CAR for full-state recovery | ported | `..::get_repo_serves_a_verifiable_car` (C4) |
-| serves an index-only CAR with excludeValues | ported | `..::get_repo_serves_an_index_only_car_with_exclude_values` (C4) |
-| refuses a CAR without a credential for that space | ported | `..::get_repo_refuses_a_credential_for_another_space` (C3) |
+| serves a verifiable STAR archive for full-state recovery | ported | `..::get_repo_serves_a_verifiable_star_archive` (the MAC, then `verifyRepoStarFull`'s archive checks) |
+| refuses a repo without a credential for that space | ported | `..::get_repo_refuses_a_credential_for_another_space` (C3) |
 | reports RepoNotFound for an unwritten repo | ported | `..::reports_repo_not_found_for_an_unwritten_repo` (C3) |
+| MACs: publishes a KEM key for each account | ported | `..::publishes_a_kem_key_for_each_account` (the held key, the DID document's `#atproto_kem` and getRecommendedDidCredentials agree) |
+| MACs: macs a record served to a syncer | ported | `..::macs_a_record_served_to_a_syncer` |
+| MACs: omits the MAC from an oplog page without a commit | ported | `..::omits_the_mac_from_an_oplog_page_without_a_commit`, and that page still needs the request header |
+| MACs: requires a MAC request with a space credential | ported | `..::requires_a_mac_request_with_a_space_credential` |
+| MACs: macs an account its own data only when asked | ported | `..::macs_an_account_its_own_data_only_when_asked` (Vary, Access-Control-Expose-Headers) |
 | records a co-located writer without resolving its public PDS endpoint | ported | `..::records_a_co_located_writer_without_resolving_it` (C3). The PLC directory is down during the write instead of a mocked resolver |
 | records a writer from notifyWrite, and it is not the member list | ported | `..::records_a_writer_from_notify_write` (C3) |
 | records a writer admitted by public write policy, who was never a member | ported | `..::records_a_public_policy_writer_who_was_never_a_member` (C3) |
@@ -1126,7 +1136,7 @@ The oplog cases have the authority write and read with its own credential (a co-
 | resumes after an empty page using the last processed repo revision | ported | `..::resumes_after_an_empty_page` (C3) |
 | accepts arbitrary string listRepos cursors | ported | `..::accepts_arbitrary_string_list_repos_cursors` (C3) |
 | chains forwarded notifications across local and remote writers | ported | `..::chains_forwarded_notifications` (C4). vlpds also sends them in spaceRev order per registration |
-| resolves a dedicated space host and falls back only when it is absent | ported | `..::notify_resolves_the_space_host_and_falls_back_to_the_pds` (C1), observed at the hosts instead of calling the resolver |
+| resolves a space host through the authority's #atproto_pds entry | ported | `..::notify_resolves_the_space_host_through_atproto_pds`, observed at the hosts instead of calling the resolver: the notify's audience is `#atproto_pds`, and an authority naming only `#atproto_space_host` hears nothing. The syncer-entry half is the resolver's unit, with no wire effect |
 | retries the latest state after delivery failure and worker restart | ported | `..::retries_the_latest_state_after_failure_and_restart` (C1): the outbox row is resent at the newest rev after a restart |
 | ignores duplicate and older revisions without forwarding them | ported (partly divergent) | `..::notify_write_ignores_duplicate_and_older_revisions` (C3). Divergent: a duplicate is the same repoRev with the same hash. The same repoRev with another hash is sequenced and forwarded again, since a record takedown or its reversal changes the hash a vlpds repo serves at the same rev (`spaces_side::takedowns`). The reference ignores any repoRev at or below the last |
 | keeps the newest repo revision when notifications race | ported | `..::notify_write_keeps_the_newest_revision_when_racing` (C3) |

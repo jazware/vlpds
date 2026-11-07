@@ -42,7 +42,7 @@
 //! `SPACES_BENCH_M=0 SPACES_BENCH_SYNCERS=0`.
 
 use super::cluster::Plc;
-use crate::common::spaces::{xrpc_url, Holder, SpaceClient};
+use crate::common::spaces::{kem_key_at, mac_type, xrpc_url, Holder, SpaceClient};
 use crate::common::*;
 use parking_lot::Mutex;
 use std::collections::{BTreeMap, HashMap};
@@ -283,6 +283,10 @@ struct Reader {
     http: reqwest::Client,
     base: String,
     headers: reqwest::header::HeaderMap,
+    /// The repo's `#atproto_kem` key, resolved on the first read that needs
+    /// a MAC (each such read sends a fresh key share).
+    repo: String,
+    kem: tokio::sync::OnceCell<Option<String>>,
 }
 
 impl Reader {
@@ -294,12 +298,25 @@ impl Reader {
                 reqwest::header::HeaderValue::from_str(&v).unwrap(),
             );
         }
-        Reader { http: http.clone(), base: base.to_string(), headers }
+        Reader {
+            http: http.clone(),
+            base: base.to_string(),
+            headers,
+            repo: audience.to_string(),
+            kem: tokio::sync::OnceCell::new(),
+        }
     }
 
     async fn get(&self, nsid: &str, query: &[(&str, &str)]) -> (u16, J, Duration) {
+        let mut headers = self.headers.clone();
+        if let Some(ty) = mac_type(nsid) {
+            let kem = self.kem.get_or_init(|| kem_key_at(&self.http, &self.base, &self.repo)).await;
+            let (share, _) = vlpds::space::mac::encapsulate(kem.as_deref().expect("a KEM key")).unwrap();
+            let v = vlpds::space::mac::format_want_mac(ty, &share);
+            headers.insert(vlpds::space::mac::WANT_MAC_HEADER, reqwest::header::HeaderValue::from_str(&v).unwrap());
+        }
         let t = Instant::now();
-        let r = self.http.get(xrpc_url(&self.base, nsid, query)).headers(self.headers.clone()).send().await.unwrap();
+        let r = self.http.get(xrpc_url(&self.base, nsid, query)).headers(headers).send().await.unwrap();
         let status = r.status().as_u16();
         let body = r.bytes().await.unwrap_or_default();
         (status, serde_json::from_slice(&body).unwrap_or(J::Null), t.elapsed())
@@ -447,7 +464,7 @@ async fn bench_noop(s: &TestServer, fx: &Fixture, cfg: &Cfg, out: &mut Report) {
         let (st, j, _) = rd.list_repo_ops(&fx.space, &repo, Some(&head), 100).await;
         assert_eq!(st, 200, "{j}");
         assert_eq!(j["ops"].as_array().map(Vec::len), Some(0), "at the head: {j}");
-        assert!(j["commit"]["sig"].is_string() || j["commit"]["sig"].is_object(), "a signed commit: {j}");
+        assert!(j["commit"]["data"].is_object(), "a commit: {j}");
         http.get(&health).send().await.unwrap();
     }
     let n = cfg.noop_reqs;

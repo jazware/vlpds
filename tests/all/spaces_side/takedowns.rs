@@ -4,7 +4,7 @@
 //! - a record takedown hides the record from getRecord, listRecords and
 //!   listRepoOps values; its blobs (when no live record names them) from
 //!   getBlob and listBlobs; and getRepo, listRepoOps and getLatestCommit
-//!   serve a view without it that is signed afresh and verifies, so a syncer
+//!   serve a view without it that is MACed afresh and verifies, so a syncer
 //!   that held the record converges, and converges back on a reversal;
 //! - an account takedown refuses every read of the account's repos
 //!   (RepoTakendown), and credential issuance stops for a taken-down member
@@ -142,20 +142,18 @@ async fn record_takedown_hides_blobs_only_it_names() {
 }
 
 /// Option (e): during a record takedown, getLatestCommit's hash is the
-/// LtHash of the remaining records (at the same rev, signed afresh);
-/// getRepo verifies as `verifyRepoCarFull` does with the record in neither
-/// the index nor the blocks; listRepoOps replays to the same commit. A
+/// LtHash of the remaining records (at the same rev, MACed afresh);
+/// getRepo verifies as `verifyRepoStarFull` does without the record; listRepoOps replays to the same commit. A
 /// syncer that held the record converges through getRepo, follows later
 /// writes incrementally, and converges back when the takedown is reversed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn record_takedown_serves_a_consistent_signed_view() {
     let t = td().await;
     let base = t.net.pds[1].url.clone();
-    let key = did_key(&t.net.pds[1], &t.bob.did).await;
     let (_, gone) = t.bob_writes("gone", "zqoptiontext").await;
     t.bob_writes("kept", "kept").await;
     put(&t.bob, &t.space, W::new().rkey("kept").text("kept, revised")).await.ok();
-    let mut syncer = Syncer::new(&base, &t.space, &t.bob.did, &key, t.net.credential_for(&t.carol, &t.space).await);
+    let mut syncer = Syncer::new(&base, &t.space, &t.bob.did, t.net.credential_for(&t.carol, &t.space).await);
     syncer.full().await;
     let all = listed(&base, &syncer.cred, &t.space, &t.bob.did).await;
     assert_eq!(all.len(), 2);
@@ -171,17 +169,17 @@ async fn record_takedown_serves_a_consistent_signed_view() {
     let c = super::fuzz::signed_commit(&latest["commit"]);
     assert_eq!(c.rev, head_rev, "the takedown moves no rev");
     assert_eq!(c.data.to_vec(), set_hash(&visible), "getLatestCommit's hash is the remaining records' LtHash");
-    assert!(c.space == *&t.space && c.repo == *&t.bob.did, "the adjusted commit is signed");
+    assert!(c.space == t.space && c.repo == t.bob.did, "the adjusted commit names the repo");
 
     let r = cred.get(&base, "com.atproto.space.getRepo", &q).await;
     assert_eq!(r.status, 200, "{}", r.text());
-    let v = verify_repo_car(&r.body, &t.space, &t.bob.did, &key, true)
+    let v = verify_repo_star(&r.body, &t.space, &t.bob.did)
         .unwrap_or_else(|e| panic!("getRepo during a takedown doesn't verify: {e}"));
-    assert_eq!(v.set(), visible, "getRepo's index");
+    assert_eq!(v.set(), visible, "getRepo's records");
     assert_eq!(v.records.len(), 1);
     let gone_bytes = Cid::parse(&gone).unwrap().to_bytes();
-    assert!(!r.body.windows(gone_bytes.len()).any(|w| w == gone_bytes), "the record's CID is in the CAR");
-    assert!(!String::from_utf8_lossy(&r.body).contains("zqoptiontext"), "the record's value is in the CAR");
+    assert!(!r.body.windows(gone_bytes.len()).any(|w| w == gone_bytes), "the record's CID is in the archive");
+    assert!(!String::from_utf8_lossy(&r.body).contains("zqoptiontext"), "the record's value is in the archive");
 
     let ops = cred.get(&base, "com.atproto.space.listRepoOps", &[q[0], q[1], ("limit", "100")]).await.ok();
     assert!(
@@ -210,7 +208,7 @@ async fn record_takedown_serves_a_consistent_signed_view() {
     let latest = cred.get(&base, "com.atproto.space.getLatestCommit", &q).await.ok();
     assert_eq!(super::fuzz::signed_commit(&latest["commit"]).data.to_vec(), set_hash(&restored));
     let r = cred.get(&base, "com.atproto.space.getRepo", &q).await;
-    assert_eq!(verify_repo_car(&r.body, &t.space, &t.bob.did, &key, true).unwrap().set(), restored);
+    assert_eq!(verify_repo_star(&r.body, &t.space, &t.bob.did).unwrap().set(), restored);
     let ops = cred.get(&base, "com.atproto.space.listRepoOps", &[q[0], q[1], ("limit", "100")]).await.ok();
     assert!(commit_matches(&replay(ops["ops"].as_array().unwrap()), &ops["commit"]));
     converge(&mut syncer, &restored, "after the reversal").await;
@@ -394,7 +392,6 @@ async fn forwarded(syncer: &super::hooks::StubDid, repo: &str, rev: &str, hash: 
 async fn record_takedown_and_reversal_are_pushed_to_the_authority_and_its_syncers() {
     let t = td().await;
     let base = t.net.pds[1].url.clone();
-    let key = did_key(&t.net.pds[1], &t.bob.did).await;
     let (_, gone) = t.bob_writes("gone", "pushed away").await;
     t.bob_writes("kept", "kept").await;
     let rev = repo_state(&t.bob, &t.space).await.unwrap().0;
@@ -402,7 +399,7 @@ async fn record_takedown_and_reversal_are_pushed_to_the_authority_and_its_syncer
     let acred = t.net.credential_for(&t.alice, &t.space).await;
     let reg = json!({"space": t.space, "service": format!("{}#atproto_space_syncer", stub.did)});
     acred.post(&t.net.pds[0].url, "com.atproto.space.registerNotify", reg).await.ok();
-    let mut syncer = Syncer::new(&base, &t.space, &t.bob.did, &key, t.net.credential_for(&t.carol, &t.space).await);
+    let mut syncer = Syncer::new(&base, &t.space, &t.bob.did, t.net.credential_for(&t.carol, &t.space).await);
     syncer.full().await;
     let all = syncer.set.clone();
     authority_lists(&t, &acred, &t.bob.did, &rev, &set_hash(&all), "before").await;
@@ -497,7 +494,7 @@ async fn same_rev_notifies_with_made_up_hashes_are_dropped() {
     let jwt = service_jwt(&t.bob, &aud, "com.atproto.space.notifyWrite").await;
     let spam = 10;
     for _ in 0..spam {
-        let body = json!({"space": t.space, "repo": t.bob.did, "repoRev": rev, "hash": json_bytes(&rand::random::<[u8; 32]>())});
+        let body = json!({"space": t.space, "repo": t.bob.did, "repoRev": rev, "data": json_bytes(&rand::random::<[u8; 32]>())});
         post_service(&t.net.pds[0].url, "com.atproto.space.notifyWrite", &jwt, body).await.ok();
     }
     tokio::time::sleep(Duration::from_millis(300)).await;

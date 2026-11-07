@@ -338,7 +338,7 @@ async fn split_and_merge_keep_every_space_row() {
             assert!(head.rev > was.rev, "{} in {space}: rev {} after {}", wr.did, head.rev, was.rev);
             if space == w.local {
                 let (rr, sr, hash) = &host[&wr.did];
-                assert_eq!((rr, hash), (&json!(head.rev), &head.hash), "{}: listRepos lags", wr.did);
+                assert_eq!((rr, hash), (&json!(head.rev), &head.data.to_vec()), "{}: listRepos lags", wr.did);
                 assert!(sr.as_str() > before.host[&wr.did].1.as_str(), "{}: spaceRev didn't move", wr.did);
             }
         }

@@ -1,20 +1,20 @@
 //! Spaces moderation and moving in (`--spaces`; src/xrpc/space_admin.rs,
 //! src/xrpc/space_import.rs, the space takedown in src/xrpc/space.rs):
 //! audited operator reads, space takedowns, no credentials for taken-down
-//! accounts, blobs of taken-down records, and vlpds.space.importRepo.
+//! accounts, blobs of taken-down records, and com.atproto.space.importRepo.
 
 use crate::common::spaces::SpaceClient;
 use crate::common::*;
 use std::time::Duration;
-use vlatproto::cbor::Value;
 use vlatproto::cid::Cid;
+use vlpds::space::star;
 
 const TYPE: &str = "com.example.group";
 const COLL: &str = "com.example.post";
 const OWNER: &str = "space:com.example.group?collection=com.example.post&action=read&action=create&action=update&action=delete&manage=create&manage=update&manage=delete";
 const MEMBER: &str = "space:com.example.group?authority=*&collection=com.example.post&action=read&action=create";
-const CAR: &str = "application/vnd.ipld.car";
-const IMPORT: &str = "vlpds.space.importRepo";
+const STAR: &str = "application/octet-stream";
+const IMPORT: &str = "com.atproto.space.importRepo";
 
 fn rec(text: &str) -> J {
     json!({"$type": COLL, "text": text, "createdAt": "2026-10-01T00:00:00.000Z"})
@@ -297,68 +297,11 @@ async fn pds(plc: &str, service_did: &str) -> TestServer {
     .await
 }
 
-/// A 2-root CAR of `roots` and `blocks`.
-fn car(roots: &[Cid], blocks: &[(Cid, Vec<u8>)]) -> Vec<u8> {
-    let mut h = Vec::new();
-    vlatproto::cbor::write_map_head(&mut h, 2);
-    vlatproto::cbor::write_text(&mut h, "roots");
-    vlatproto::cbor::write_array_head(&mut h, roots.len());
-    for r in roots {
-        vlatproto::cbor::write_cid(&mut h, r);
-    }
-    vlatproto::cbor::write_text(&mut h, "version");
-    vlatproto::cbor::write_uint(&mut h, 1);
-    let mut out = Vec::new();
-    vlatproto::car::write_varint(&mut out, h.len() as u64);
-    out.extend_from_slice(&h);
-    for (c, b) in blocks {
-        vlatproto::car::write_block(&mut out, c, b);
-    }
-    out
-}
-
-fn commit_block(c: &vlpds::space::commit::Commit) -> Vec<u8> {
-    use vlatproto::cbor::*;
-    let mut b = Vec::new();
-    write_map_head(&mut b, 6);
-    for (k, v) in [("ikm", &c.ikm), ("mac", &c.mac)] {
-        write_text(&mut b, k);
-        write_bytes(&mut b, v);
-    }
-    write_text(&mut b, "rev");
-    write_text(&mut b, &c.rev);
-    write_text(&mut b, "sig");
-    write_bytes(&mut b, &c.sig);
-    write_text(&mut b, "ver");
-    write_int(&mut b, c.ver);
-    write_text(&mut b, "hash");
-    write_bytes(&mut b, &c.data.to_vec());
-    b
-}
-
-fn decode_commit(b: &[u8]) -> vlpds::space::commit::Commit {
-    let v = Value::decode(b).unwrap();
-    let bytes = |k: &str| match v.get(k) {
-        Some(Value::Bytes(b)) => b.clone(),
-        _ => panic!("commit.{k}"),
-    };
-    let rev = match v.get("rev") {
-        Some(Value::Text(t)) => t.clone(),
-        _ => panic!("commit.rev"),
-    };
-    vlpds::space::commit::Commit {
-        ver: 1,
-        hash: bytes("hash"),
-        ikm: bytes("ikm"),
-        sig: bytes("sig"),
-        mac: bytes("mac"),
-        rev,
-    }
-}
-
 /// Export from one PDS with space.getRepo, import into another the account
-/// moves to: the same signed set hash at the same rev, and the same
-/// records. Tampered or mis-signed CARs are refused before anything lands.
+/// moves to (once its space is there): the same data at a new rev, and the
+/// same records. An archive
+/// whose records don't fold to its commit, or that names another account,
+/// is refused before anything lands.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn import_repo_round_trip_and_refusals() {
     let (plc, docs) = stub_plc().await;
@@ -388,14 +331,13 @@ async fn import_repo_round_trip_and_refusals() {
         x.xrpc.get("com.atproto.identity.resolveDid", &[("did", &a.did)], &Auth::None).await.ok()["didDoc"].clone();
     docs.lock().unwrap().insert(a.did.clone(), doc);
     let rq = [("space", space.as_str()), ("repo", a.did.as_str())];
-    let (status, _, exported) = a.get_raw("com.atproto.space.getRepo", &rq).await;
-    assert_eq!(status, 200);
+    let (status, ctype, exported) = a.get_raw("com.atproto.space.getRepo", &rq).await;
+    assert_eq!((status, ctype.as_str()), (200, STAR));
     let at_x = a.get("com.atproto.space.getLatestCommit", &rq).await.ok()["commit"].clone();
     let records_x = a.get("com.atproto.space.listRecords", &rq).await.ok()["records"].clone();
 
     // the account on y; it moves (DID switched, activated), then imports
-    // with OAuth: the CAR's commit was signed by x's key, which the DID's
-    // PLC history says it held at the rev
+    // with OAuth
     let handle = format!("{}.{HANDLE_DOMAIN}", unique_name("moved"));
     let token = x
         .xrpc
@@ -413,100 +355,70 @@ async fn import_repo_round_trip_and_refusals() {
     let created = y.xrpc.post("com.atproto.server.createAccount", &body, &Auth::Bearer(token)).await.ok();
     let jwt = created["accessJwt"].as_str().unwrap().to_string();
     let session = Auth::Bearer(jwt.clone());
-    let path = format!("{IMPORT}?space={space}");
     let rdc = y.xrpc.get("com.atproto.identity.getRecommendedDidCredentials", &[], &session).await.ok();
-    let key = rdc["verificationMethods"]["atproto"].as_str().unwrap();
     let did = a.did.clone();
     let doc = json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
         "id": did,
         "alsoKnownAs": rdc["alsoKnownAs"],
-        "verificationMethod": [{
-            "id": format!("{did}#atproto"), "type": "Multikey", "controller": did,
-            "publicKeyMultibase": key.strip_prefix("did:key:").unwrap(),
-        }],
+        "verificationMethod": crate::spaces_side::import_repo::verification_methods(&did, &rdc),
         "service": [{"id": "#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": rdc["services"]["atproto_pds"]["endpoint"]}],
     });
     // a password session is no space access, before the move or after
-    let r = y.xrpc.post_bytes(&path, exported.clone(), CAR, &session).await;
+    let r = y.xrpc.post_bytes(IMPORT, exported.clone(), STAR, &session).await;
     assert_eq!(r.status, 403, "{}", r.text());
     docs.lock().unwrap().insert(did.clone(), doc);
     y.xrpc.post_empty("com.atproto.server.activateAccount", &session).await.ok();
-    let r = y.xrpc.post_bytes(&path, exported.clone(), CAR, &session).await;
+    let r = y.xrpc.post_bytes(IMPORT, exported.clone(), STAR, &session).await;
     r.err(403, "InsufficientScope");
     let b = SpaceClient::for_account(&y, &a.did, &handle, &jwt, OWNER).await;
-    let import = async |car: Vec<u8>| b.post_bytes(IMPORT, &[("space", space.as_str())], car, CAR).await;
+    let import = async |star: Vec<u8>| b.post_bytes(IMPORT, &[], star, STAR).await;
 
-    let (roots, blocks) = vlatproto::car::read_car(&exported).unwrap();
-    let blocks: Vec<(Cid, Vec<u8>)> = blocks.into_iter().map(|(c, b)| (c, b.to_vec())).collect();
-    let (commit_cid, index_cid) = (roots[0], roots[1]);
-    let commit = decode_commit(&blocks.iter().find(|(c, _)| *c == commit_cid).unwrap().1);
-    let index = Value::decode(&blocks.iter().find(|(c, _)| *c == index_cid).unwrap().1).unwrap();
-    let records: Vec<(Cid, Vec<u8>)> =
-        blocks.iter().filter(|(c, _)| *c != commit_cid && *c != index_cid).cloned().collect();
-    let with_commit = |c: &vlpds::space::commit::Commit| {
-        let cb = commit_block(c);
-        let cc = Cid::dag_cbor(&cb);
-        let mut all = vec![(cc, cb), blocks.iter().find(|(c, _)| *c == index_cid).unwrap().clone()];
-        all.extend(records.iter().cloned());
-        car(&[cc, index_cid], &all)
+    let (meta, pairs) = star::read_all(&exported, star::LIMITS).unwrap();
+    let commit = star::parse_repo_meta(&meta).unwrap();
+    let archive = |c: &vlpds::space::commit::Commit, pairs: &[(Vec<u8>, Vec<u8>)]| {
+        let mut out = Vec::new();
+        star::write_header(&mut out, &star::repo_meta(c));
+        for (k, v) in pairs {
+            star::write_pair(&mut out, k, v);
+        }
+        star::write_end(&mut out);
+        out
     };
-
-    // a MAC that doesn't match
+    assert_eq!(archive(&commit, &pairs), exported, "the archive re-encodes");
+    // the account governs this space: its own repo comes after the space,
+    // which it makes again here (space meta isn't moved)
+    import(exported.clone()).await.err(400, "SpaceNotFound");
+    assert_eq!(b.create_space(TYPE, "main").await, space);
+    // data that isn't the records'
     let mut bad = commit.clone();
-    *bad.mac.last_mut().unwrap() ^= 1;
-    import(with_commit(&bad)).await.err(400, "InvalidCommit");
-    // signed by a key the DID never had
-    let Value::Map(entries) = &index else { panic!("index") };
-    let mut set = vlpds::space::lthash::LtHash::default();
-    for (path, v) in entries {
-        let (Value::Link(c), Some((coll, rkey))) = (v, path.split_once('/')) else { panic!("index entry") };
-        set.add(&vlpds::space::commit::element(coll, rkey, &c.to_string()));
-    }
-    let other = vlatproto::crypto::Keypair::generate();
-    let ctx = vlpds::space::commit::CommitCtx { space: &space, author: &a.did, rev: &commit.rev };
-    let forged = vlpds::space::commit::sign(&set, &ctx, rand::random(), |m| Ok::<_, ()>(other.sign(m))).unwrap();
-    import(with_commit(&forged)).await.err(400, "InvalidCommit");
-    // a rev far ahead would hold every later notify past the authority's
-    // FutureRev window
-    let ahead = vlatproto::tid::Tid::from_parts(vlatproto::tid::now_micros() + 3_600_000_000, 0).to_string();
-    let ctx = vlpds::space::commit::CommitCtx { space: &space, author: &a.did, rev: &ahead };
-    let future = vlpds::space::commit::sign(&set, &ctx, rand::random(), |m| Ok::<_, ()>(other.sign(m))).unwrap();
-    import(with_commit(&future)).await.err(400, "FutureRev");
-    // an index that isn't the signed set: a record left out
-    let fewer = Value::Map(entries[1..].to_vec());
-    let mut ib = Vec::new();
-    fewer.encode(&mut ib);
-    let ic = Cid::dag_cbor(&ib);
-    let mut all = vec![blocks.iter().find(|(c, _)| *c == commit_cid).unwrap().clone(), (ic, ib)];
-    all.extend(records.iter().cloned());
-    import(car(&[commit_cid, ic], &all)).await.err(400, "DigestMismatch");
-    // a record block missing
-    let mut short = blocks.clone();
-    short.pop();
-    import(car(&roots, &short)).await.err(400, "InvalidRequest");
+    bad.data[0] ^= 1;
+    import(archive(&bad, &pairs)).await.err(400, "InvalidRequest");
+    // a record left out
+    import(archive(&commit, &pairs[1..])).await.err(400, "InvalidRequest");
+    // another account's repo
+    let theirs = vlpds::space::commit::Commit { repo: "did:plc:someoneelse2345abcdefgh".into(), ..commit.clone() };
+    import(archive(&theirs, &pairs)).await.err(400, "InvalidRequest");
     // an active account's password session is no space access
-    let r = x.xrpc.post_bytes(&path, exported.clone(), CAR, &Auth::Bearer(a.session_jwt.clone())).await;
+    let r = x.xrpc.post_bytes(IMPORT, exported.clone(), STAR, &Auth::Bearer(a.session_jwt.clone())).await;
     r.err(403, "InsufficientScope");
 
-    let r = import(exported.clone()).await.ok();
-    assert_eq!((r["rev"].clone(), r["records"].clone()), (at_x["rev"].clone(), json!(2)));
+    let r = import(exported.clone()).await;
+    assert_eq!((r.status, r.body.len()), (200, 0), "{}", r.text());
     // the imported record's blob hasn't come over yet
     let lm = y.xrpc.get("com.atproto.repo.listMissingBlobs", &[], &session).await.ok();
     assert_eq!(lm["blobs"], json!([{"cid": blob_cid, "recordUri": format!("{space}/{}/{COLL}/aa", a.did)}]), "{lm}");
-    // the same export again is a retry: answered as before, nothing written
-    let again = import(exported.clone()).await.ok();
-    assert_eq!((again["rev"].clone(), again["records"].clone()), (at_x["rev"].clone(), json!(2)));
 
     let at_y = b.get("com.atproto.space.getLatestCommit", &rq).await.ok()["commit"].clone();
-    assert_eq!((at_y["hash"].clone(), at_y["rev"].clone()), (at_x["hash"].clone(), at_x["rev"].clone()));
+    assert_eq!(at_y["data"], at_x["data"]);
+    assert!(at_y["rev"].as_str().unwrap() > at_x["rev"].as_str().unwrap(), "a new rev: {at_y} after {at_x}");
     assert_eq!(b.get("com.atproto.space.listRecords", &rq).await.ok()["records"], records_x);
     // the oplog starts empty; the next write follows the imported rev
     let ops = b.get("com.atproto.space.listRepoOps", &rq).await.ok();
     assert_eq!(ops["ops"], json!([]), "{ops}");
     b.create_record(&space, COLL, Some("dd"), rec("four")).await.ok();
     let next = b.get("com.atproto.space.getLatestCommit", &rq).await.ok()["commit"]["rev"].clone();
-    assert!(next.as_str().unwrap() > at_x["rev"].as_str().unwrap(), "{next} after {}", at_x["rev"]);
+    assert!(next.as_str().unwrap() > at_y["rev"].as_str().unwrap(), "{next} after {}", at_y["rev"]);
     // check-space takes the imported base without its ops
     let chk =
         y.xrpc.get("vlpds.admin.checkSpace", &[("did", a.did.as_str()), ("space", space.as_str())], &Auth::Admin).await;

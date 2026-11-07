@@ -1,10 +1,10 @@
-//! Space sync at scale (`--spaces`; src/space/car.rs, fanout.rs,
-//! retention.rs, outbox.rs): getRepo's streamed 2-root CAR and the record
+//! Space sync at scale (`--spaces`; src/space/star.rs, fanout.rs,
+//! retention.rs, outbox.rs): getRepo's streamed STAR archive and the record
 //! cap behind it, oplog paging and what a pruned oplog does to a syncer,
 //! forwards to registered services that one slow service can't hold up,
 //! and a writer's notify crossing to the authority's node in a cluster.
 
-use crate::common::spaces::{resp, SpaceClient};
+use crate::common::spaces::{commit_of, resp, verify_star, SpaceClient, Star};
 use crate::common::*;
 use axum::body::Body;
 use axum::extract::Request;
@@ -13,7 +13,6 @@ use base64::Engine;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use vlatproto::cbor::Value;
 use vlpds::space::{commit, lthash::LtHash};
 
 const TYPE: &str = "com.example.group";
@@ -44,30 +43,6 @@ async fn put_member(owner: &SpaceClient, space: &str, did: &str) {
 fn bytes(v: &J) -> Vec<u8> {
     let s = v["$bytes"].as_str().unwrap_or_else(|| panic!("not $bytes: {v}"));
     base64::engine::general_purpose::STANDARD_NO_PAD.decode(s.trim_end_matches('=')).unwrap()
-}
-
-fn signed_commit(c: &J) -> commit::Commit {
-    commit::Commit {
-        ver: c["ver"].as_i64().unwrap(),
-        hash: bytes(&c["data"]),
-        ikm: bytes(&c["ikm"]),
-        sig: bytes(&c["sig"]),
-        mac: bytes(&c["mac"]),
-        rev: c["rev"].as_str().unwrap().to_string(),
-    }
-}
-
-/// The account's `#atproto` key as a did:key.
-async fn did_key(s: &TestServer, did: &str) -> String {
-    let j = s.xrpc.get("com.atproto.repo.describeRepo", &[("repo", did)], &Auth::None).await.ok();
-    let vm = j["didDoc"]["verificationMethod"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|v| v["id"].as_str().is_some_and(|i| i.ends_with("#atproto")))
-        .unwrap()
-        .clone();
-    format!("did:key:{}", vm["publicKeyMultibase"].as_str().unwrap())
 }
 
 fn apply_ops(set: &mut LtHash, ops: &J) {
@@ -107,62 +82,12 @@ where
     }
 }
 
-/// What a verified getRepo CAR holds.
-struct Car {
-    commit: commit::Commit,
-    paths: Vec<String>,
-    index_root: vlatproto::cid::Cid,
-    blocks: usize,
-}
-
-/// Checks a getRepo CAR as the reference's `verifyRepoCar` does: the
-/// commit then the index lead, the commit verifies, the index is in
-/// canonical order and folds to the commit's hash, and each record block
-/// follows the index (`values`) or none do.
-fn verify_car(car: &[u8], space: &str, author: &str, key: &str, values: bool) -> Car {
-    let (roots, blocks) = vlatproto::car::read_car(car).unwrap();
-    assert_eq!(roots.len(), 2, "two roots");
-    assert_eq!((blocks[0].0, blocks[1].0), (roots[0], roots[1]), "commit, then index");
-    let sc = signed_commit(&Value::decode(blocks[0].1).unwrap().to_json());
-    let ctx = commit::CommitCtx { space, author, rev: &sc.rev };
-    assert!(commit::verify(&sc, &ctx, key), "the commit verifies");
-    let entries: Vec<(String, vlatproto::cid::Cid)> = match Value::decode(blocks[1].1).unwrap() {
-        Value::Map(m) => m
-            .into_iter()
-            .map(|(k, v)| match v {
-                Value::Link(c) => (k, c),
-                other => panic!("index value {other:?}"),
-            })
-            .collect(),
-        other => panic!("index: {other:?}"),
-    };
-    let paths: Vec<String> = entries.iter().map(|e| e.0.clone()).collect();
-    let mut sorted = paths.clone();
-    sorted.sort_by(|a, b| vlatproto::cbor::key_cmp(a, b));
-    assert_eq!(paths, sorted, "index in length-first canonical order");
-    let mut set = LtHash::default();
-    for (p, cid) in &entries {
-        let (c, r) = p.split_once('/').unwrap();
-        set.add(&commit::element(c, r, &cid.to_string()));
-    }
-    assert!(commit::matches(&set, &sc), "the index folds to the commit's hash");
-    if values {
-        assert_eq!(blocks.len(), 2 + entries.len());
-        for ((_, cid), (bc, data)) in entries.iter().zip(&blocks[2..]) {
-            assert_eq!(cid, bc, "blocks follow the index");
-            assert!(vlatproto::car::block_matches(bc, data));
-        }
-    } else {
-        assert_eq!(blocks.len(), 2, "index only");
-    }
-    Car { commit: sc, paths, index_root: roots[1], blocks: blocks.len() }
-}
-
-/// getRepo through a credential: a CAR that verifies like the reference's
-/// consumer wants it, index-only with excludeValues, RepoNotFound for a
-/// repo never written, and nothing without a credential for the space.
+/// getRepo through a credential: a STAR archive that verifies like the
+/// reference's consumer wants it (its MAC too), the same archive for the
+/// owner's own OAuth read, RepoNotFound for a repo never written, and
+/// nothing without a credential for the space.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn get_repo_streams_a_verifiable_car() {
+async fn get_repo_streams_a_verifiable_star() {
     let s = spawn().await;
     let owner = SpaceClient::new(&s, "ssg1", OWNER).await;
     let member = SpaceClient::new(&s, "ssg2", ANY).await;
@@ -174,40 +99,35 @@ async fn get_repo_streams_a_verifiable_car() {
     }
     member.put_record(&space, COLL, "a", rec("a again")).await.ok();
     member.delete_record(&space, COLL, "c").await.ok();
-    let key = did_key(&s, &member.did).await;
     let cred = owner.credential(&space).await;
-    let get = |extra: &'static [(&'static str, &'static str)], cred: String, repo: String| {
+    let get = |cred: String, repo: String| {
         let (owner, space, url) = (&owner, space.clone(), s.url.clone());
         async move {
-            let mut q = vec![("space", space.as_str()), ("repo", repo.as_str())];
-            q.extend_from_slice(extra);
+            let q = [("space", space.as_str()), ("repo", repo.as_str())];
             owner.signed_get(&url, "com.atproto.space.getRepo", &q, &cred, &repo).await
         }
     };
-    let r = get(&[], cred.clone(), member.did.clone()).await;
+    let r = get(cred.clone(), member.did.clone()).await;
     assert_eq!(r.status, 200, "{r:?}");
-    assert_eq!(r.headers["content-type"], "application/vnd.ipld.car");
-    let full = verify_car(&r.body, &space, &member.did, &key, true);
+    assert_eq!(r.headers["content-type"], "application/octet-stream");
+    let full = verify_star(&r.body, &space, &member.did);
     assert_eq!(full.paths.len(), 6);
-    assert_eq!(full.paths[0], format!("{COLL}/a"));
-    assert_eq!(full.paths.last().unwrap(), &format!("{COLL}/3k2abcdefgh2a"));
+    // bytewise, so "3k2…" (a digit) sorts before the letters
+    assert_eq!(full.paths[0], format!("{COLL}/3k2abcdefgh2a"));
+    assert_eq!(full.paths.last().unwrap(), &format!("{COLL}/zzzzzz"));
     let head = member.get("com.atproto.space.getLatestCommit", &[("space", &space), ("repo", &member.did)]).await;
     assert_eq!(head.ok()["commit"]["rev"], json!(full.commit.rev));
-    // the owner's own export, as OAuth read_self
-    let (status, _, car) =
+    // the owner's own export, as OAuth read_self: the same bytes, no MAC
+    let (status, _, star) =
         member.get_raw("com.atproto.space.getRepo", &[("space", &space), ("repo", &member.did)]).await;
     assert_eq!(status, 200);
-    assert_eq!(verify_car(&car, &space, &member.did, &key, true).index_root, full.index_root);
-
-    let r = get(&[("excludeValues", "true")], cred.clone(), member.did.clone()).await;
-    let idx = verify_car(&r.body, &space, &member.did, &key, false);
-    assert_eq!((idx.index_root, idx.blocks), (full.index_root, 2));
+    assert_eq!(star, r.body.to_vec());
 
     // the owner never wrote here
-    get(&[], cred.clone(), owner.did.clone()).await.err(400, "RepoNotFound");
+    get(cred.clone(), owner.did.clone()).await.err(400, "RepoNotFound");
     // another space's credential, and none at all
     let foreign = owner.credential(&other).await;
-    get(&[], foreign, member.did.clone()).await.err(400, "InvalidCredential");
+    get(foreign, member.did.clone()).await.err(400, "InvalidCredential");
     let url = crate::common::spaces::xrpc_url(
         &s.url,
         "com.atproto.space.getRepo",
@@ -224,7 +144,6 @@ struct Viewer<'a> {
     cred: String,
     space: String,
     repo: String,
-    key: String,
 }
 
 impl Viewer<'_> {
@@ -236,12 +155,11 @@ impl Viewer<'_> {
 
     /// getRepo, the ops replayed page by page, and the latest commit and an
     /// at-head poll: all must agree.
-    async fn view(&self, values: bool) -> Car {
-        let extra: &[(&str, &str)] = if values { &[] } else { &[("excludeValues", "true")] };
-        let r = self.read("com.atproto.space.getRepo", extra).await;
+    async fn view(&self) -> Star {
+        let r = self.read("com.atproto.space.getRepo", &[]).await;
         assert_eq!(r.status, 200, "{r:?}");
-        assert_eq!(r.headers["content-type"], "application/vnd.ipld.car", "{r:?}");
-        let car = verify_car(&r.body, &self.space, &self.repo, &self.key, values);
+        assert_eq!(r.headers["content-type"], "application/octet-stream", "{r:?}");
+        let car = verify_star(&r.body, &self.space, &self.repo);
         let mut set = LtHash::default();
         let mut cursor: Option<String> = None;
         let last = loop {
@@ -256,15 +174,15 @@ impl Viewer<'_> {
                 None => break page["commit"].clone(),
             }
         };
-        let ops_commit = signed_commit(&last);
-        assert!(ops_commit.space == *&self.space && ops_commit.repo == *&self.repo);
-        assert!(commit::matches(&set, &ops_commit), "the ops replay to the signed hash");
-        assert_eq!(ops_commit.hash, car.commit.data.to_vec(), "listRepoOps and getRepo agree");
+        let ops_commit = commit_of(&last);
+        assert!(ops_commit.space == self.space && ops_commit.repo == self.repo);
+        assert!(commit::matches(&set, &ops_commit), "the ops replay to the commit's data");
+        assert_eq!(ops_commit.data, car.commit.data, "listRepoOps and getRepo agree");
         let latest = self.read("com.atproto.space.getLatestCommit", &[]).await.ok();
         assert_eq!(bytes(&latest["commit"]["data"]), car.commit.data.to_vec());
         let noop = self.read("com.atproto.space.listRepoOps", &[("since", &car.commit.rev)]).await.ok();
         assert_eq!(noop["ops"], json!([]));
-        assert_eq!(bytes(&noop["commit"]["data"]), car.commit.data.to_vec(), "the at-head poll signs the same view");
+        assert_eq!(bytes(&noop["commit"]["data"]), car.commit.data.to_vec(), "the at-head poll MACs the same view");
         car
     }
 }
@@ -285,17 +203,15 @@ async fn record_takedown_serves_a_consistent_view() {
         member.create_record(&space, COLL, Some(rkey), rec(rkey)).await.ok();
     }
     member.put_record(&space, COLL, "b", rec("b again")).await.ok();
-    let key = did_key(&s, &member.did).await;
     let v = Viewer {
         s: &s,
         owner: &owner,
         cred: owner.credential(&space).await,
         space: space.clone(),
         repo: member.did.clone(),
-        key,
     };
-    let view = |values: bool| v.view(values);
-    let full = view(true).await;
+    let view = || v.view();
+    let full = view().await;
     assert_eq!(full.paths, [format!("{COLL}/a"), format!("{COLL}/b"), format!("{COLL}/c")]);
 
     let uri = format!("{space}/{}/{COLL}/b", member.did);
@@ -308,21 +224,20 @@ async fn record_takedown_serves_a_consistent_view() {
         async move { s.xrpc.post("com.atproto.admin.updateSubjectStatus", &body, &Auth::Admin).await.ok() }
     };
     set(true).await;
-    let hidden = view(true).await;
+    let hidden = view().await;
     assert_eq!(hidden.paths, [format!("{COLL}/a"), format!("{COLL}/c")]);
     assert_eq!(hidden.commit.rev, full.commit.rev);
-    assert_ne!(hidden.commit.hash, full.commit.hash, "a syncer holding b mismatches at the same rev");
-    assert_eq!(view(false).await.paths, hidden.paths);
+    assert_ne!(hidden.commit.data, full.commit.data, "a syncer holding b mismatches at the same rev");
     // a write while it's hidden keeps the view consistent
     member.create_record(&space, COLL, Some("d"), rec("d")).await.ok();
-    assert_eq!(view(true).await.paths, [format!("{COLL}/a"), format!("{COLL}/c"), format!("{COLL}/d")]);
+    assert_eq!(view().await.paths, [format!("{COLL}/a"), format!("{COLL}/c"), format!("{COLL}/d")]);
     set(false).await;
-    let back = view(true).await;
+    let back = view().await;
     assert_eq!(back.paths.len(), 4);
 }
 
 /// A 100k-record space repo: the next create is refused, and getRepo
-/// streams it holding only its paths and CIDs.
+/// streams it holding one chunk at a time.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_full_repo_streams_under_a_memory_bound() {
     const BOUND: &str = "33554432";
@@ -349,48 +264,22 @@ async fn a_full_repo_streams_under_a_memory_bound() {
 
     let before = metrics_text(&s).await;
     let count = "vlpds_space_export_bytes_count";
-    let (status, _, car) = owner.get_raw("com.atproto.space.getRepo", &[("space", &space), ("repo", &owner.did)]).await;
+    let (status, _, star) =
+        owner.get_raw("com.atproto.space.getRepo", &[("space", &space), ("repo", &owner.did)]).await;
     assert_eq!(status, 200);
-    let key = did_key(&s, &owner.did).await;
-    let got = verify_car(&car, &space, &owner.did, &key, true);
+    let got = verify_star(&star, &space, &owner.did);
     assert_eq!(got.paths.len(), max);
     let after = metrics_text(&s).await;
     assert!(scraped(&after, count) > scraped(&before, count));
     let bucket = |t: &str, le: &str| scraped(t, &format!("vlpds_space_export_bytes_bucket{{le=\"{le}\"}}"));
     assert_eq!(scraped(&after, count), bucket(&after, BOUND), "an export held more than 32 MiB");
-    assert!(bucket(&after, "4194304") < scraped(&after, count), "the big export was measured");
+    // STAR streams in one pass: an export holds its chunk, not the repo's paths
+    assert_eq!(bucket(&after, "1048576"), scraped(&after, count), "an export held more than a chunk");
     // it fit the memory plan's estimate for a full repo, and gave its room back
     let planned = vlpds::space::export_bytes(max as u64);
     assert!(planned < 32 << 20 && planned > 8 << 20, "{planned}");
     let sp = s.app.spaces.as_ref().unwrap();
     assert!(eventually(Duration::from_secs(5), || async { sp.export_room_free().0 == sp.export_room_free().1 }).await);
-}
-
-/// A space getRepo takes its room from the memory plan's space exports,
-/// gives it back when its body is done, and is shed when there's none.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_space_export_holds_its_memory_room() {
-    let s = spawn().await;
-    let owner = SpaceClient::new(&s, "ssroom", OWNER).await;
-    let space = owner.create_space(TYPE, "room").await;
-    owner.create_record(&space, COLL, Some("a"), rec("a")).await.ok();
-    let sp = s.app.spaces.as_ref().unwrap();
-    let (free, total) = sp.export_room_free();
-    assert_eq!(free, total);
-    assert_eq!(total as u64, vlpds::space::export_budget_bytes(vlpds::space::DEFAULT_MAX_RECORDS).div_ceil(1024));
-    // a 1-record export, and a few KiB for its vectors' first growth
-    let held = vlpds::space::export_bytes(1).div_ceil(1024) as usize + 8;
-    let room = sp.reserve_export((total - held) as u64 * 1024).await.expect("the rest of the room");
-    let r = owner.get_raw("com.atproto.space.getRepo", &[("space", &space), ("repo", &owner.did)]).await;
-    assert_eq!(r.0, 200, "an export that fits the room left");
-    assert!(eventually(Duration::from_secs(5), || async { sp.export_room_free().0 == held }).await);
-    drop(room);
-    assert_eq!(sp.export_room_free().0, total);
-    // with no room at all, the export is shed after a short wait
-    let all = sp.reserve_export(total as u64 * 1024).await.unwrap();
-    let r = owner.get("com.atproto.space.getRepo", &[("space", &space), ("repo", &owner.did)]).await;
-    r.err(503, "Overloaded");
-    drop(all);
 }
 
 /// listRepoOps pages one big rev without losing an op, holds the commit
@@ -401,7 +290,6 @@ async fn oplog_paging() {
     let s = spawn().await;
     let owner = SpaceClient::new(&s, "ssp1", OWNER).await;
     let space = owner.create_space(TYPE, "ops").await;
-    let key = did_key(&s, &owner.did).await;
     owner.create_record(&space, COLL, Some("first"), rec("first")).await.ok();
     let since = owner.get("com.atproto.space.getLatestCommit", &[("space", &space), ("repo", &owner.did)]).await.ok()
         ["commit"]["rev"]
@@ -447,8 +335,8 @@ async fn oplog_paging() {
     let mut set = LtHash::default();
     set.add(&commit::element(COLL, "first", ops_cid_of_first(&owner, &space).await.as_str()));
     apply_ops(&mut set, &J::Array(ops));
-    let sc = signed_commit(&commit);
-    assert!(commit::verify(&sc, &commit::CommitCtx { space: &space, author: &owner.did, rev: &sc.rev }, &key));
+    let sc = commit_of(&commit);
+    assert_eq!((sc.space.as_str(), sc.repo.as_str()), (space.as_str(), owner.did.as_str()));
     assert!(commit::matches(&set, &sc));
 
     for bad in ["nope", "3k2abcdefgh2a", "3k2abcdefgh2a/x", "x/1"] {
@@ -469,7 +357,6 @@ async fn a_pruned_oplog_sends_syncers_to_get_repo() {
     let s = spawn().await;
     let owner = SpaceClient::new(&s, "ssr1", OWNER).await;
     let space = owner.create_space(TYPE, "ret").await;
-    let key = did_key(&s, &owner.did).await;
     let rq = [("space", space.as_str()), ("repo", owner.did.as_str())];
     owner.create_record(&space, COLL, Some("a"), rec("a")).await.ok();
     owner.create_record(&space, COLL, Some("b"), rec("b")).await.ok();
@@ -490,13 +377,13 @@ async fn a_pruned_oplog_sends_syncers_to_get_repo() {
     assert_eq!(r["ops"].as_array().unwrap().len(), 1, "from the window's start: {r}");
     assert_eq!(r["ops"][0]["rkey"], json!("d"));
     apply_ops(&mut synced, &r["ops"]);
-    let sc = signed_commit(&r["commit"]);
+    let sc = commit_of(&r["commit"]);
     assert!(!commit::matches(&synced, &sc), "the digest mismatches");
 
-    let (status, _, car) = owner.get_raw("com.atproto.space.getRepo", &rq).await;
+    let (status, _, star) = owner.get_raw("com.atproto.space.getRepo", &rq).await;
     assert_eq!(status, 200);
-    let got = verify_car(&car, &space, &owner.did, &key, true);
-    assert_eq!(got.commit.hash, sc.data.to_vec(), "getRepo reconciles");
+    let got = verify_star(&star, &space, &owner.did);
+    assert_eq!(got.commit.data, sc.data, "getRepo reconciles");
     assert_eq!(got.paths, vec![format!("{COLL}/b"), format!("{COLL}/c"), format!("{COLL}/d")]);
     // nothing is left to prune
     assert_eq!(vlpds::space::retention::prune_before(&s.app, 1).await.unwrap(), 0);

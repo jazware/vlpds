@@ -295,6 +295,22 @@ async fn refuses_an_unvalidatable_record_when_validation_is_demanded() {
     write(&alice, &space, W::new().text("strict").validate(true)).await.client_err();
 }
 
+/// validation: "refuses a record over the size limit". Divergent: vlpds
+/// caps a space record's encoding at 1,000,000 bytes, as its public repo
+/// writes are capped, where the reference allows 1 MiB (1,048,576). As in
+/// the reference, a request body that large is refused before the record
+/// is encoded (413 here), so the port checks a record just under the cap
+/// goes in and one at it doesn't.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn refuses_a_record_over_the_size_limit() {
+    let net = Net::new(0).await;
+    let alice = net.actor("alice", 0).await;
+    let space = net.create_space(&alice, SpaceOpts::default()).await;
+    let r = write(&alice, &space, W::new().text(&"x".repeat(1_000_000))).await;
+    assert!(r.status == 413 || r.text().contains("record too large"), "{}", r.text());
+    write(&alice, &space, W::new().text(&"x".repeat(990_000))).await.ok();
+}
+
 /// listRecords: "paginates across collections"
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn list_records_paginates_across_collections() {

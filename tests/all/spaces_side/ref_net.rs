@@ -430,19 +430,6 @@ pub fn commit_matches(set: &LtHash, c: &J) -> bool {
     commit::matches(set, &sc)
 }
 
-/// The account's `#atproto` key as a did:key (describeRepo).
-pub async fn did_key(s: &TestServer, did: &str) -> String {
-    let j = s.describe_repo(did).await.ok();
-    let vm = j["didDoc"]["verificationMethod"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|v| v["id"].as_str().is_some_and(|i| i.ends_with("#atproto")))
-        .unwrap()
-        .clone();
-    format!("did:key:{}", vm["publicKeyMultibase"].as_str().unwrap())
-}
-
 /// A service JWT signed by the actor's account key, as its PDS's outbox
 /// signs one (getServiceAuth won't mint a space method's for a password
 /// session).

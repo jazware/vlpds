@@ -6,7 +6,7 @@
 //! and a write into a space governed elsewhere reaches its authority
 //! through the durable outbox, across a restart.
 
-use crate::common::spaces::{resp, signed_get_as, xrpc_url, Holder, SpaceClient};
+use crate::common::spaces::{commit_of, resp, signed_get_as, xrpc_url, Holder, SpaceClient};
 use crate::common::*;
 use axum::body::Body;
 use axum::extract::Request;
@@ -29,30 +29,6 @@ fn bytes(v: &J) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD_NO_PAD.decode(s.trim_end_matches('=')).unwrap()
 }
 
-fn signed_commit(c: &J) -> commit::Commit {
-    commit::Commit {
-        ver: c["ver"].as_i64().unwrap(),
-        hash: bytes(&c["data"]),
-        ikm: bytes(&c["ikm"]),
-        sig: bytes(&c["sig"]),
-        mac: bytes(&c["mac"]),
-        rev: c["rev"].as_str().unwrap().to_string(),
-    }
-}
-
-/// The account's `#atproto` key as a did:key.
-async fn did_key(s: &TestServer, did: &str) -> String {
-    let j = s.xrpc.get("com.atproto.repo.describeRepo", &[("repo", did)], &Auth::None).await.ok();
-    let vm = j["didDoc"]["verificationMethod"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|v| v["id"].as_str().is_some_and(|i| i.ends_with("#atproto")))
-        .unwrap()
-        .clone();
-    format!("did:key:{}", vm["publicKeyMultibase"].as_str().unwrap())
-}
-
 /// Applies listRepoOps ops to a running set hash, as a syncer does.
 fn apply_ops(set: &mut LtHash, ops: &J) {
     for op in ops.as_array().unwrap() {
@@ -66,12 +42,12 @@ fn apply_ops(set: &mut LtHash, ops: &J) {
     }
 }
 
-/// The commit verifies against the author's key and describes `set`.
-fn check_commit(c: &J, space: &str, author: &str, key: &str, set: &LtHash) {
-    let sc = signed_commit(c);
-    let ctx = commit::CommitCtx { space, author, rev: &sc.rev };
-    assert!(commit::verify(&sc, &ctx, key), "commit signature: {c}");
-    assert!(commit::matches(set, &sc), "LtHash of the ops != commit.hash");
+/// The commit names the repo and describes `set` (its MAC was checked as
+/// it was served).
+fn check_commit(c: &J, space: &str, repo: &str, set: &LtHash) {
+    let sc = commit_of(c);
+    assert_eq!((sc.space.as_str(), sc.repo.as_str()), (space, repo), "{c}");
+    assert!(commit::matches(set, &sc), "LtHash of the ops != commit.data");
 }
 
 fn scraped(text: &str, series: &str) -> f64 {
@@ -110,7 +86,6 @@ async fn spaces_e2e_single_node() {
     let a = SpaceClient::new(&s, "spe", SCOPE).await;
     let space = a.create_space(TYPE, "main").await;
     assert_eq!(space, format!("at://{}/space/{TYPE}/main", a.did));
-    let key = did_key(&s, &a.did).await;
     let mut sub = s.subscribe_from_now().await;
     let (pub_cid, pub_rev) = s.latest_commit(&a.did).await;
 
@@ -136,7 +111,7 @@ async fn spaces_e2e_single_node() {
     assert_eq!(r.ok()["records"].as_array().unwrap().len(), 1);
     assert_eq!(r.json["records"][0]["rkey"], json!("one"));
 
-    // a full sync: the ops replay to the signed commit's hash
+    // a full sync: the ops replay to the commit's data
     let rq = [("space", space.as_str()), ("repo", a.did.as_str())];
     let r = a.signed_get(&s.url, "com.atproto.space.listRepoOps", &rq, &cred, &a.did).await.ok();
     assert_eq!(r["ops"].as_array().unwrap().len(), 1);
@@ -144,21 +119,22 @@ async fn spaces_e2e_single_node() {
     assert!(r.get("cursor").is_none());
     let mut set = LtHash::default();
     apply_ops(&mut set, &r["ops"]);
-    check_commit(&r["commit"], &space, &a.did, &key, &set);
+    check_commit(&r["commit"], &space, &a.did, &set);
     let head = r["commit"]["rev"].as_str().unwrap().to_string();
 
     // at the head: no ops, a fresh commit, and no state read
     let noop = "vlpds_space_list_repo_ops_total{path=\"noop\"}";
     let (before, loaded) = (metric(&s, noop).await, loads(&s));
     let since = [("space", space.as_str()), ("repo", a.did.as_str()), ("since", head.as_str())];
-    let r = a.signed_get(&s.url, "com.atproto.space.listRepoOps", &since, &cred, &a.did).await.ok();
-    assert_eq!(r["ops"], json!([]));
-    check_commit(&r["commit"], &space, &a.did, &key, &set);
+    let r = a.signed_get(&s.url, "com.atproto.space.listRepoOps", &since, &cred, &a.did).await;
+    assert_eq!(r.ok()["ops"], json!([]));
+    check_commit(&r.json["commit"], &space, &a.did, &set);
     assert_eq!(metric(&s, noop).await, before + 1.0);
     assert_eq!(loads(&s), loaded, "a poll at the head read the space head from the store");
-    let r2 = a.signed_get(&s.url, "com.atproto.space.getLatestCommit", &rq, &cred, &a.did).await.ok();
-    assert_ne!(r2["commit"]["ikm"], r["commit"]["ikm"], "a fresh ikm per response");
-    check_commit(&r2["commit"], &space, &a.did, &key, &set);
+    let r2 = a.signed_get(&s.url, "com.atproto.space.getLatestCommit", &rq, &cred, &a.did).await;
+    let m = |r: &Resp| r.headers[vlpds::space::mac::MAC_HEADER].clone();
+    assert_ne!(m(&r2), m(&r), "a MAC per request's key share");
+    check_commit(&r2.ok()["commit"], &space, &a.did, &set);
 
     // a delta: the second write only, up to the new head
     a.create_record(&space, COLL, Some("two"), rec("again")).await.ok();
@@ -166,7 +142,7 @@ async fn spaces_e2e_single_node() {
     assert_eq!(r["ops"].as_array().unwrap().len(), 1);
     assert_eq!(r["ops"][0]["rkey"], json!("two"));
     apply_ops(&mut set, &r["ops"]);
-    check_commit(&r["commit"], &space, &a.did, &key, &set);
+    check_commit(&r["commit"], &space, &a.did, &set);
     assert!(r["commit"]["rev"].as_str().unwrap() > head.as_str());
 
     // a page short of the head carries a cursor, not the commit
@@ -375,7 +351,7 @@ async fn authority(mode: Mode) -> Authority {
             if req.uri().path() == "/.well-known/did.json" {
                 return json(
                     200,
-                    json!({"id": d, "service": [{"id": "#atproto_space_host", "type": "AtprotoSpaceHost", "serviceEndpoint": b}]}),
+                    json!({"id": d, "service": [{"id": "#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": b}]}),
                 );
             }
             if req.uri().path() != "/xrpc/com.atproto.space.notifyWrite" {
@@ -412,7 +388,7 @@ fn check_service_jwt(auth: &str, writer: &str, aud: &str, key: &k256::ecdsa::Ver
     let dec = |s: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s).unwrap();
     let payload: J = serde_json::from_slice(&dec(parts[1])).unwrap();
     assert_eq!(payload["iss"], json!(writer));
-    assert_eq!(payload["aud"], json!(format!("{aud}#atproto_space_host")));
+    assert_eq!(payload["aud"], json!(format!("{aud}#atproto_pds")));
     assert_eq!(payload["lxm"], json!("com.atproto.space.notifyWrite"));
     let sig = k256::ecdsa::Signature::from_slice(&dec(parts[2])).unwrap();
     key.verify(format!("{}.{}", parts[0], parts[1]).as_bytes(), &sig).expect("signed by the writer");

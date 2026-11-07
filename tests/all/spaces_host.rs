@@ -393,7 +393,7 @@ async fn allow_list_takes_client_attestations() {
         .as_str()
         .unwrap()
         .to_string();
-    let aud = format!("{}#atproto_space_host", owner.did);
+    let aud = format!("{}#atproto_pds", owner.did);
     let now = chrono::Utc::now().timestamp();
     user.try_credential_at(&s.url, &space, None).await.err(400, "AppNotAuthorized");
     let good = attestation(&sk, &client, &aud, now, now + 60);
@@ -404,7 +404,7 @@ async fn allow_list_takes_client_attestations() {
     let forged = attestation(&other_sk, &client, &aud, now, now + 60);
     user.try_credential_at(&s.url, &space, Some(&forged)).await.err(400, "InvalidClientAttestation");
     // for another authority
-    let elsewhere = attestation(&sk, &client, "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa#atproto_space_host", now, now + 60);
+    let elsewhere = attestation(&sk, &client, "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa#atproto_pds", now, now + 60);
     user.try_credential_at(&s.url, &space, Some(&elsewhere)).await.err(400, "InvalidClientAttestation");
     let bare = attestation(&sk, &client, &owner.did, now, now + 60);
     user.try_credential_at(&s.url, &space, Some(&bare)).await.err(400, "InvalidClientAttestation");
@@ -550,7 +550,7 @@ async fn delete_space_tombstones_and_recreates_fresh() {
         )
         .await;
     assert_eq!(mine.ok()["value"]["text"], json!("member's"));
-    owner.create_record(&space, COLL, Some("late"), rec("late")).await.err(400, "SpaceDeleted");
+    owner.create_record(&space, COLL, Some("late"), rec("late")).await.err(400, "SpaceNotFound");
     // deleting again is fine
     owner.post("com.atproto.simplespace.deleteSpace", json!({"space": space})).await.ok();
     owner
@@ -574,26 +574,24 @@ async fn delete_space_tombstones_and_recreates_fresh() {
     assert_eq!(syncer.calls("/xrpc/com.atproto.space.notifyWrite").len(), before, "the old registration is gone");
 }
 
-/// The authority's writes before createSpace are its own; creating the
-/// space later puts them in listRepos, and deleting a space only written
-/// to drops them (the reference's `ensureSpace`).
+/// The authority writes in its own space only once it exists: before
+/// createSpace a write is SpaceNotFound and writes nothing; after, it's in
+/// listRepos.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn written_before_created() {
     let s = spawn().await;
     let owner = SpaceClient::new(&s, "shw1", OWNER).await;
     let space = format!("at://{}/space/{TYPE}/early", owner.did);
-    owner.create_record(&space, COLL, Some("1"), rec("early")).await.ok();
+    owner.create_record(&space, COLL, Some("1"), rec("early")).await.err(400, "SpaceNotFound");
     get_space(&owner, &space).await.err(400, "SpaceNotFound");
     let ml = || policy("memberListPolicy");
     create(&owner, "early", ml(), ml(), policy("open")).await.ok();
+    let r = owner.get("com.atproto.space.listRecords", &[("space", &space), ("repo", &owner.did)]).await;
+    assert_eq!(r.ok()["records"], json!([]), "the refused write wrote nothing");
+    owner.create_record(&space, COLL, Some("1"), rec("after")).await.ok();
     let cred = owner.credential(&space).await;
     let r = owner.signed_get(&s.url, "com.atproto.space.listRepos", &[("space", &space)], &cred, &owner.did).await;
     assert_eq!(r.ok()["repos"][0]["did"], json!(owner.did), "{:?}", r.json);
-    let only = format!("at://{}/space/{TYPE}/written", owner.did);
-    owner.create_record(&only, COLL, Some("1"), rec("only written")).await.ok();
-    owner.post("com.atproto.simplespace.deleteSpace", json!({"space": only})).await.ok();
-    let r = owner.get("com.atproto.space.listRecords", &[("space", &only), ("repo", &owner.did)]).await;
-    assert_eq!(r.ok()["records"], json!([]));
 }
 
 /// Two vlpds on separate stores sharing a PLC directory.
@@ -716,14 +714,14 @@ async fn notify_write_from_another_vlpds() {
     assert_eq!((p["iss"].clone(), p["aud"].clone()), (json!(owner.did), json!(service)));
 
     // inbound notifies, one wrong thing at a time
-    let aud = format!("{}#atproto_space_host", owner.did);
+    let aud = format!("{}#atproto_pds", owner.did);
     let body =
-        |repo: &str, rev: &str| json!({"space": space, "repo": repo, "repoRev": rev, "hash": b64_bytes(&[7; 32])});
+        |repo: &str, rev: &str| json!({"space": space, "repo": repo, "repoRev": rev, "data": b64_bytes(&[7; 32])});
     // the same repoRev with the hash held, and an older one: no-ops (the
     // same rev with another hash is a takedown's adjusted view, sequenced
     // again: spaces_side::takedowns)
-    let held = repos().await[0]["hash"].clone();
-    let dup = json!({"space": space, "repo": member.did, "repoRev": rev2, "hash": held});
+    let held = repos().await[0]["data"].clone();
+    let dup = json!({"space": space, "repo": member.did, "repoRev": rev2, "data": held});
     notify(&b, &a, &member.did, &aud, dup).await.ok();
     notify(&b, &a, &member.did, &owner.did, body(&member.did, &rev1)).await.ok();
     assert_eq!(repos().await[0]["spaceRev"], json!(space_rev2));
@@ -732,7 +730,7 @@ async fn notify_write_from_another_vlpds() {
     // a writer claimed by someone else's service auth
     notify(&b, &a, &member.did, &aud, body(&stranger.did, &rev2)).await.err_status(403);
     // addressed to another authority
-    notify(&b, &a, &member.did, &format!("{}#atproto_space_host", stranger.did), body(&member.did, &rev2))
+    notify(&b, &a, &member.did, &format!("{}#atproto_pds", stranger.did), body(&member.did, &rev2))
         .await
         .err_status(403);
     // not a member, and a member without write
@@ -745,8 +743,8 @@ async fn notify_write_from_another_vlpds() {
         &b,
         &a,
         &member.did,
-        &format!("{}#atproto_space_host", member.did),
-        json!({"space": foreign, "repo": member.did, "repoRev": now, "hash": b64_bytes(&[7; 32])}),
+        &format!("{}#atproto_pds", member.did),
+        json!({"space": foreign, "repo": member.did, "repoRev": now, "data": b64_bytes(&[7; 32])}),
     )
     .await;
     r.err(400, "SpaceNotFound");
@@ -860,11 +858,10 @@ async fn notify_write_from_another_vlpds() {
     owner.get("com.atproto.space.listRepos", &[("space", &space)]).await.err_status(401);
 }
 
-/// getRepo: the commit and the index as roots, the records in the index's
-/// (dag-cbor key) order, and only the roots with excludeValues.
+/// getRepo: a STAR archive, its metadata the commit getLatestCommit
+/// serves, the records in bytewise path order, folding to its data.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn get_repo_car() {
-    use vlpds::space::{commit, lthash::LtHash};
+async fn get_repo_star() {
     let s = spawn().await;
     let owner = SpaceClient::new(&s, "shc1", OWNER).await;
     let ml = || policy("memberListPolicy");
@@ -873,55 +870,14 @@ async fn get_repo_car() {
         owner.create_record(&space, COLL, Some(rkey), rec(rkey)).await.ok();
     }
     owner.delete_record(&space, COLL, "c").await.ok();
-    let get = |exclude: bool| {
-        let space = space.clone();
-        let owner = &owner;
-        async move {
-            let mut q = vec![("space", space.as_str()), ("repo", owner.did.as_str())];
-            if exclude {
-                q.push(("excludeValues", "true"));
-            }
-            owner.get_raw("com.atproto.space.getRepo", &q).await
-        }
-    };
-    let (status, ctype, car) = get(false).await;
-    assert_eq!((status, ctype.as_str()), (200, "application/vnd.ipld.car"));
-    let (roots, blocks) = vlatproto::car::read_car(&car).unwrap();
-    assert_eq!(roots.len(), 2);
-    assert_eq!(blocks[0].0, roots[0]);
-    assert_eq!(blocks[1].0, roots[1]);
-    let c = Value::decode(blocks[0].1).unwrap().to_json();
-    let index = Value::decode(blocks[1].1).unwrap();
-    let paths: Vec<String> = match &index {
-        Value::Map(m) => m.iter().map(|(k, _)| k.clone()).collect(),
-        other => panic!("index: {other:?}"),
-    };
-    assert_eq!(paths, vec![format!("{COLL}/a"), format!("{COLL}/b"), format!("{COLL}/aa")]);
-    assert_eq!(blocks.len(), 5, "commit, index, three records");
-    let mut set = LtHash::default();
-    for (i, p) in paths.iter().enumerate() {
-        let (coll, rkey) = p.split_once('/').unwrap();
-        let cid = blocks[2 + i].0;
-        assert!(vlatproto::car::block_matches(&cid, blocks[2 + i].1));
-        set.add(&commit::element(coll, rkey, &cid.to_string()));
-    }
-    let bytes = |k: &str| {
-        let s = c[k]["$bytes"].as_str().unwrap_or_else(|| panic!("{k}: {c}"));
-        base64::engine::general_purpose::STANDARD_NO_PAD.decode(s.trim_end_matches('=')).unwrap()
-    };
-    let sc = commit::Commit {
-        ver: c["ver"].as_i64().unwrap(),
-        hash: bytes("hash"),
-        ikm: bytes("ikm"),
-        sig: bytes("sig"),
-        mac: bytes("mac"),
-        rev: c["rev"].as_str().unwrap().to_string(),
-    };
-    assert!(commit::matches(&set, &sc), "the index folds to the commit's hash");
-    let (_, _, idx_only) = get(true).await;
-    let (roots2, blocks2) = vlatproto::car::read_car(&idx_only).unwrap();
-    assert_eq!((roots2.len(), blocks2.len()), (2, 2));
-    assert_eq!(roots2[1], roots[1], "the same index");
+    let q = [("space", space.as_str()), ("repo", owner.did.as_str())];
+    let (status, ctype, star) = owner.get_raw("com.atproto.space.getRepo", &q).await;
+    assert_eq!((status, ctype.as_str()), (200, "application/octet-stream"));
+    let got = crate::common::spaces::verify_star(&star, &space, &owner.did);
+    assert_eq!(got.paths, vec![format!("{COLL}/a"), format!("{COLL}/aa"), format!("{COLL}/b")]);
+    let latest = owner.get("com.atproto.space.getLatestCommit", &q).await.ok();
+    assert_eq!(crate::common::spaces::commit_of(&latest["commit"]), got.commit);
+    assert_eq!(*star.last().unwrap(), 0, "the end byte");
     let r = owner
         .get(
             "com.atproto.space.getRepo",

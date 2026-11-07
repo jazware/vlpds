@@ -194,7 +194,7 @@ async fn takeover_mid_burst(authority_on_victim: bool) {
         assert!(revs.windows(2).all(|p| p[0] <= p[1]), "{}: notifies went back: {revs:?}", w.did);
     }
     for n in remote_auth.seen() {
-        assert_eq!(n.claims["aud"], json!(format!("{}#atproto_space_host", remote_auth.did)), "{n:?}");
+        assert_eq!(n.claims["aud"], json!(format!("{}#atproto_pds", remote_auth.did)), "{n:?}");
         assert!(writers.iter().any(|w| n.claims["iss"] == json!(w.did)), "{n:?}");
     }
 

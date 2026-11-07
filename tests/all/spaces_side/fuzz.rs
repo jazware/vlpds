@@ -6,12 +6,12 @@
 //! write; at checkpoints each repo must agree with it four ways:
 //!
 //! - listRecords holds exactly the model's records;
-//! - the oplog replayed from empty (listRepoOps, paged) folds to the signed
-//!   commit's hash, and a delta pull from the last checkpoint folds onto
-//!   the hash kept from then; the commit verifies under the account's key;
+//! - the oplog replayed from empty (listRepoOps, paged) folds to the
+//!   commit's data, and a delta pull from the last checkpoint folds onto
+//!   the data kept from then; each commit's MAC verifies as it's served;
 //! - vlpds.admin.checkSpace finds nothing wrong;
-//! - getRepo's index folds to its commit's hash, and holds the model's
-//!   paths and CIDs, its blocks in index order (C4).
+//! - getRepo's STAR archive folds to its commit's data and holds the
+//!   model's paths and CIDs, in bytewise path order (C4).
 //!
 //! Then deleteAccount must leave no s* row of the account (C2).
 //!
@@ -369,46 +369,16 @@ async fn list_records(a: &Account, space: &str, ctx: &str) -> Records {
     }
 }
 
-/// getRepo's two-root CAR: the index folds to the commit's hash, matches
-/// `want`, and the record blocks follow in index order, each hashing to its
-/// CID (none with `excludeValues`).
+/// getRepo's STAR archive (its MAC checked as it's served): the records
+/// fold to the commit's data, match `want`, and come in bytewise path
+/// order, each canonical.
 async fn check_get_repo(a: &mut Account, space: &str, want: &Records, ctx: &str) {
-    for exclude in [false, true] {
-        let q: &[(&str, &str)] = if exclude { &[("excludeValues", "true")] } else { &[] };
-        let r = a.read("com.atproto.space.getRepo", space, q).await;
-        assert_eq!(r.status, 200, "{ctx}: getRepo: {}", r.text());
-        let (roots, blocks) = vlatproto::car::read_car(&r.body).expect("getRepo CAR");
-        assert_eq!(roots.len(), 2, "{ctx}: getRepo roots");
-        assert!(blocks.len() >= 2 && blocks[0].0 == roots[0] && blocks[1].0 == roots[1], "{ctx}: roots first");
-        for (c, b) in &blocks {
-            assert!(vlatproto::car::block_matches(c, b), "{ctx}: getRepo block {c} doesn't hash");
-        }
-        let commit = Value::decode(blocks[0].1).expect("commit block");
-        let bytes = |k: &str| match commit.get(k) {
-            Some(Value::Bytes(b)) => b.clone(),
-            other => panic!("{ctx}: commit {k}: {other:?}"),
-        };
-        let Some(Value::Map(index)) = Value::decode(blocks[1].1).ok() else { panic!("{ctx}: index isn't a map") };
-        let mut set = LtHash::default();
-        let mut got = BTreeMap::new();
-        for (path, link) in &index {
-            let Value::Link(cid) = link else { panic!("{ctx}: index {path} isn't a link") };
-            let (c, k) = path.split_once('/').expect("index path");
-            set.add(&commit::element(c, k, &cid.to_string()));
-            got.insert(path.clone(), cid.to_string());
-        }
-        assert_eq!(set.digest().to_vec(), bytes("hash"), "{ctx}: getRepo index doesn't fold to its commit");
-        let want: BTreeMap<String, String> = want.iter().map(|(p, (c, _))| (p.clone(), c.clone())).collect();
-        assert_eq!(got, want, "{ctx}: getRepo index");
-        match exclude {
-            true => assert_eq!(blocks.len(), 2, "{ctx}: excludeValues carries record blocks"),
-            false => {
-                let order: Vec<String> = blocks[2..].iter().map(|(c, _)| c.to_string()).collect();
-                let index_order: Vec<String> = index.iter().map(|(p, _)| got[p].clone()).collect();
-                assert_eq!(order, index_order, "{ctx}: record blocks out of index order");
-            }
-        }
-    }
+    let r = a.read("com.atproto.space.getRepo", space, &[]).await;
+    assert_eq!(r.status, 200, "{ctx}: getRepo: {}", r.text());
+    let got = crate::common::spaces::verify_star(&r.body, space, &a.sc.did);
+    let got: BTreeMap<String, String> = got.records.iter().map(|(p, c, _)| (p.clone(), c.to_string())).collect();
+    let want: BTreeMap<String, String> = want.iter().map(|(p, (c, _))| (p.clone(), c.clone())).collect();
+    assert_eq!(got, want, "{ctx}: getRepo's records");
 }
 
 async fn checkpoint(s: &TestServer, a: &mut Account, r: usize, checks: Checks, ctx: &str) {
@@ -434,9 +404,7 @@ async fn checkpoint(s: &TestServer, a: &mut Account, r: usize, checks: Checks, c
         fold(&mut set, op);
     }
     assert!(commit::matches(&set, &c), "{ctx}: {} op(s) fold to another hash than the commit's", ops.len());
-    let Ok(acct) = s.app.account(&did).await else { panic!("{ctx}: no account") };
-    let key = format!("did:key:{}", acct.signing_pubkey);
-    assert!(c.space == *&space && c.repo == *&did, "{ctx}: the commit doesn't verify");
+    assert!(c.space == space && c.repo == did, "{ctx}: the commit names another repo");
     let mut revs: Vec<&str> = ops.iter().map(|o| o["rev"].as_str().unwrap()).collect();
     assert!(revs.is_sorted(), "{ctx}: ops out of rev order");
     revs.dedup();

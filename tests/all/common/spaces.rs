@@ -135,7 +135,7 @@ impl SpaceClient {
         oauth_resp(oauth::xrpc_dpop(&self.srv, &self.key, &self.access, "GET", nsid, None).await)
     }
 
-    /// A GET whose answer isn't JSON (getRepo's CAR): status, content type
+    /// A GET whose answer isn't JSON (getRepo's STAR archive): status, content type
     /// and body.
     pub async fn get_raw(&self, nsid: &str, query: &[(&str, &str)]) -> (u16, String, Vec<u8>) {
         let url = xrpc_url(&self.srv.base, nsid, query);
@@ -162,7 +162,7 @@ impl SpaceClient {
         unreachable!()
     }
 
-    /// A POST of raw bytes (importRepo's CAR) with a query.
+    /// A POST of raw bytes (importRepo's STAR archive) with a query.
     pub async fn post_bytes(&self, nsid: &str, query: &[(&str, &str)], body: Vec<u8>, ctype: &str) -> Resp {
         let url = xrpc_url(&self.srv.base, nsid, query);
         for attempt in 0..2 {
@@ -359,18 +359,37 @@ pub async fn signed_get_as(
     credential: &str,
     audience: &str,
 ) -> Resp {
+    let repo = query.iter().find(|(n, _)| *n == "repo").map(|(_, v)| *v);
+    let kem = match (mac_type(nsid), repo) {
+        (Some(_), Some(repo)) => kem_key_at(http, base, repo).await,
+        _ => None,
+    };
+    signed_get_kem(http, holder, base, nsid, query, credential, audience, kem.as_deref()).await
+}
+
+/// [`signed_get_as`] with the repo's KEM key already resolved (a poll that
+/// shouldn't resolve it each time).
+#[allow(clippy::too_many_arguments)]
+pub async fn signed_get_kem(
+    http: &reqwest::Client,
+    holder: &Holder,
+    base: &str,
+    nsid: &str,
+    query: &[(&str, &str)],
+    credential: &str,
+    audience: &str,
+    kem: Option<&str>,
+) -> Resp {
     let mut rb = http.get(xrpc_url(base, nsid, query));
     for (k, v) in holder.headers(&format!("Atproto-Space-Credential {credential}"), audience) {
         rb = rb.header(k, v);
     }
     let find = |k: &str| query.iter().find(|(n, _)| *n == k).map(|(_, v)| *v);
     let mut want = None;
-    if let (Some(ty), Some(repo)) = (mac_type(nsid), find("repo")) {
-        if let Some(kem) = kem_key_at(http, base, repo).await {
-            let (share, secret) = mac::encapsulate(&kem).unwrap();
-            rb = rb.header(mac::WANT_MAC_HEADER, mac::format_want_mac(ty, &share));
-            want = Some((ty, secret));
-        }
+    if let (Some(ty), Some(kem)) = (mac_type(nsid), kem) {
+        let (share, secret) = mac::encapsulate(kem).unwrap();
+        rb = rb.header(mac::WANT_MAC_HEADER, mac::format_want_mac(ty, &share));
+        want = Some((ty, secret));
     }
     let r = resp(rb.send().await.unwrap()).await;
     if let (Some((ty, secret)), 200) = (want, r.status) {
@@ -430,4 +449,45 @@ pub fn verify_mac(r: &Resp, nsid: &str, ty: mac::MacType, secret: &[u8; 32], spa
             None => assert!(header.is_none(), "{nsid}: a page without a commit has no MAC"),
         },
     }
+}
+
+/// What a verified getRepo archive holds.
+pub struct Star {
+    pub commit: commit::Commit,
+    pub paths: Vec<String>,
+    /// (path, CID, record bytes), in the archive's order.
+    pub records: Vec<(String, vlatproto::cid::Cid, Vec<u8>)>,
+}
+
+/// Checks a getRepo STAR archive as the reference's `verifyRepoStarFull`
+/// does, the MAC aside ([`signed_get_as`] checks that): repo metadata for
+/// the space and repo asked for, keys in strict bytewise order, each record
+/// canonical DRISL, and the records fold to the commit's `data`.
+pub fn verify_star(body: &[u8], space: &str, repo: &str) -> Star {
+    use vlatproto::cbor::Value;
+    let (meta, pairs) = star::read_all(body, star::LIMITS).expect("a STAR archive");
+    let commit = star::parse_repo_meta(&meta).expect("repo metadata");
+    assert_eq!((commit.space.as_str(), commit.repo.as_str()), (space, repo), "the archive's commit");
+    let mut set = vlpds::space::lthash::LtHash::default();
+    let mut records = Vec::with_capacity(pairs.len());
+    for (i, (key, value)) in pairs.into_iter().enumerate() {
+        if i > 0 {
+            assert!(records.last().is_some_and(|(p, _, _): &(String, _, _)| p.as_bytes() < &key[..]), "strict path order");
+        }
+        let path = String::from_utf8(key).expect("a UTF-8 path");
+        let (c, r) = path.split_once('/').expect("collection/rkey");
+        let mut again = Vec::new();
+        Value::decode(&value).expect("a record").encode(&mut again);
+        assert_eq!(again, value, "{path}: canonical DRISL");
+        let cid = vlatproto::cid::Cid::dag_cbor(&value);
+        set.add(&commit::element(c, r, &cid.to_string()));
+        records.push((path, cid, value));
+    }
+    assert!(commit::matches(&set, &commit), "the records fold to the commit's data");
+    Star { commit, paths: records.iter().map(|r| r.0.clone()).collect(), records }
+}
+
+/// A JSON commit (getLatestCommit, listRepoOps).
+pub fn commit_of(c: &J) -> commit::Commit {
+    commit::Commit::from_json(c).unwrap_or_else(|| panic!("not a commit: {c}"))
 }

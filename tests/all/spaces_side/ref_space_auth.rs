@@ -9,7 +9,7 @@
 //! - Tokens the reference forges with an account's own key (which vlpds
 //!   never hands out) are signed by a [`MockService`] DID standing in for
 //!   that party: a member forging a credential, a user misaddressing a
-//!   delegation token, an authority publishing no `#atproto_space` key.
+//!   delegation token.
 //! - The OAuth scope suite gets real grants (`regrant`) where the reference
 //!   stubs the verifier.
 //! - Revocation storage internals (row counts, the hour of retention, a
@@ -137,9 +137,51 @@ async fn refuses_a_credential_without_a_signature() {
     raw_get(&net.pds[0].url, "com.atproto.space.getLatestCommit", &q, &unsigned).await.err(401, "BadSpaceSignature");
 }
 
+/// HTTP message signature binding: "recognizes the credential scheme
+/// regardless of case", the signature over the Authorization value as sent
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recognizes_the_credential_scheme_regardless_of_case() {
+    let net = Net::new(0).await;
+    let (alice, carol) = (net.actor("alice", 0).await, net.actor("carol", 0).await);
+    let space = net.create_space(&alice, SpaceOpts { members: &[&carol], ..Default::default() }).await;
+    write(&alice, &space, W::new()).await.ok();
+    let cred = net.credential_for(&carol, &space).await;
+    let q = [("space", space.as_str()), ("repo", alice.did.as_str())];
+    let h = cred.holder.headers(&format!("atproto-space-credential {}", cred.credential), &alice.did);
+    raw_get(&net.pds[0].url, "com.atproto.space.listRecords", &q, &h).await.ok();
+    // signed over one casing, sent with another: the base is byte-exact
+    let mut h = cred.holder.headers(&format!("Atproto-Space-Credential {}", cred.credential), &alice.did);
+    h[0].1 = format!("ATPROTO-SPACE-CREDENTIAL {}", cred.credential);
+    raw_get(&net.pds[0].url, "com.atproto.space.listRecords", &q, &h).await.err(401, "BadSpaceSignature");
+}
+
+/// The October 1 scheme (`Atproto-Space`, label `atproto-space`) is gone:
+/// 400 InvalidToken "Unsupported authorization type", not a signature
+/// error (the reference's migration note, section 2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn refuses_the_old_credential_scheme() {
+    let net = Net::new(0).await;
+    let alice = net.actor("alice", 0).await;
+    let space = net.create_space(&alice, SpaceOpts::default()).await;
+    write(&alice, &space, W::new()).await.ok();
+    let cred = net.credential_for(&alice, &space).await;
+    let q = [("space", space.as_str()), ("repo", alice.did.as_str())];
+    let mut h = cred.headers(&alice.did);
+    h[0].1 = format!("Atproto-Space {}", cred.credential);
+    for (k, v) in h.iter_mut() {
+        if k == "signature-input" || k == "signature" {
+            *v = v.replacen("atproto-space-credential=", "atproto-space=", 1);
+        }
+    }
+    let r = raw_get(&net.pds[0].url, "com.atproto.space.listRecords", &q, &h).await;
+    r.err(400, "InvalidToken");
+    assert!(r.json["message"].as_str().unwrap().contains("Unsupported authorization type"), "{}", r.text());
+}
+
 /// HTTP message signature binding: "responds $expectedStatus to repeated
-/// $name fields": a repeated authorization or audience is refused, an
-/// extra signature label is ignored.
+/// $name fields": a repeated audience is refused, an extra signature label
+/// is ignored (and a repeated authorization, which the reference no longer
+/// lists, is refused too).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn responds_to_repeated_signature_fields() {
     let net = Net::new(0).await;
@@ -157,7 +199,7 @@ async fn responds_to_repeated_signature_fields() {
         let mut h = cred.headers(&alice.did);
         let same = h.iter().find(|(k, _)| k == name).unwrap().1.clone();
         h.push((name.to_string(), extra.map(String::from).unwrap_or(same)));
-        let r = raw_get(&net.pds[0].url, "com.atproto.space.getLatestCommit", &q, &h).await;
+        let r = raw_get(&net.pds[0].url, "com.atproto.space.listRecords", &q, &h).await;
         assert_eq!(r.status, status, "repeated {name}: {}", r.text());
     }
 }
@@ -220,9 +262,9 @@ async fn reuses_a_signature_for_the_same_audience_across_requests() {
     let q = [("space", space.as_str()), ("repo", alice.did.as_str())];
     let base = &net.pds[0].url;
     for _ in 0..2 {
-        raw_get(base, "com.atproto.space.getLatestCommit", &q, &h).await.ok();
+        raw_get(base, "com.atproto.space.listRecords", &q, &h).await.ok();
     }
-    raw_get(base, "com.atproto.space.listRecords", &q, &h).await.ok();
+    raw_get(base, "com.atproto.space.listBlobs", &q, &h).await.ok();
     raw_post(base, "com.atproto.space.registerNotify", json!({"space": space, "service": alice.did}), &h).await.ok();
 }
 
@@ -288,29 +330,6 @@ async fn refuses_a_credential_the_authority_did_not_issue() {
     // listRepos authorizes off the credential too, on a separate path.
     let r = forged.get(base, "com.atproto.space.listRepos", &[("space", &space)]).await;
     refused_mentioning(&r, &["not the space authority"]);
-}
-
-/// space credentials: "refuses one whose kid names a key the authority does
-/// not publish". The authority is a did:web publishing only `#atproto`,
-/// and alice holds a repo in its space; a credential it signs under kid
-/// `#atproto` reads, one claiming `#atproto_space` doesn't.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn refuses_a_credential_whose_kid_the_authority_does_not_publish() {
-    let net = Net::new(0).await;
-    let alice = net.actor("alice", 0).await;
-    let authority = MockService::space_host().await;
-    let space = format!("at://{}/space/{TEST_SPACE_TYPE}/kid", authority.did);
-    write(&alice, &space, W::new()).await.ok();
-    let q = [("space", space.as_str()), ("repo", alice.did.as_str())];
-    let cred = |kid: &'static str| {
-        let holder = Holder::new();
-        let m =
-            Mint { iss: &authority.did, sub: &space, key_id: Some(&holder.did), kid: Some(kid), ..Default::default() };
-        Cred { credential: authority.token(TokenType::Credential, m), holder, http: reqwest::Client::new() }
-    };
-    cred("#atproto").get(&net.pds[0].url, "com.atproto.space.getLatestCommit", &q).await.ok();
-    let r = cred("#atproto_space").get(&net.pds[0].url, "com.atproto.space.getLatestCommit", &q).await;
-    refused_mentioning(&r, &["key"]);
 }
 
 /// space credentials: "refuses one for a revoked member"

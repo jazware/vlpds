@@ -11,7 +11,7 @@
 //!   than writes (a flush or checkpoint, never one per write).
 
 use super::hooks::StubDid;
-use crate::common::spaces::{space_uri, SpaceClient};
+use crate::common::spaces::{kem_key_at, signed_get_kem, space_uri, SpaceClient};
 use crate::common::*;
 use object_store::path::Path;
 use object_store::{
@@ -192,11 +192,23 @@ async fn noop_polls_read_nothing() {
     // read it on their clocks, dozens of times over 100 polls on a slow
     // runner. Holding every read instead stalls those loops and any poll
     // that needs one, so a poll that answers needed nothing from the bucket.
+    // the syncer has the author's KEM key already: resolving it isn't the poll
+    let kem = kem_key_at(&a.srv.http, &s.url, &a.did).await;
+    assert!(kem.is_some(), "a KEM key");
     n.held.send_replace(true);
     let mut polls = 0;
     while polls < 100 && filled.elapsed() < Duration::from_secs(40) {
         polls += 1;
-        let poll = a.signed_get(&s.url, "com.atproto.space.listRepoOps", &since, &cred, &a.did);
+        let poll = signed_get_kem(
+            &a.srv.http,
+            &a.holder,
+            &s.url,
+            "com.atproto.space.listRepoOps",
+            &since,
+            &cred,
+            &a.did,
+            kem.as_deref(),
+        );
         let Ok(r) = tokio::time::timeout(Duration::from_secs(10), poll).await else {
             let held = n.held_reads.lock().unwrap().clone();
             panic!("a poll at the head waited on the bucket; reads held meanwhile: {held:#?}");

@@ -4,7 +4,7 @@
 //! space repos aren't included yet. `backup_space_step_needs_oauth` pins
 //! why. The rest holds what an OAuth-backed space backup, once the account
 //! page moves to OAuth, gets from the server: [`space_backup`] models it
-//! (`spaces/<sid>/space.txt`, `spaces/<sid>/repo.car` per space listSpaces
+//! (`spaces/<sid>/space.txt`, `spaces/<sid>/repo.star` per space listSpaces
 //! names, its space blobs in `blobs/<cid>`), with every space repo of the
 //! account and nothing of any other member's, and a restore through
 //! importRepo on a new host.
@@ -45,7 +45,7 @@ pub(super) async fn space_backup(sc: &SpaceClient) -> BTreeMap<String, Vec<u8>> 
             continue;
         }
         assert_eq!(r.status, 200, "getRepo {space}: {}", r.text());
-        files.insert(format!("{dir}/repo.car"), r.body.to_vec());
+        files.insert(format!("{dir}/repo.star"), r.body.to_vec());
         let lb =
             sc.get("com.atproto.space.listBlobs", &[("space", &space), ("repo", &sc.did), ("limit", "1000")]).await;
         for cid in lb.ok()["cids"].as_array().cloned().unwrap_or_default() {
@@ -64,7 +64,8 @@ pub(super) async fn space_backup(sc: &SpaceClient) -> BTreeMap<String, Vec<u8>> 
 /// member; all three write, with blobs, in both. Everyone's sentinels but
 /// bob's are collected.
 struct Mixed {
-    net: Net,
+    /// Holds the hosts up.
+    _net: Net,
     bob: SpaceClient,
     spaces: [String; 2],
     others: Sentinels,
@@ -96,7 +97,7 @@ async fn mixed() -> Mixed {
         tagged_write(&bob, space, "b", &format!("zqbob{i}text"), None).await;
         write(&bob, space, W::new().rkey("plain").text(&format!("zqbob{i}plain"))).await.ok();
     }
-    Mixed { net, bob, spaces: [alices, bobs], others }
+    Mixed { _net: net, bob, spaces: [alices, bobs], others }
 }
 
 /// The backup holds a verifying repo per space the account is in (the one
@@ -106,13 +107,12 @@ async fn mixed() -> Mixed {
 async fn backup_holds_each_space_repo_and_no_other_members_data() {
     let m = mixed().await;
     let files = space_backup(&m.bob).await;
-    let key = did_key(&m.net.pds[0], &m.bob.did).await;
     let mut want_files = vec![];
     let mut blobs = std::collections::BTreeSet::new();
     for space in &m.spaces {
         let dir = format!("spaces/{}", sid_hex(space));
         assert_eq!(files[&format!("{dir}/space.txt")], format!("{space}\n").into_bytes());
-        let v = verify_repo_car(&files[&format!("{dir}/repo.car")], space, &m.bob.did, &key, true)
+        let v = verify_repo_star(&files[&format!("{dir}/repo.star")], space, &m.bob.did)
             .unwrap_or_else(|e| panic!("{space}: the backup's repo doesn't verify: {e}"));
         let own: BTreeMap<String, String> = all_records(&m.bob, space)
             .await
@@ -127,7 +127,7 @@ async fn backup_holds_each_space_repo_and_no_other_members_data() {
         assert_eq!(v.set(), own, "{space}: exactly bob's records");
         assert_eq!(v.set().len(), 2);
         want_files.push(format!("{dir}/space.txt"));
-        want_files.push(format!("{dir}/repo.car"));
+        want_files.push(format!("{dir}/repo.star"));
         let lb = m.bob.get("com.atproto.space.listBlobs", &[("space", space), ("repo", &m.bob.did)]).await.ok();
         blobs.extend(lb["cids"].as_array().unwrap().iter().map(|c| format!("blobs/{}", c.as_str().unwrap())));
     }
@@ -196,9 +196,9 @@ async fn backup_space_step_needs_oauth() {
 }
 
 /// The backup restores on a new host: bob's account arrives there, each
-/// `spaces/<sid>/repo.car` imports into the space its `space.txt` names,
+/// `spaces/<sid>/repo.star` imports into the space its `space.txt` names,
 /// the `blobs/` go up as listMissingBlobs asks, and every space repo is back
-/// as it was (head, records, blobs), check-space clean.
+/// as it was (data, records, blobs; at a new rev), check-space clean.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn backup_restores_on_a_new_host() {
     let h = two_hosts().await;
@@ -223,10 +223,17 @@ async fn backup_restores_on_a_new_host() {
     let arrived = arrive(&h.b, &h.bob.did, sa).await;
     complete_move(&h.docs, &h.b, &arrived).await;
     let moved = arrived.oauth(&h.b).await;
+    // bob's own space comes first: its repo there is the authority's
+    assert_eq!(moved.create_space(TEST_SPACE_TYPE, last_segment(&own)).await, own);
     for (path, bytes) in &files {
-        let Some(dir) = path.strip_suffix("/repo.car") else { continue };
+        let Some(dir) = path.strip_suffix("/repo.star") else { continue };
         let space = String::from_utf8(files[&format!("{dir}/space.txt")].clone()).unwrap().trim().to_string();
-        import_repo(&moved, &space, bytes).await.ok();
+        assert_eq!(
+            verify_repo_star(bytes, &space, &h.bob.did).unwrap().commit.space,
+            space,
+            "the archive names its space"
+        );
+        import_repo(&moved, bytes).await.ok();
     }
     // the blobs listMissingBlobs asks for, which the backup holds
     let missing = h.b.xrpc.get("com.atproto.repo.listMissingBlobs", &[], &arrived.session).await.ok();
@@ -240,7 +247,9 @@ async fn backup_restores_on_a_new_host() {
     let missing = h.b.xrpc.get("com.atproto.repo.listMissingBlobs", &[], &arrived.session).await.ok();
     assert_eq!(missing["blobs"], json!([]));
     for (space, head) in [&h.space, &own].into_iter().zip(heads) {
-        assert_eq!(repo_state(&moved, space).await, Some(head), "{space}");
+        let (rev, data) = repo_state(&moved, space).await.unwrap();
+        assert!(rev > head.0, "{space}: at a new rev");
+        assert_eq!(data, head.1, "{space}");
         expect_set_hash_matches_store(&moved, space).await;
         let (r, out) = admin_cli(&h.b.url, &["--json", "check-space", &h.bob.did, space]).await;
         assert!(r.is_ok(), "{out}");
