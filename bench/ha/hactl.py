@@ -2387,7 +2387,7 @@ def finalize(idx, expect, level=None):
 # previous release's newest, which a prefix it creates starts at.
 REAL_MAX = 3
 TEST_LEVEL = REAL_MAX + 1
-OLD_LEVEL = 2
+OLD_LEVEL = 3
 
 
 def upgrade_checks(ctx, res, finalized, new_formats):
