@@ -1,5 +1,6 @@
 import { Fragment } from 'react'
 import { Topbar, CopyText, Status } from '../components/ui'
+import { brand } from '../lib/brand'
 import { useLoad, useSession } from '../lib/hooks'
 import { Link } from '../lib/router'
 import { call } from '../lib/xrpc'
@@ -133,6 +134,13 @@ export function Landing() {
         <a href="/.well-known/oauth-authorization-server">OAuth metadata</a>
         {info?.links?.privacyPolicy && <a href={info.links.privacyPolicy}>Privacy</a>}
         {info?.links?.termsOfService && <a href={info.links.termsOfService}>Terms</a>}
+        {brand.links
+          .filter((l) => l.label === 'Home' || l.label === 'Support')
+          .map((l) => (
+            <a key={l.label} href={l.url}>
+              {l.label}
+            </a>
+          ))}
         {info?.contact?.email && (
           <span>
             Report abuse: <Email address={info.contact.email} />

@@ -27,6 +27,7 @@ import { Limits } from './Limits'
 import { SignInProviders } from './SignInProviders'
 import { SpaceByUri, Spaces } from './Spaces'
 import { Storage } from './Storage'
+import { Theme } from './Theme'
 import './systemDetails'
 
 // The operator console: the gate (a proxy's sign-in, else the token), then the shell around one
@@ -81,6 +82,9 @@ function route(p: string): Route {
     case '/admin/signin':
     case '/admin/sign-in-providers':
       return { section: S.signin, page: <SignInProviders /> }
+    case '/admin/theme':
+    case '/admin/branding':
+      return { section: S.theme, page: <Theme /> }
     case '/admin/appview':
     case '/admin/appview-override':
       return { section: S.appview, page: <AppviewOverride /> }

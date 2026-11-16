@@ -204,8 +204,59 @@ fn origin_and_host(public_url: &str) -> (String, String) {
     (origin, host)
 }
 
+/// The theme's name, else `--email-brand-name`, else the host.
 fn site_name(app: &App, host: &str) -> String {
-    app.config.email_branding.name.clone().unwrap_or_else(|| host.to_string())
+    app.theme
+        .current()
+        .brand
+        .name
+        .clone()
+        .or_else(|| app.config.email_branding.name.clone())
+        .unwrap_or_else(|| host.to_string())
+}
+
+/// What a themed shell adds to its `<head>` (crate::theme): the theme's
+/// stylesheet (`style-src 'self'`), its favicon, and the name, logo and
+/// links for the SPA's header as a JSON data block (not script: the CSP's
+/// `script-src 'self'` doesn't apply to it). Nothing when unthemed.
+fn theme_head(app: &App) -> String {
+    let c = app.theme.current();
+    let b = &c.brand;
+    let mut h = String::new();
+    if !c.css.is_empty() {
+        h.push_str(&format!("\n    <link rel=\"stylesheet\" href=\"{}?v={}\" />", crate::theme::CSS_PATH, b.css_tag));
+    }
+    if let Some(icon) = &b.favicon {
+        h.push_str(&format!("\n    <link rel=\"icon\" href=\"{}\" />", esc(icon)));
+    }
+    if !b.is_default() {
+        let data = json!({
+            "name": b.name,
+            "logo": b.logo,
+            "wordmark": b.wordmark,
+            "links": b.links.iter().map(|(l, u)| json!({"label": l, "url": u})).collect::<Vec<_>>(),
+        });
+        let data = data.to_string().replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026");
+        h.push_str(&format!("\n    <script type=\"application/json\" id=\"vlpds-brand\">{data}</script>"));
+    }
+    h
+}
+
+/// `head` without its `<link rel="icon" …>` tags (a themed favicon replaces them).
+fn drop_icons(head: &str) -> String {
+    let mut out = String::with_capacity(head.len());
+    let mut rest = head;
+    while let Some(i) = rest.find("<link rel=\"icon\"") {
+        out.push_str(&rest[..i]);
+        match rest[i..].find('>') {
+            Some(j) => rest = rest[i + j + 1..].trim_start_matches(['\n', ' ']),
+            None => {
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 impl PageHead<'_> {
@@ -240,7 +291,7 @@ async fn landing_shell(State(app): AppState) -> Response {
     let (_, host) = origin_and_host(&app.config.public_url);
     let site = site_name(&app, &host);
     let head = PageHead {
-        title: format!("{site} · vlpds"),
+        title: if app.theme.current().brand.name.is_some() { site.clone() } else { format!("{site} · vlpds") },
         description: format!(
             "{site} is a personal data server for the AT Protocol: Bluesky accounts whose posts, likes and follows live here as signed repositories. \
 Sign in, create an account, or move an existing Bluesky account here."
@@ -250,13 +301,13 @@ Sign in, create an account, or move an existing Bluesky account here."
         og_type: "website",
         noindex: false,
     };
-    shell_with(&app, StatusCode::OK, &head, SPA_CSP)
+    shell_with(&app, StatusCode::OK, &head, SPA_CSP, true)
 }
 
 async fn account_shell(State(app): AppState) -> Response {
     let (_, host) = origin_and_host(&app.config.public_url);
     let head = PageHead {
-        title: "Account · vlpds".into(),
+        title: format!("Account · {}", app.theme.current().brand.display_name()),
         description: format!(
             "Manage your AT Protocol account on {host}: sign-in security, app passwords, your repository and data."
         ),
@@ -265,7 +316,7 @@ async fn account_shell(State(app): AppState) -> Response {
         og_type: "website",
         noindex: true,
     };
-    shell_with(&app, StatusCode::OK, &head, SPA_CSP)
+    shell_with(&app, StatusCode::OK, &head, SPA_CSP, true)
 }
 
 async fn admin_shell(State(app): AppState) -> Response {
@@ -278,7 +329,7 @@ async fn admin_shell(State(app): AppState) -> Response {
         og_type: "website",
         noindex: true,
     };
-    shell_with(&app, StatusCode::OK, &head, SPA_CSP)
+    shell_with(&app, StatusCode::OK, &head, SPA_CSP, false)
 }
 
 async fn migrate_shell(State(app): AppState) -> Response {
@@ -294,7 +345,7 @@ Your handle, followers and posts come with you."
         og_type: "website",
         noindex: false,
     };
-    shell_with(&app, StatusCode::OK, &head, if app.config.dev_mode { MIGRATE_CSP_DEV } else { MIGRATE_CSP })
+    shell_with(&app, StatusCode::OK, &head, if app.config.dev_mode { MIGRATE_CSP_DEV } else { MIGRATE_CSP }, true)
 }
 
 /// The page's slug as DocsApp reads it (`/docs` is the overview).
@@ -320,7 +371,7 @@ async fn docs_shell(State(app): AppState, uri: axum::http::Uri) -> Response {
             og_type: "website",
             noindex: true,
         };
-        return shell_with(&app, status, &head, SPA_CSP);
+        return shell_with(&app, status, &head, SPA_CSP, false);
     };
     let head = PageHead {
         title: format!("{} · vlpds docs", doc.title),
@@ -330,12 +381,20 @@ async fn docs_shell(State(app): AppState, uri: axum::http::Uri) -> Response {
         og_type: "article",
         noindex: doc.status == "stub",
     };
-    shell_with(&app, StatusCode::OK, &head, SPA_CSP)
+    shell_with(&app, StatusCode::OK, &head, SPA_CSP, false)
 }
 
-fn shell_with(app: &App, status: StatusCode, head: &PageHead, csp: &'static str) -> Response {
+/// `themed`: the pages users see (the operator console and the docs stay
+/// vlpds's).
+fn shell_with(app: &App, status: StatusCode, head: &PageHead, csp: &'static str, themed: bool) -> Response {
     let (before, after) = &app.ui.shell;
-    let html = format!("{before}{}{after}", head.render(app));
+    let html = match themed.then(|| theme_head(app)).filter(|h| !h.is_empty()) {
+        None => format!("{before}{}{after}", head.render(app)),
+        Some(extra) => {
+            let before = if app.theme.current().brand.favicon.is_some() { drop_icons(before) } else { before.clone() };
+            format!("{before}{}{extra}{after}", head.render(app))
+        }
+    };
     let mut r =
         (status, [(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], html)
             .into_response();

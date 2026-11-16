@@ -3,6 +3,7 @@ import { errText } from '../lib/xrpc'
 import { setTheme, useTheme, type Theme } from '../lib/hooks'
 import { Link } from '../lib/router'
 import * as I from './icons'
+import { brand } from '../lib/brand'
 
 export function Notice({ kind = 'info', children }: { kind?: 'info' | 'ok' | 'warn' | 'err'; children: ReactNode }) {
   const Icon = kind === 'ok' ? I.Check : kind === 'info' ? I.Info : I.Alert
@@ -411,9 +412,9 @@ export function Topbar({ where, children }: { where?: string; children?: ReactNo
   return (
     <>
       <header className="topbar">
-        <Link to="/" className="wordmark" aria-label="vlpds home">
-          <I.Mark />
-          vlpds
+        <Link to="/" className="wordmark" aria-label={`${brand.name} home`}>
+          {brand.logo ? <img className="logo" src={brand.logo} alt={brand.wordmark ? brand.name : ''} /> : <I.Mark />}
+          {!brand.wordmark && brand.name}
           {where && <span className="where">{where}</span>}
         </Link>
         <div className="spacer" />
@@ -427,6 +428,21 @@ export function Topbar({ where, children }: { where?: string; children?: ReactNo
 }
 
 const SOURCE_URL = 'https://github.com/jazware/vlpds'
+
+/** The operator's links (home, terms, privacy, support), under the page; nothing when unthemed. */
+export function BrandFooter({ skip = [] }: { skip?: string[] }) {
+  const links = brand.links.filter((l) => !skip.includes(l.label))
+  if (!links.length) return null
+  return (
+    <nav className="brand-links" aria-label={brand.name}>
+      {links.map((l) => (
+        <a key={l.label} href={l.url}>
+          {l.label}
+        </a>
+      ))}
+    </nav>
+  )
+}
 
 // ---------------------------------------------------------------- JSON
 

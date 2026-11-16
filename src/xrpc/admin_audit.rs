@@ -40,6 +40,7 @@ pub const AUDITED: &[(&str, &[&str])] = &[
     ("vlpds.admin.moderate", &["takedown", "restore"]),
     ("vlpds.admin.publishIdentity", &["identity.publish"]),
     ("vlpds.admin.putSignInProvider", &["signin_provider.put"]),
+    ("vlpds.admin.putTheme", &["theme.put"]),
     ("vlpds.admin.rebuildRepo", &["repo.rebuild"]),
     ("vlpds.admin.recountRepo", &["repo.recount"]),
     ("vlpds.admin.removeHandleDomain", &["domain.remove"]),

@@ -223,6 +223,26 @@ code,
 .wordmark svg {
   color: var(--accent);
 }
+.wordmark img.logo {
+  display: block;
+  height: 26px;
+  width: auto;
+  max-width: 180px;
+  object-fit: contain;
+}
+/* the operator theme's links (BrandFooter) */
+.brand-links {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin: 32px 0 8px;
+  font-size: 13px;
+}
+.brand-links a {
+  color: var(--ink2);
+}
 .wordmark .where {
   font-weight: 500;
   color: var(--ink2);
@@ -235,7 +255,8 @@ code,
 /* The signature: two thin strata under the bar (segment written, state applied). */
 .strata {
   height: 4px;
-  background: linear-gradient(var(--accent) 0 2px, transparent 2px 3px, var(--amber) 3px 4px);
+  /* --brand2: the operator theme's secondary color (/theme.css), else amber */
+  background: linear-gradient(var(--accent) 0 2px, transparent 2px 3px, var(--brand2, var(--amber)) 3px 4px);
   opacity: 0.9;
 }
 
