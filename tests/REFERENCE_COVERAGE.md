@@ -940,7 +940,7 @@ retries) are `spaces_side::stored_legacy`, and `just spaces-migrate` runs an old
 | divergent | 5 |
 | covered | 4 |
 | N/A | 5 |
-| GAP | 3 |
+| GAP | 2 |
 | **total** | **254** |
 
 Counted per `it()` case, with each `it.each` row counted once per value. Rows marked "(vlpds)" are vlpds-only tests (the 300 s
@@ -1022,7 +1022,7 @@ cap, the old credential scheme, the credential key binding) and aren't counted. 
 | account status: lets an admin read a taken-down repo | divergent | the admin token gets nothing from `com.atproto.space.*`. Operators read through the audited `vlpds.admin.getSpaceRepo`/`listSpaceRecords`/`getSpaceRecord` (`spaces_admin::operator_reads_are_audited`, `spaces_side::operator_reads::operators_read_taken_down_records`) |
 | account status: lets a taken-down account export its spaces | divergent | space data is OAuth-only, and a takedown revokes OAuth sessions for good, so a taken-down account exports nothing: its `allowTakendown` session is refused on every space method (`..::taken_down_account_exports_nothing`) |
 | account status: refuses a space record as a takedown subject | divergent | record takedowns of space records are a vlpds extension: updateSubjectStatus applies one (`spaces_side::takedowns::*`, `spaces_admin::blobs_of_taken_down_records_are_hidden`) |
-| account status: reports a space record as not taken down | GAP | getSubjectStatus with a space record URI answers 400 "invalid at-uri" (`xrpc/admin.rs`, the `uri` branch parses public record paths only), where the reference answers `{subject: strongRef, takedown: {applied: false}}`. vlpds applies space record takedowns, so the fix is to report their state there too |
+| account status: reports a space record as not taken down | ported | `spaces_side::takedowns::subject_status_reports_a_space_record`: the same strongRef with `takedown: {applied: false}`, and NotFound for a missing record. Divergent only in that vlpds applies space record takedowns, so a taken-down record answers `applied: true` with its ref |
 | OAuth scopes: enforces the collection a grant names | ported | `..::oauth_enforces_the_collection_a_grant_names` (C1). Real grants, not a stubbed verifier |
 | OAuth scopes: enforces the action a grant names | ported | `..::oauth_enforces_the_action_a_grant_names` (C1) |
 | OAuth scopes: requires delete on every collection a clear removes | ported | `..::oauth_requires_delete_on_every_collection_a_clear_removes` |

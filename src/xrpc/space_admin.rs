@@ -52,6 +52,24 @@ fn record_json(uri: &str, v: &[u8], takendown: bool) -> XResult<J> {
     Ok(json!({"uri": uri, "cid": cid.to_string(), "value": value.to_json(), "takendown": takendown}))
 }
 
+/// The CID of the space record `uri` names, None when there is none (or
+/// Spaces is off). A taken-down record still has one.
+pub(super) async fn record_cid(app: &App, uri: &str) -> XResult<Option<String>> {
+    let Some(u) = vlatproto::syntax::parse_space_uri(uri) else { return Ok(None) };
+    let Some((author, collection, rkey)) = u.record else { return Ok(None) };
+    let Ok(sp) = spaces(app) else { return Ok(None) };
+    let space = Space::parse(&format!("at://{}/space/{}/{}", u.authority, u.space_type, u.skey))?;
+    let p = app.partition(author)?;
+    if load_head(sp, &p, author, &space).await?.is_none() {
+        return Ok(None);
+    }
+    let path = format!("{collection}/{rkey}");
+    let v = p.db.get(state::space_record_key(author, &space.sid, &path)).await.map_err(XrpcError::from_err)?;
+    let Some(v) = v else { return Ok(None) };
+    let (cid, _) = state::record_value_parts(&v).map_err(XrpcError::from_err)?;
+    Ok(Some(cid.to_string()))
+}
+
 #[derive(Deserialize)]
 struct RepoQ {
     space: String,

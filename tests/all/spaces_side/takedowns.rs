@@ -89,6 +89,33 @@ async fn record_takedown_hides_it_from_records_and_op_values() {
     assert_eq!(listed(&base, &cred, &t.space, &t.bob.did).await.len(), 2);
 }
 
+/// getSubjectStatus with a space record's URI answers the record's strongRef
+/// and `takedown: {applied: false}` (the reference's answer), applied with the
+/// takedown's ref while one holds, and NotFound for a record that isn't there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn subject_status_reports_a_space_record() {
+    let t = td().await;
+    let (uri, cid) = t.bob_writes("status", "a record").await;
+    let pds = &t.net.pds[1];
+    let get = |u: &str| {
+        let u = u.to_string();
+        async move { pds.xrpc.get("com.atproto.admin.getSubjectStatus", &[("uri", &u)], &Auth::Admin).await }
+    };
+    let expect = |applied: bool| {
+        let mut td = json!({"applied": applied});
+        if applied {
+            td["ref"] = json!("phase3");
+        }
+        json!({"subject": {"$type": "com.atproto.repo.strongRef", "uri": uri, "cid": cid}, "takedown": td})
+    };
+    assert_eq!(get(&uri).await.ok(), expect(false));
+    t.takedown_bobs("status", &cid, true).await;
+    assert_eq!(get(&uri).await.ok(), expect(true));
+    t.takedown_bobs("status", &cid, false).await;
+    assert_eq!(get(&uri).await.ok(), expect(false));
+    get(&t.uri("missing")).await.err(400, "NotFound");
+}
+
 /// A blob is served while a record that isn't taken down names it:
 /// getBlob answers BlobNotFound and listBlobs leaves it out once every
 /// record of the repo in this space naming it is taken down.

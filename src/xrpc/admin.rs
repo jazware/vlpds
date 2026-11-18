@@ -964,16 +964,29 @@ async fn get_subject_status(
             })
         })
     } else if let Some(uri) = &q.uri {
-        let did = uri
-            .strip_prefix("at://")
-            .and_then(|r| r.split('/').next())
-            .ok_or_else(|| invalid_request("invalid at-uri"))?;
-        let td = get_json::<J>(&app, did, &format!("{TAKEDOWN}rec/{}", record_path(uri, did)?)).await?;
-        let cid = current_record_cid(&app, uri).await;
+        // a space record: its CID and whether a takedown (a vlpds extension) hides it
+        let space = vlatproto::syntax::parse_space_uri(uri);
+        let did = match &space {
+            Some(u) => u.record.map(|(author, _, _)| author),
+            None => uri.strip_prefix("at://").and_then(|r| r.split('/').next()),
+        }
+        .ok_or_else(|| invalid_request("invalid at-uri"))?;
+        let (td, cid) = if space.is_some() {
+            let td = get_json::<J>(&app, did, &format!("{TAKEDOWN}{}", record_takedown_name(uri, did)?)).await?;
+            (td, super::space_admin::record_cid(&app, uri).await?)
+        } else {
+            let td = get_json::<J>(&app, did, &format!("{TAKEDOWN}rec/{}", record_path(uri, did)?)).await?;
+            (td, current_record_cid(&app, uri).await)
+        };
         match (td, cid) {
             (Some(t), Some(cid)) => Some(json!({
                 "subject": {"$type": "com.atproto.repo.strongRef", "uri": uri, "cid": cid},
                 "takedown": status_attr(true, t["ref"].as_str()),
+            })),
+            // the reference answers a record that exists and isn't taken down with applied false
+            (None, Some(cid)) if space.is_some() => Some(json!({
+                "subject": {"$type": "com.atproto.repo.strongRef", "uri": uri, "cid": cid},
+                "takedown": status_attr(false, None),
             })),
             _ => None,
         }
