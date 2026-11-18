@@ -70,7 +70,7 @@ class Repo {
 
 async function main() {
   const env = { svcs: [], proxies: [], hostProxies: {} }
-  const stats = { ops: 0, acked: 0, failed: 0, uncertain: 0, membership: 0, faultsFired: [] }
+  const stats = { ops: 0, acked: 0, failed: 0, uncertain: 0, membership: 0, membershipFailed: 0, faultsFired: [] }
   const ackTimes = [] // { space, did, t }
   try {
     if (hostList.includes('vlpds')) env.vlpds = await new Vlpds({ cluster: !!process.env.CLUSTER, memory: !!process.env.MEMORY }).start()
@@ -277,16 +277,35 @@ async function membership(sp, stats) {
   const candidates = sp.writers.filter((w) => w !== sp.authority)
   if (sp.removed.size && chance(0.5)) {
     const did = pick([...sp.removed])
-    await putMember(sp.authority, sp.uri, did, true, true)
+    // a re-add that may not have applied still counts as removed: that checks less of the writer, never wrongly
+    const put = () => sp.authority.client.com.atproto.memberspace.putMembers({ space: sp.uri, members: [{ did, read: true, write: true }] })
+    if ((await memberCall(sp, 'putMembers', put, stats)) !== 'applied') return
     sp.removed.delete(did)
     // writes made while removed were never tracked; the next one catches the authority up
     sp.repos.get(did).stale = true
   } else if (candidates.length > 1) {
     const w = pick(candidates)
     if (sp.removed.has(w.did)) return
-    await attempt(() => sp.authority.client.com.atproto.memberspace.removeMembers({ space: sp.uri, dids: [w.did] }))
+    // a removal that may have applied counts: a removed writer counted as active would fail I2
+    const remove = () => sp.authority.client.com.atproto.memberspace.removeMembers({ space: sp.uri, dids: [w.did] })
+    if ((await memberCall(sp, 'removeMembers', remove, stats)) === 'not applied') return
     sp.removed.add(w.did)
   }
+}
+
+/**
+ * A membership call's outcome: 'applied', 'not applied' (a refusal, or a 503
+ * ShardMoved / RepoLoading, which vlpds answers only when it did nothing:
+ * DESIGN.md "Writes wait out the gap", docs/architecture.md), or 'unknown'
+ * (a dropped connection, as while vlpds is down for a fault, or another 5xx).
+ */
+async function memberCall(sp, what, fn, stats) {
+  const res = await attempt(fn).catch((e) => ({ ok: false, status: 0, error: String(e?.message ?? e) }))
+  if (res.ok) return 'applied'
+  const notDone = (res.status >= 400 && res.status < 500) || ['RepoLoading', 'ShardMoved'].includes(res.error)
+  stats.membershipFailed++
+  rep.note(`${what} in space ${sp.n}: ${res.status} ${res.error} ${res.message ?? ''} (${notDone ? 'not applied' : 'outcome unknown'})`)
+  return notDone ? 'not applied' : 'unknown'
 }
 
 function planFaults(total) {
