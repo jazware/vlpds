@@ -341,7 +341,7 @@ fn is_fragment(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=:@/?%".contains(&b))
 }
 
-fn is_did_ref_absolute(s: &str) -> bool {
+pub(crate) fn is_did_ref_absolute(s: &str) -> bool {
     match s.split_once('#') {
         Some((did, frag)) => is_atproto_did(did) && is_fragment(frag),
         None => false,
@@ -658,9 +658,6 @@ pub enum SpaceAccess<'a> {
     ReadSelf,
     /// create | update | delete, of a collection.
     Write(&'a str, &'a str),
-    /// create | update | delete, of some collection: what a request needs
-    /// before it knows which (importRepo, before its body is read).
-    WriteAny(&'a str),
     /// create | update | delete of the space itself.
     Manage(&'a str),
 }
@@ -687,7 +684,6 @@ impl SpacePermission {
             SpaceAccess::Write(action, coll) => {
                 has(action) && self.collection.as_ref().is_some_and(|c| c.iter().any(|x| x == "*" || x == coll))
             }
-            SpaceAccess::WriteAny(action) => has(action) && self.collection.as_ref().is_some_and(|c| !c.is_empty()),
         }
     }
 
@@ -727,7 +723,6 @@ impl SpacePermission {
             SpaceAccess::Read => (None, one("read"), None),
             SpaceAccess::ReadSelf => (None, one("read_self"), None),
             SpaceAccess::Write(action, coll) => (one(coll), one(action), None),
-            SpaceAccess::WriteAny(action) => (one("*"), one(action), None),
         };
         SPACE.format(&vec![
             ("type", one(t.space_type)),
@@ -1013,13 +1008,23 @@ impl ScopeSet {
         self.perms.iter().any(|p| matches!(p, Permission::Space(s) if s.matches(t, access)))
     }
 
-    /// Whether some `space:` grant creates records in some space, before a
-    /// request knows which (importRepo, ahead of its archive's metadata).
-    pub fn creates_in_some_space(&self) -> bool {
+    /// Whether some `space:` grant could import a repo into some space
+    /// (creates in every collection), before a request knows which
+    /// (importRepo, ahead of its archive's metadata).
+    pub fn imports_in_some_space(&self) -> bool {
         self.perms.iter().any(|p| match p {
             Permission::Space(s) => {
-                s.action.iter().any(|a| a == "create") && s.collection.as_ref().is_some_and(|c| !c.is_empty())
+                s.action.iter().any(|a| a == "create")
+                    && s.collection.as_ref().is_some_and(|c| c.iter().any(|x| x == "*"))
             }
+            _ => false,
+        })
+    }
+
+    /// Likewise for importSpaceMeta: some grant with `manage=op`.
+    pub fn manages_in_some_space(&self, op: &str) -> bool {
+        self.perms.iter().any(|p| match p {
+            Permission::Space(s) => s.manage.as_ref().is_some_and(|m| m.iter().any(|x| x == op)),
             _ => false,
         })
     }

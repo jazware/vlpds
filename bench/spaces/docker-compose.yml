@@ -12,7 +12,7 @@ name: vlpds-spaces
 x-ref-pds: &ref-pds
   # The reference PDS at the pin, built natively by run.sh (refpds.sh) from
   # .scratch/atproto. REF_PDS_IMAGE points at another build of the pin.
-  image: ${REF_PDS_IMAGE:-vlpds-spaces-refpds:16bfeba7}
+  image: ${REF_PDS_IMAGE:-vlpds-spaces-refpds:67476105}
   pull_policy: never
   depends_on:
     plc:

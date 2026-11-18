@@ -3,7 +3,13 @@ implementation:
 
   repo:   https://github.com/bluesky-social/atproto
   branch: permissioned-data (PR #5187)
-  commit: 16bfeba760aede46f0b87bf94febef9e6ea84b95
+  commit: 6747610566eee1b6d743617bd8eb1136adccb362
+
+packages/space/src (outside its tests) is unchanged between 16bfeba7 and
+67476105, and so is @atproto/space's code between the npm releases
+0.0.0-spaces-alpha-20261113224550 and -20261117141222. So vectors.json,
+export.star and export.json, generated at 16bfeba7, hold at the pin and
+weren't regenerated.
 
 vectors.json was generated, not copied: the reference's own tests use
 random keys and check round trips. gen-vectors.mjs produced it by running the
@@ -21,8 +27,9 @@ one.
 
 HTTP signature, token and MAC cases (src/space/{httpsig,token,commit,mac}.rs
 tests) are ported from packages/space/src/http-signature.test.ts,
-packages/space/tests/credential.test.ts, mac.test.ts and kem.test.ts, at the
-same commit. Syntax cases (src/lexicon.rs tests) are ported from
+credential.test.ts, mac.test.ts and kem.test.ts (in packages/space/tests at
+16bfeba7, moved to src/ and rewritten at the pin with the same cases), plus
+the HPKE export vector from kem.test.ts. Syntax cases (src/lexicon.rs tests) are ported from
 packages/syntax/tests/aturi-string.test.ts and
 packages/lexicon/tests/general.test.ts.
 

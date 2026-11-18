@@ -541,7 +541,7 @@ pub const FIRST_PARTY_PATH: &str = "/oauth/client-metadata.json";
 /// last is the account page's owner grant: `authority` is left at its
 /// default (`self`), so the token can only manage the user's own spaces.
 pub const FIRST_PARTY_SCOPE: &str = "atproto space:*?authority=*&action=read_self \
-space:*?authority=*&collection=*&action=create&action=read_self blob:*/* \
+space:*?authority=*&collection=* blob:*/* \
 space:*?action=read_self&manage=update&manage=delete space:*?manage=create&manage=update";
 pub const FIRST_PARTY_CALLBACK: &str = "/migrate/oauth/callback";
 /// The account page's "Your spaces" sign-in comes back here.
@@ -567,6 +567,10 @@ pub fn first_party_metadata(public_url: &str) -> J {
         "dpop_bound_access_tokens": true,
     })
 }
+
+/// Starts the error `get_client` gives when a `jwks_uri` can't be fetched; the
+/// uri follows in quotes.
+pub const JWKS_FETCH_FAILED: &str = "Unable to obtain jwks from";
 
 /// `public_url`: this server's, so its own UI's client is built here
 /// rather than fetched from itself.
@@ -613,9 +617,7 @@ async fn load_client(client_id: &str, dev_mode: bool) -> Result<Client, OAuthErr
     let mut client = validate_metadata(client_id, metadata, loopback, dev_mode)?;
     if let Some(uri) = client.metadata.get("jwks_uri").and_then(|v| v.as_str()) {
         let jwks = fetch_json(uri, dev_mode, METADATA_MAX_BYTES).await.map_err(|e| {
-            OAuthError::invalid_client_metadata(&format!(
-                "Unable to obtain jwks from \"{uri}\" for \"{client_id}\": {e}"
-            ))
+            OAuthError::invalid_client_metadata(&format!("{JWKS_FETCH_FAILED} \"{uri}\" for \"{client_id}\": {e}"))
         })?;
         client.jwks = parse_jwks(&jwks)?;
     }
@@ -900,7 +902,7 @@ mod tests {
         assert!(!c.allows_redirect_uri("https://pds.example.com/account"));
         for s in [
             "space:*?authority=*&action=read_self",
-            "space:*?authority=*&collection=*&action=create&action=read_self",
+            "space:*?authority=*&collection=*",
             "blob:*/*",
             "space:*?action=read_self&manage=update&manage=delete",
         ] {

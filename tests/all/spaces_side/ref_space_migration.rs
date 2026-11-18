@@ -91,10 +91,68 @@ async fn rejects_an_archive() {
     let member = Value::Map(vec![("read".into(), Value::Bool(true)), ("write".into(), Value::Bool(true))]);
     let key = format!("com.atproto.memberspace.member/{}", bob.did);
     import(&alice, with(json!({"$type": "com.example.policy"}), vec![])).await.err(400, "UnsupportedPolicy");
-    import(&alice, with(memberspace(json!({})), vec![("com.example.thing/x".into(), member.clone())]))
-        .await
-        .err(400, "InvalidSpaceMeta");
-    import(&alice, with(personalspace(), vec![(key, member)])).await.err(400, "InvalidSpaceMeta");
+    let unrecognized = |r: Resp| {
+        r.err(400, "InvalidSpaceMeta");
+        assert!(r.json["message"].as_str().unwrap().contains("Unrecognized policy state"), "{}", r.text());
+    };
+    unrecognized(
+        import(&alice, with(memberspace(json!({})), vec![("com.example.thing/x".into(), member.clone())])).await,
+    );
+    unrecognized(import(&alice, with(personalspace(), vec![(key.clone(), member)])).await);
+    let unparsed = Value::Map(vec![("read".into(), Value::Text("yes".into())), ("write".into(), Value::Bool(true))]);
+    let r = import(&alice, with(memberspace(json!({})), vec![(key, unparsed)])).await;
+    r.err(400, "InvalidSpaceMeta");
+    assert!(r.json["message"].as_str().unwrap().contains("Invalid member"), "{}", r.text());
     import(&alice, b"not a star archive".to_vec()).await.err(400, "InvalidSpaceMeta");
     import(&bob, meta::write(&base)).await.err(400, "NotAuthorized");
+}
+
+/// "requires a grant to create and update the space to import it": the space
+/// is gone from the host, so the import creates it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn import_space_meta_needs_manage_create_and_update() {
+    let net = Net::new(0).await;
+    let alice = net.actor("alice", 0).await;
+    let space = net.create_space(&alice, SpaceOpts::default()).await;
+    let archive = export(&alice, &space).await;
+    alice.post("com.atproto.space.deleteSpace", json!({"space": space})).await.ok();
+    let grant = |manage: &str| format!("space:{TEST_SPACE_TYPE}?authority={}&collection=*&{manage}", alice.did);
+
+    let create_only = regrant(&alice, &grant("manage=create")).await;
+    let r = import(&create_only, archive.clone()).await;
+    r.err(403, "ScopeMissingError");
+    assert!(r.json["message"].as_str().unwrap().contains("manage=update"), "{}", r.text());
+
+    // without manage=create, refused before the body is read: a body
+    // that isn't an archive gets the scope error, not InvalidSpaceMeta
+    let update_only = regrant(&alice, &grant("manage=update")).await;
+    let r = import(&update_only, b"not an archive".to_vec()).await;
+    r.err(403, "ScopeMissingError");
+    assert!(r.json["message"].as_str().unwrap().contains("manage=create"), "{}", r.text());
+
+    // the reference's app password answer
+    let s = &net.pds[0];
+    let session = Auth::Bearer(alice.session_jwt.clone());
+    let ap = s.xrpc.post("com.atproto.server.createAppPassword", &json!({"name": "meta"}), &session).await.ok();
+    let sess = s.create_session(&alice.did, ap["password"].as_str().unwrap()).await.ok();
+    let app_pw = Auth::Bearer(sess["accessJwt"].as_str().unwrap().into());
+    let r = s
+        .xrpc
+        .post_bytes("com.atproto.space.importSpaceMeta", archive.clone(), "application/vnd.dasl.star", &app_pw)
+        .await;
+    r.err(400, "InvalidToken");
+
+    let both = regrant(&alice, &grant("manage=create&manage=update")).await;
+    import(&both, archive.clone()).await.ok();
+    alice.get("com.atproto.space.getSpace", &[("space", &space)]).await.ok();
+
+    // a manage-only grant, no collections, imports too
+    alice.post("com.atproto.space.deleteSpace", json!({"space": space})).await.ok();
+    let manage_only = regrant(
+        &alice,
+        &format!("space:{TEST_SPACE_TYPE}?authority={}&action=read_self&manage=create&manage=update", alice.did),
+    )
+    .await;
+    import(&manage_only, archive).await.ok();
+    alice.get("com.atproto.space.getSpace", &[("space", &space)]).await.ok();
 }

@@ -1008,17 +1008,15 @@ export async function runConfig(rep, cfg, env) {
         const write = await attempt(() => c.com.atproto.space.createRecord({ space: S.space, repo: w.did, collection: COLL, record: record('via app password') }))
         const del = await attempt(() => c.com.atproto.space.getDelegationToken({ space: S.space }))
         if (write.ok) truth.set(S.space, w.did, `${COLL}/${rkeyOf(write.data.uri)}`, write.data.cid)
+        // both refuse an app password on every space route with the reference's InvalidToken "Bad token scope"
+        check(!write.ok && write.error === 'InvalidToken', `${w}: an app password cannot write space records (InvalidToken)`, errName(write))
+        check(!del.ok && del.error === 'InvalidToken', `${w}: nor mint a delegation token (InvalidToken)`, errName(del))
         if (HOSTS[w.host].kind === 'vlpds') {
-          check(!write.ok, `${w}: an app password cannot write space records (OAuth-only)`, errName(write))
-          check(!del.ok, `${w}: an app password cannot mint delegation tokens`, errName(del))
           // not settled whether "OAuth-only" also refuses the account password's own session; recorded, not judged
           const sess = await attempt(() => w.sessionClient.com.atproto.space.getDelegationToken({ space: S.space }))
           const sw = await attempt(() => w.sessionClient.com.atproto.space.createRecord({ space: S.space, repo: w.did, collection: COLL, record: record('via password session') }))
           if (sw.ok) truth.set(S.space, w.did, `${COLL}/${rkeyOf(sw.data.uri)}`, sw.data.cid)
           rep.note(`${cfg}: ${w} password session: space write ${sw.ok ? 'accepted' : `refused (${errName(sw)})`}, getDelegationToken ${sess.ok ? 'accepted' : `refused (${errName(sess)})`}`)
-        } else {
-          check(write.ok, `${w}: the reference lets an app password write (ACCESS_STANDARD)`, errName(write))
-          check(!del.ok, `${w}: but not mint a delegation token (ACCESS_FULL)`, errName(del))
         }
       }
     },
@@ -1343,7 +1341,7 @@ async function main() {
   const rep = new Report(process.env.REPORT ?? 'e2e', {
     run: RUN,
     vlpds: process.env.VLPDS_REV ?? '(none)',
-    reference: 'bluesky-social/atproto 16bfeba7 (@atproto/* 0.0.0-spaces-alpha-20261113224550)',
+    reference: 'bluesky-social/atproto 67476105 (@atproto/* 0.0.0-spaces-alpha-20261113224550)',
     cluster: !!process.env.CLUSTER,
     configs,
   })

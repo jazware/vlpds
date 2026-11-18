@@ -252,6 +252,16 @@ pub fn repo_meta(c: &super::commit::Commit) -> Vec<u8> {
 
 /// The reference's `repoStarMeta` check: the repo profile's metadata.
 pub fn parse_repo_meta(meta: &Value) -> Result<super::commit::Commit, StarError> {
+    let c = repo_meta_fields(meta)?;
+    if vlatproto::tid::Tid::parse(&c.rev).is_none() {
+        return err("invalid repo metadata: rev");
+    }
+    Ok(c)
+}
+
+/// The metadata's fields, `rev` unchecked: the reference's own test vectors
+/// were written with revs that aren't TIDs, which its reader refuses too.
+fn repo_meta_fields(meta: &Value) -> Result<super::commit::Commit, StarError> {
     let Value::Map(m) = meta else { return err("invalid repo metadata") };
     let get = |k: &str| m.iter().find(|(key, _)| key == k).map(|(_, v)| v);
     if get("$type") != Some(&Value::Text(REPO_TYPE.into())) {
@@ -354,7 +364,10 @@ mod tests {
                 continue;
             }
             let ctx = &s["ctx"];
-            let c = parse_repo_meta(&meta).unwrap();
+            let c = repo_meta_fields(&meta).unwrap();
+            if vlatproto::tid::Tid::parse(&c.rev).is_none() {
+                assert_eq!(parse_repo_meta(&meta).unwrap_err().0, "invalid repo metadata: rev");
+            }
             assert_eq!(
                 (c.space.as_str(), c.repo.as_str(), c.rev.as_str()),
                 (ctx["space"].as_str().unwrap(), ctx["repo"].as_str().unwrap(), ctx["rev"].as_str().unwrap())
@@ -405,6 +418,14 @@ mod tests {
             read_all(&b, LIMITS).unwrap()
         };
         assert_eq!(parse_repo_meta(&meta).unwrap_err().0, "unsupported commit version: 2");
+        let m2 = repo_meta(&crate::space::commit::Commit { rev: "not-a-tid".into(), ..c.clone() });
+        let (meta, _) = {
+            let mut b = Vec::new();
+            write_header(&mut b, &m2);
+            write_end(&mut b);
+            read_all(&b, LIMITS).unwrap()
+        };
+        assert_eq!(parse_repo_meta(&meta).unwrap_err().0, "invalid repo metadata: rev");
         m.clear();
         // a varint
         for n in [0u64, 127, 128, 300, 1 << 40] {

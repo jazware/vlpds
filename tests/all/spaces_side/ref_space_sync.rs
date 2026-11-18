@@ -1,5 +1,5 @@
 //! Ported from the reference's `tests/space/sync.test.ts` and
-//! `tests/space/notifications.test.ts` (5b95b2f2): how a syncer follows a
+//! `tests/space/notifications.test.ts` (67476105): how a syncer follows a
 //! space, and how a writer's PDS tells the authority. Each test names its
 //! reference case.
 //!
@@ -280,6 +280,33 @@ async fn get_repo_serves_a_verifiable_star_archive() {
     assert_eq!(texts, ["star 0", "star 1"]);
 }
 
+/// getRepo: "recovers a cleared repo, whose oplog is empty, from getRepo"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recovers_a_cleared_repo_from_get_repo() {
+    let net = Net::new(2).await;
+    let (alice, bob, carol) = (net.actor("alice", 0).await, net.actor("bob", 1).await, net.actor("carol", 2).await);
+    let space = net.create_space(&alice, SpaceOpts { members: &[&bob, &carol], ..Default::default() }).await;
+    write(&bob, &space, W::new().rkey("one")).await.ok();
+    write(&bob, &space, W::new().rkey("two")).await.ok();
+    let cred = net.credential_for(&carol, &space).await;
+    let synced = ops_page(&net, &cred, &space, &bob.did, &[]).await;
+    let local = replay(synced["ops"].as_array().unwrap());
+    assert!(commit_matches(&local, &synced["commit"]));
+
+    clear(&bob, &space).await.ok();
+    let since = synced["commit"]["rev"].as_str().unwrap();
+    let incremental = ops_page(&net, &cred, &space, &bob.did, &[("since", since)]).await;
+    assert_eq!(incremental["ops"], json!([]));
+    assert!(!commit_matches(&local, &incremental["commit"]), "the replay can't follow a clear");
+
+    let q = [("space", space.as_str()), ("repo", bob.did.as_str())];
+    let r = cred.get(&net.pds[1].url, "com.atproto.space.getRepo", &q).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let recovered = verify_star(&r.body, &space, &bob.did);
+    assert_eq!(json!(recovered.commit.rev), incremental["commit"]["rev"]);
+    assert!(recovered.records.is_empty());
+}
+
 /// getRepo: "refuses a repo without a credential for that space"
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn get_repo_refuses_a_credential_for_another_space() {
@@ -303,9 +330,10 @@ async fn reports_repo_not_found_for_an_unwritten_repo() {
     let (alice, carol) = (net.actor("alice", 0).await, net.actor("carol", 2).await);
     let space = net.create_space(&alice, SpaceOpts { members: &[&carol], ..Default::default() }).await;
     let cred = net.credential_for(&carol, &space).await;
-    cred.get(&net.pds[0].url, "com.atproto.space.getLatestCommit", &[("space", &space), ("repo", &alice.did)])
-        .await
-        .err(400, "RepoNotFound");
+    let q = [("space", space.as_str()), ("repo", alice.did.as_str())];
+    for nsid in ["getLatestCommit", "listRepoOps", "getRepo"] {
+        cred.get(&net.pds[0].url, &format!("com.atproto.space.{nsid}"), &q).await.err(400, "RepoNotFound");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -504,14 +532,17 @@ async fn records_a_co_located_writer_without_resolving_it() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn records_a_writer_from_notify_write() {
     let net = Net::new(1).await;
-    let (alice, bob) = (net.actor("alice", 0).await, net.actor("bob", 1).await);
-    let space = net.create_space(&alice, SpaceOpts { members: &[&bob], ..Default::default() }).await;
+    let (alice, bob, carol) = (net.actor("alice", 0).await, net.actor("bob", 1).await, net.actor("carol", 1).await);
+    let space = net.create_space(&alice, SpaceOpts { members: &[&bob, &carol], ..Default::default() }).await;
     write(&bob, &space, W::new().text("writer set entry")).await.ok();
     let dids = net.await_writer(&alice, &space, &bob.did).await;
     assert!(dids.contains(&bob.did) && !dids.contains(&alice.did), "{dids:?}");
     let cred = net.credential_for(&bob, &space).await;
     let repos = cred.get(&net.pds[0].url, "com.atproto.space.listWriters", &[("space", &space)]).await.ok();
-    let entry = repos["repos"].as_array().unwrap().iter().find(|r| r["repo"] == json!(bob.did)).unwrap().clone();
+    let listed = repos["repos"].as_array().unwrap();
+    assert_eq!(listed.len(), 1, "a member who never wrote isn't a writer: {repos}");
+    let entry = listed[0].clone();
+    assert_eq!(entry["repo"], json!(bob.did));
     assert_eq!(entry["$type"], json!("com.atproto.space.defs#repoWrite"));
     let (rev, hash) = repo_state(&bob, &space).await.unwrap();
     assert_eq!(entry["repoRev"], json!(rev));
@@ -880,6 +911,7 @@ async fn notify_write_rejects_a_non_member() {
     let r =
         notify(&net, &carol, None, notify_body(&space, &carol.did, &next_tid(None), &LtHash::default().digest())).await;
     refused_mentioning(&r, &["not authorized"]);
+    assert!(net.writer_dids(&alice, &space).await.is_empty());
 }
 
 /// notifyRepoUpdate: "rejects a member without write access"
@@ -912,6 +944,21 @@ async fn notify_write_rejects_a_member_without_write_even_when_public() {
         .await
         .ok();
     assert_eq!(net.writer_dids(&alice, &space).await, vec![carol.did.clone()]);
+}
+
+/// notifyRepoUpdate: "refuses one for a deleted space", and a reused URI
+/// doesn't inherit the refused writer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn notify_write_refuses_one_for_a_deleted_space() {
+    let net = Net::new(1).await;
+    let (alice, bob) = (net.actor("alice", 0).await, net.actor("bob", 1).await);
+    let opts = SpaceOpts { skey: Some("deleted"), members: &[&bob], ..Default::default() };
+    let space = net.create_space(&alice, opts).await;
+    alice.post("com.atproto.space.deleteSpace", json!({"space": space})).await.ok();
+    let r = notify(&net, &bob, None, notify_body(&space, &bob.did, &next_tid(None), &LtHash::default().digest())).await;
+    r.err(400, "SpaceNotFound");
+    net.create_space(&alice, SpaceOpts { skey: Some("deleted"), ..Default::default() }).await;
+    assert!(net.writer_dids(&alice, &space).await.is_empty());
 }
 
 /// notifyRepoUpdate: "rejects a rev that is not a TID before any auth check"
@@ -1160,6 +1207,32 @@ async fn outbox_stops_on_local_authority_rejections() {
     put_member(&writer, &space, &outsider, true, true).await.ok();
     write(&outsider, &space, W::new()).await.ok();
     assert!(net.await_writer(&writer, &space, &outsider.did).await.contains(&outsider.did));
+}
+
+/// "delivers to a local authority that is $status without a request to
+/// itself" (deactivated, takendown): the PLC directory is down, so only a
+/// delivery that never resolves the authority's DID reaches its writer set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn outbox_delivers_to_a_local_inactive_authority() {
+    for status in ["deactivated", "takendown"] {
+        let net = Net::new(0).await;
+        let (alice, dan) = (net.actor("alice", 0).await, net.actor("dan", 0).await);
+        let space = net.create_space(&alice, SpaceOpts { members: &[&dan], ..Default::default() }).await;
+        match status {
+            "takendown" => set_repo_takedown(&net.pds[0], &alice.did, true).await,
+            _ => {
+                let session = Auth::Bearer(alice.session_jwt.clone());
+                net.pds[0].xrpc.post("com.atproto.server.deactivateAccount", &json!({}), &session).await.ok();
+            }
+        }
+        net.plc.set_down(true);
+        write(&dan, &space, W::new().text("to an inactive authority")).await.ok();
+        let writers = net.await_writer(&alice, &space, &dan.did).await;
+        net.plc.set_down(false);
+        assert!(writers.contains(&dan.did), "{status}: {writers:?}");
+        let outbox = net.pds[0].app.spaces.as_ref().unwrap().outbox.clone();
+        retry("the outbox to empty", || async { outbox.is_empty().then_some(()) }).await;
+    }
 }
 
 /// "defers retries for inactive accounts and resumes after activation"

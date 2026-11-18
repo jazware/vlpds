@@ -416,7 +416,7 @@ async function verify(a) {
     handle: a.newHandle,
     did: a.did,
     password: a.newPassword ?? a.password,
-    scope: `atproto space:${TYPE}?authority=*&collection=*&action=read_self&action=create`,
+    scope: `atproto space:${TYPE}?authority=*&collection=*`,
   })
   for (const space of a.spaces) {
     const star = await s.xrpc('com.atproto.space.getRepo', { params: { space, repo: a.did }, raw: true })

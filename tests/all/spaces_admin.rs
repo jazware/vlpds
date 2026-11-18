@@ -11,7 +11,7 @@ use vlpds::space::star;
 
 const TYPE: &str = "com.example.group";
 const COLL: &str = "com.example.post";
-const OWNER: &str = "space:com.example.group?collection=com.example.post&action=read&action=create&action=update&action=delete&manage=create&manage=update&manage=delete";
+const OWNER: &str = "space:com.example.group?collection=*&action=read&action=create&action=update&action=delete&manage=create&manage=update&manage=delete";
 const MEMBER: &str = "space:com.example.group?authority=*&collection=com.example.post&action=read&action=create";
 const STAR: &str = "application/vnd.dasl.star";
 const IMPORT: &str = "com.atproto.space.importRepo";

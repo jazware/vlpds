@@ -28,7 +28,7 @@ facts:
   - { value: alpha, label: behind `--spaces`, note: "off by default · upstream changes weekly", tone: rust }
   - { value: "0", unit: events, label: on the firehose per space write, note: "space writes are private log entries", tone: blue }
   - { value: "~0.8 ms", label: space write p50, note: "measured, interop harness on MinIO · reference ~4.2 ms", tone: amber }
-  - { value: "16bfeba7", label: upstream pin, note: "bluesky-social/atproto PR #5187" }
+  - { value: "67476105", label: upstream pin, note: "bluesky-social/atproto PR #5187" }
 ```
 
 A space is a group's private data. It has an authority (a DID) that decides who can read and write,
@@ -70,7 +70,7 @@ need any space repo re-signed.
 ## Status
 
 This tracks an alpha that ships breaking changes often. The pin is
-bluesky-social/atproto PR #5187 at `16bfeba7`, and the vendored lexicons and test vectors come
+bluesky-social/atproto PR #5187 at `67476105`, and the vendored lexicons and test vectors come
 from it. Stored Spaces data migrates in place, and [Interop](interop.md) says how for each change.
 
 | Part | State |

@@ -218,6 +218,9 @@ impl StarBody {
 fn record_blobs(path: &str, bytes: &[u8]) -> XResult<Vec<Cid>> {
     let v = vlatproto::cbor::Value::decode(bytes)
         .map_err(|_| invalid_file(format!("Could not parse record at '{path}'")))?;
+    if !matches!(v, vlatproto::cbor::Value::Map(_)) {
+        return Err(invalid_file(format!("Invalid STAR: invalid record at {path}")));
+    }
     let mut again = Vec::with_capacity(bytes.len());
     v.encode(&mut again);
     if again != bytes {
@@ -253,11 +256,10 @@ async fn import_repo(State(app): AppState, Auth(creds): Auth, headers: HeaderMap
 async fn import(app: &Arc<App>, creds: &Credentials, headers: &HeaderMap, body: Body) -> XResult<()> {
     let sp = spaces(app)?;
     let did = creds.user_did()?.to_string();
-    // Everything before the body is read: an OAuth grant that writes in
-    // some space (need_space refuses anything else), the account's budget
-    // and slot, and the import's memory. The archive names the space, and
-    // which collections it writes are checked as its records arrive.
-    creds.need_any_space_write()?;
+    // Everything before the body is read: an OAuth grant that could import
+    // into some space (need_space refuses anything else), the account's
+    // budget and slot, and the import's memory. The archive names the space.
+    creds.need_any_space_import()?;
     let max = app.config.max_import_bytes;
     let declared =
         headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
@@ -288,7 +290,13 @@ async fn import(app: &Arc<App>, creds: &Credentials, headers: &HeaderMap, body: 
         return Err(XrpcError::bad("RepoMismatch", "Repo does not match the authenticated account"));
     }
     let space = Space::parse(&c.space)?;
-    creds.need_space(&space.target(), SpaceAccess::WriteAny("create"))?;
+    // An import replaces the account's whole repo in the space, so it takes
+    // full access to the space, not grants for the collections it holds.
+    let t = space.target();
+    creds.need_space(&t, SpaceAccess::Read)?;
+    for action in ["create", "update", "delete"] {
+        creds.need_space(&t, SpaceAccess::Write(action, "*"))?;
+    }
     // the authority's own repo comes after its space (importSpaceMeta)
     if space.authority == did && !super::space_policy::live_space(app, &space).await.is_ok() {
         return Err(super::space_policy::space_not_found());
@@ -305,7 +313,7 @@ async fn import(app: &Arc<App>, creds: &Credentials, headers: &HeaderMap, body: 
 
     // the whole archive is checked before anything of the repo here is
     // touched, so a refused import leaves it as it was
-    let (set, _) = stage(None, creds, &did, &space, &mut star, sp.limits.max_records).await?;
+    let (set, _) = stage(None, &did, &space, &mut star, sp.limits.max_records).await?;
     if !commit::matches(&set, &c) {
         return Err(invalid_file("Invalid STAR: the records do not match the commit's data"));
     }
@@ -319,7 +327,7 @@ async fn import(app: &Arc<App>, creds: &Credentials, headers: &HeaderMap, body: 
     submit_space(app, &did, &space, SpaceOp::ImportBegin { nonce, replace: true }).await?;
     let p = app.partition(&did)?;
     clear_unheaded(&p, &did, &space).await?;
-    let staged = stage(Some(&p), creds, &did, &space, &mut star, sp.limits.max_records).await;
+    let staged = stage(Some(&p), &did, &space, &mut star, sp.limits.max_records).await;
     let (set, records) = match staged.and_then(|(again, n)| match again.digest() == set.digest() {
         true => Ok((again, n)),
         false => Err(XrpcError::internal("the kept import body changed")),
@@ -347,7 +355,6 @@ async fn import(app: &Arc<App>, creds: &Credentials, headers: &HeaderMap, body: 
 /// fold to, the record count). With no partition it only checks them.
 async fn stage(
     p: Option<&crate::partition::Partition>,
-    creds: &Credentials,
     did: &str,
     space: &Space,
     star: &mut StarBody,
@@ -357,7 +364,6 @@ async fn stage(
     let (mut records, mut bytes) = (0u64, 0usize);
     let mut muts = Vec::new();
     let mut prev: Option<Vec<u8>> = None;
-    let mut granted: std::collections::BTreeSet<String> = Default::default();
     while let Some(item) = star.next().await? {
         let star::Item::Pair { key, value } = item else { return Err(invalid_file("Invalid STAR: a second metadata")) };
         if prev.as_ref().is_some_and(|p| key <= *p) {
@@ -367,10 +373,6 @@ async fn stage(
         let (collection, rkey) =
             path.split_once('/').ok_or_else(|| invalid_file(format!("invalid record path {path}")))?;
         check_path(collection, Some(rkey))?;
-        if !granted.contains(collection) {
-            creds.need_space(&space.target(), SpaceAccess::Write("create", collection))?;
-            granted.insert(collection.to_string());
-        }
         records += 1;
         if records > max_records {
             return Err(invalid(format!("Space repo record limit reached: at most {max_records} records")));
@@ -489,5 +491,9 @@ mod tests {
             vlatproto::cbor::write_int(&mut unsorted, 1);
         }
         assert!(record_blobs("a.b.c/x", &unsorted).is_err());
+        // canonical, but not a map
+        let mut text = Vec::new();
+        vlatproto::cbor::write_text(&mut text, "hello");
+        assert!(record_blobs("a.b.c/x", &text).unwrap_err().message.contains("invalid record at"));
     }
 }

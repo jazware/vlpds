@@ -223,14 +223,26 @@ impl Credentials {
         }
     }
 
-    /// Before a request knows which space it writes (importRepo, ahead of
-    /// its archive's metadata): OAuth, the only way into space data, with a
-    /// grant that creates in some space, so no other grant gets its body read.
-    pub fn need_any_space_write(&self) -> XResult<()> {
+    /// Before importRepo knows which space it writes (ahead of its
+    /// archive's metadata): OAuth, the only way into space data, with a
+    /// grant that writes every collection of some space, so no other grant
+    /// gets its body read.
+    pub fn need_any_space_import(&self) -> XResult<()> {
         match self {
-            Credentials::OAuth { scopes, .. } if scopes.creates_in_some_space() => Ok(()),
-            Credentials::OAuth { .. } => Err(scope_refused("oauth", "space:*?authority=*&collection=*&action=create")),
-            _ => self.require(false),
+            Credentials::OAuth { scopes, .. } if scopes.imports_in_some_space() => Ok(()),
+            Credentials::OAuth { .. } => Err(scope_refused("oauth", "space:*?authority=*&collection=*")),
+            _ => self.refuse_space(),
+        }
+    }
+
+    /// Likewise for importSpaceMeta: a grant that creates some space.
+    pub fn need_any_space_create(&self) -> XResult<()> {
+        match self {
+            Credentials::OAuth { scopes, .. } if scopes.manages_in_some_space("create") => Ok(()),
+            Credentials::OAuth { .. } => {
+                Err(scope_refused("oauth", "space:*?authority=self&action=read_self&manage=create"))
+            }
+            _ => self.refuse_space(),
         }
     }
 
@@ -240,6 +252,15 @@ impl Credentials {
             Credentials::OAuth { .. } => {
                 Err(scope_refused("oauth", &crate::oauth::scopes::SpacePermission::needed_for(t, access)))
             }
+            _ => self.refuse_space(),
+        }
+    }
+
+    /// The reference's space routes take only a full session or OAuth
+    /// (`ACCESS_FULL`), so an app password is the token-scope refusal there.
+    fn refuse_space(&self) -> XResult<()> {
+        match self {
+            Credentials::AppPassword { .. } => Err(XrpcError::bad("InvalidToken", "Bad token scope")),
             _ => self.require(false),
         }
     }

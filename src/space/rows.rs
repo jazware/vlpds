@@ -447,10 +447,9 @@ impl Policy {
             }
             MANAGEDSPACE => {
                 let app = v.get("managingApp").and_then(|a| a.as_str()).unwrap_or("");
-                let did = app.split_once('#').map_or(app, |(d, _)| d);
-                if !vlatproto::syntax::valid_did(did) {
+                if !crate::oauth::scopes::is_did_ref_absolute(app) {
                     return Err(PolicyError::Invalid(format!(
-                        "managingApp must be a DID with an optional service fragment, got: {app}"
+                        "managingApp must be a did#serviceId reference, got: {app}"
                     )));
                 }
                 Ok(Policy::Managed { managing_app: app.into(), publish_policy: flag("publishPolicy") })
@@ -852,10 +851,15 @@ mod tests {
             p(serde_json::json!({"$type": MANAGEDSPACE, "managingApp": "did:web:x.example#forum", "other": true})),
             Ok(Policy::Managed { managing_app: "did:web:x.example#forum".into(), publish_policy: false })
         );
-        assert!(matches!(
-            p(serde_json::json!({"$type": MANAGEDSPACE, "managingApp": "nope"})),
-            Err(PolicyError::Invalid(_))
-        ));
+        for bad in ["nope", "did:web:x.example", "did:web:x.example#"] {
+            assert!(
+                matches!(
+                    p(serde_json::json!({"$type": MANAGEDSPACE, "managingApp": bad})),
+                    Err(PolicyError::Invalid(_))
+                ),
+                "{bad}"
+            );
+        }
         assert!(matches!(p(serde_json::json!({"$type": "com.example.policy"})), Err(PolicyError::Unsupported(_))));
         assert_eq!(
             Policy::member_defaults().to_lex(),

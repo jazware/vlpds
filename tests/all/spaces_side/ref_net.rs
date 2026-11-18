@@ -628,7 +628,7 @@ impl MockService {
         use axum::response::IntoResponse;
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
-        let (did, url) = (format!("did:web:127.0.0.1%3A{}", addr.port()), format!("http://{addr}"));
+        let (did, url) = (format!("did:web:localhost%3A{}", addr.port()), format!("http://{addr}"));
         let key = Arc::new(vlatproto::crypto::Keypair::generate());
         let service: Vec<J> = services
             .iter()
@@ -788,6 +788,7 @@ pub enum Keys {
     UriMissing,
     /// An inline `jwks`.
     Inline,
+    /// A public client: metadata that resolves, with no keys at all.
     None,
 }
 
@@ -855,6 +856,11 @@ impl MockClientApp {
                             "token_endpoint_auth_signing_alg": "ES256",
                             "dpop_bound_access_tokens": true,
                         });
+                        if keys == Keys::None {
+                            // a client with no keys has no way to authenticate with them
+                            md["token_endpoint_auth_method"] = json!("none");
+                            md.as_object_mut().unwrap().remove("token_endpoint_auth_signing_alg");
+                        }
                         match keys {
                             Keys::Uri | Keys::UriMissing => md["jwks_uri"] = json!(ju),
                             Keys::Inline => md["jwks"] = json!({"keys": [jwk]}),

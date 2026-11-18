@@ -1,11 +1,11 @@
-//! Ported from the reference's `tests/space/auth.test.ts` (5b95b2f2): who
+//! Ported from the reference's `tests/space/auth.test.ts` (67476105): who
 //! may read what, and on whose authority. Each test names its reference
 //! case.
 //!
 //! Adaptations:
-//! - Space data is OAuth-only: an app password or a password session gets
-//!   no space access at all, where the reference lets either write and
-//!   read the account's own repo (the divergence cases below).
+//! - Space data is OAuth-only: a password session gets no space access at
+//!   all, where the reference lets it write and read the account's own
+//!   repo. App passwords are refused by both ("Bad token scope").
 //! - Tokens the reference forges with an account's own key (which vlpds
 //!   never hands out) are signed by a [`MockService`] DID standing in for
 //!   that party: a member forging a credential, a user misaddressing a
@@ -30,36 +30,37 @@ async fn own_reads(dan: &SpaceClient, space: &str, repo: &str) -> Vec<Resp> {
         dan.get("com.atproto.space.listRecords", &base).await,
         dan.get("com.atproto.space.listRepoOps", &base).await,
         dan.get("com.atproto.space.getLatestCommit", &base).await,
+        dan.get("com.atproto.space.getRepo", &base).await,
     ]
 }
 
-/// the repo boundary: "refuses a co-located non-member reading a member repo"
+/// account tokens: "read only the account's own repo": even a member
+/// reading another account's repo with an account token gets what an absent
+/// repo gets.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn refuses_a_co_located_non_member_reading_a_member_repo() {
     let net = Net::new(0).await;
     let (alice, dan) = (net.actor("alice", 0).await, net.actor("dan", 0).await);
-    let space = net.create_space(&alice, SpaceOpts::default()).await;
+    let space = net.create_space(&alice, SpaceOpts { members: &[&dan], ..Default::default() }).await;
     write(&alice, &space, W::new().rkey("private").text("members only")).await.ok();
-    // The same error an absent repo gets.
     for r in own_reads(&dan, &space, &alice.did).await {
         r.err(400, "RepoNotFound");
     }
-    let car = dan.get("com.atproto.space.getRepo", &[("space", &space), ("repo", &alice.did)]).await;
-    car.err_status(400);
     let own = alice.get("com.atproto.space.listRecords", &[("space", &space), ("repo", &alice.did)]).await.ok();
     assert_eq!(own["records"].as_array().unwrap().len(), 1);
 }
 
-/// the repo boundary: "refuses to mint a delegation token on an app
-/// password (privileged: false|true)". Divergent: vlpds refuses the
-/// app password's space write too (OAuth-only), and a password session
-/// alike.
+/// account tokens: "are refused for an app password, even a privileged
+/// one": every space and policy method answers an app password (privileged
+/// or not) 400 InvalidToken "Bad token scope". Divergent: a password
+/// session is refused too (403, OAuth-only), where the reference takes it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn refuses_space_access_to_app_passwords_and_password_sessions() {
     let net = Net::new(0).await;
-    let alice = net.actor("alice", 0).await;
+    let (alice, carol) = (net.actor("alice", 0).await, net.actor("carol", 0).await);
     let s = &net.pds[0];
     let space = net.create_space(&alice, SpaceOpts::default()).await;
+    write(&alice, &space, W::new()).await.ok();
     let session = Auth::Bearer(alice.session_jwt.clone());
     let mut auths = vec![("password session", session.clone())];
     for privileged in [false, true] {
@@ -75,14 +76,43 @@ async fn refuses_space_access_to_app_passwords_and_password_sessions() {
         let sess = s.create_session(&alice.did, ap["password"].as_str().unwrap()).await.ok();
         auths.push(("app password", Auth::Bearer(sess["accessJwt"].as_str().unwrap().into())));
     }
+    let q = [("space", space.as_str())];
     for (what, auth) in &auths {
-        let r = s.xrpc.get("com.atproto.space.getDelegationToken", &[("space", &space)], auth).await;
-        assert_eq!(r.status, 403, "{what}: getDelegationToken {}", r.text());
-        let body = json!({"space": space, "repo": alice.did, "collection": TEST_COLLECTION, "record": record(TEST_COLLECTION, "from an app password")});
-        let r = s.xrpc.post("com.atproto.space.createRecord", &body, auth).await;
-        assert_eq!(r.status, 403, "{what}: createRecord {}", r.text());
-        let r = s.xrpc.get("com.atproto.space.listRecords", &[("space", &space), ("repo", &alice.did)], auth).await;
-        assert_eq!(r.status, 403, "{what}: listRecords {}", r.text());
+        let calls = [
+            s.xrpc
+                .post(
+                    "com.atproto.space.createSpace",
+                    &json!({"spaceType": TEST_SPACE_TYPE, "policy": {"$type": "com.atproto.memberspace.policy"}}),
+                    auth,
+                )
+                .await,
+            s.xrpc.get("com.atproto.space.getSpace", &q, auth).await,
+            s.xrpc
+                .post(
+                    "com.atproto.memberspace.putMembers",
+                    &json!({"space": space, "members": [{"did": carol.did, "read": true, "write": true}]}),
+                    auth,
+                )
+                .await,
+            s.xrpc
+                .post(
+                    "com.atproto.space.createRecord",
+                    &json!({"space": space, "repo": alice.did, "collection": TEST_COLLECTION, "record": record(TEST_COLLECTION, "from an app password")}),
+                    auth,
+                )
+                .await,
+            s.xrpc.get("com.atproto.space.listRecords", &[("space", &space), ("repo", &alice.did)], auth).await,
+            s.xrpc.get("com.atproto.space.getDelegationToken", &q, auth).await,
+        ];
+        for r in calls {
+            match *what {
+                "app password" => {
+                    r.err(400, "InvalidToken");
+                    assert_eq!(r.json["message"], "Bad token scope", "{what}: {}", r.text());
+                }
+                _ => r.err(403, "InsufficientScope"),
+            }
+        }
     }
 }
 
@@ -120,7 +150,7 @@ async fn refuses_a_credential_presented_as_a_bearer_token() {
     let cred = net.credential_for(&carol, &space).await;
     let q = [("space", space.as_str()), ("repo", alice.did.as_str())];
     let bearer = vec![("authorization".to_string(), format!("Bearer {}", cred.credential))];
-    raw_get(&net.pds[0].url, "com.atproto.space.getLatestCommit", &q, &bearer).await.client_err();
+    raw_get(&net.pds[0].url, "com.atproto.space.getLatestCommit", &q, &bearer).await.err(400, "InvalidToken");
     cred.get(&net.pds[0].url, "com.atproto.space.getLatestCommit", &q).await.ok();
 }
 
@@ -201,6 +231,9 @@ async fn responds_to_repeated_signature_fields() {
         h.push((name.to_string(), extra.map(String::from).unwrap_or(same)));
         let r = raw_get(&net.pds[0].url, "com.atproto.space.listRecords", &q, &h).await;
         assert_eq!(r.status, status, "repeated {name}: {}", r.text());
+        if name == "atproto-space-audience" {
+            r.err(401, "BadSpaceSignature");
+        }
     }
 }
 
@@ -323,11 +356,28 @@ async fn refuses_a_credential_the_authority_did_not_issue() {
         Mint { iss: &forger.did, sub: &space, key_id: Some(&holder.did), ..Default::default() },
     );
     let forged = Cred { credential: forged, holder, http: reqwest::Client::new() };
-    let r = forged.get(base, "com.atproto.space.getLatestCommit", &q).await;
-    refused_mentioning(&r, &["not the space authority"]);
+    forged.get(base, "com.atproto.space.getLatestCommit", &q).await.err(401, "BadJwtIss");
     // listWriters authorizes off the credential too, on a separate path.
-    let r = forged.get(base, "com.atproto.space.listWriters", &[("space", &space)]).await;
-    refused_mentioning(&r, &["not the space authority"]);
+    forged.get(base, "com.atproto.space.listWriters", &[("space", &space)]).await.err(401, "BadJwtIss");
+}
+
+/// space credentials: "are refused unless signed by the issuer's key": the
+/// forger claims alice as issuer but signs with its own key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn refuses_a_credential_not_signed_by_the_issuers_key() {
+    let net = Net::new(2).await;
+    let (alice, carol) = (net.actor("alice", 0).await, net.actor("carol", 2).await);
+    let space = net.create_space(&alice, SpaceOpts { members: &[&carol], ..Default::default() }).await;
+    write(&alice, &space, W::new().text("forgery target")).await.ok();
+    let forger = MockService::spawn(&[]).await;
+    let holder = Holder::new();
+    let forged = forger.token(
+        TokenType::Credential,
+        Mint { iss: &alice.did, sub: &space, key_id: Some(&holder.did), ..Default::default() },
+    );
+    let forged = Cred { credential: forged, holder, http: reqwest::Client::new() };
+    let q = [("space", space.as_str()), ("repo", alice.did.as_str())];
+    forged.get(&net.pds[0].url, "com.atproto.space.listRecords", &q).await.err(401, "BadJwtSignature");
 }
 
 /// space credentials: "refuses one for a revoked member"
@@ -395,13 +445,18 @@ async fn revocation_requires_service_auth_from_the_authority() {
     let cred = net.credential_for(&bob, &space).await;
     let jtis = vec![cred.jti()];
 
-    refused_mentioning(
-        &revoke(&net, &bob, &bob.did, NOTIFY_REVOKED, &space, &jtis).await,
-        &["not the space authority"],
+    let forbidden = |r: Resp, message: &str| {
+        r.err(403, "Forbidden");
+        assert_eq!(r.json["message"], message, "{}", r.text());
+    };
+    forbidden(
+        revoke(&net, &bob, &bob.did, NOTIFY_REVOKED, &space, &jtis).await,
+        "Revocation issuer is not the space authority",
     );
-    refused_mentioning(&revoke(&net, &alice, &alice.did, NOTIFY_REVOKED, &space, &jtis).await, &["aud"]);
+    let wrong_aud = "Revocation audience does not match a repo hosted here";
+    forbidden(revoke(&net, &alice, &alice.did, NOTIFY_REVOKED, &space, &jtis).await, wrong_aud);
     let pds2_did = net.pds[1].pds_did().await;
-    refused_mentioning(&revoke(&net, &alice, &pds2_did, NOTIFY_REVOKED, &space, &jtis).await, &["aud"]);
+    forbidden(revoke(&net, &alice, &pds2_did, NOTIFY_REVOKED, &space, &jtis).await, wrong_aud);
     revoke(&net, &alice, &bob.did, "com.atproto.space.notifyRepoUpdate", &space, &jtis).await.client_err();
     let not_service_auth = Auth::Bearer(alice.session_jwt.clone());
     Xrpc::new(&net.pds[1].url)
@@ -560,12 +615,118 @@ async fn stops_accepting_space_writes_from_a_taken_down_account() {
     let (alice, dan) = (net.actor("alice", 0).await, net.actor("dan", 0).await);
     let space = net.create_space(&alice, SpaceOpts::default()).await;
     set_repo_takedown(&net.pds[0], &dan.did, true).await;
-    refused_mentioning(&write(&dan, &space, W::new().text("during takedown")).await, &["takedown", "taken down"]);
-    refused_mentioning(&dan.delegation_token(&space).await, &["takedown", "taken down"]);
+    write(&dan, &space, W::new().text("during takedown")).await.err(401, "AccountTakedown");
+    dan.delegation_token(&space).await.err(401, "AccountTakedown");
     set_repo_takedown(&net.pds[0], &dan.did, false).await;
     // A takedown revokes the account's OAuth sessions, so sign in again.
     let dan = regrant(&dan, FULL_SCOPE).await;
     write(&dan, &space, W::new().text("after")).await.ok();
+}
+
+/// The reference's `STATUSES`: an account status, the error a repo in that
+/// status gets and the one its account gets.
+const STATUSES: [(&str, &str, &str); 2] =
+    [("takendown", "RepoTakendown", "AccountTakedown"), ("deactivated", "RepoDeactivated", "AccountDeactivated")];
+
+/// `sc.withStatus(actor, status)`, left on for the rest of the test.
+async fn set_status(s: &TestServer, actor: &SpaceClient, status: &str) {
+    match status {
+        "takendown" => set_repo_takedown(s, &actor.did, true).await,
+        _ => {
+            let session = Auth::Bearer(actor.session_jwt.clone());
+            s.xrpc.post("com.atproto.server.deactivateAccount", &json!({}), &session).await.ok();
+        }
+    }
+}
+
+/// account status: "stops minting credentials and listing writers for a
+/// $status authority"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stops_minting_credentials_and_listing_writers_for_an_inactive_authority() {
+    let net = Net::new(0).await;
+    let dan = net.actor("dan", 0).await;
+    for (status, repo_error, _) in STATUSES {
+        let authority = net.actor(&format!("host-{}", &status[..5]), 0).await;
+        let space = net.create_space(&authority, SpaceOpts { members: &[&dan], ..Default::default() }).await;
+        let cred = net.credential_for(&dan, &space).await;
+        set_status(&net.pds[0], &authority, status).await;
+        let token = delegation_token(&dan, &space).await;
+        net.mint_credential(&space, &token, None).await.0.err(400, repo_error);
+        net.public_credential(&space, None).await.0.err(400, repo_error);
+        cred.get(&net.pds[0].url, "com.atproto.space.listWriters", &[("space", &space)]).await.err(400, repo_error);
+    }
+}
+
+/// account status: "stops a $status authority managing its spaces"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stops_an_inactive_authority_managing_its_spaces() {
+    let net = Net::new(0).await;
+    let (dan, bob) = (net.actor("dan", 0).await, net.actor("bob", 0).await);
+    for (status, _, account_error) in STATUSES {
+        let authority = net.actor(&format!("mgr-{}", &status[..5]), 0).await;
+        let space = net.create_space(&authority, SpaceOpts { members: &[&dan], ..Default::default() }).await;
+        set_status(&net.pds[0], &authority, status).await;
+        let calls = [
+            authority
+                .post(
+                    "com.atproto.space.createSpace",
+                    json!({"spaceType": TEST_SPACE_TYPE, "policy": memberspace(json!({}))}),
+                )
+                .await,
+            authority
+                .post("com.atproto.space.updateSpace", json!({"space": space, "policy": memberspace(json!({}))}))
+                .await,
+            authority.post("com.atproto.space.deleteSpace", json!({"space": space})).await,
+            remove_writer(&authority, &space, &dan).await,
+            put_member(&authority, &space, &bob, true, true).await,
+            remove_member(&authority, &space, &dan).await,
+        ];
+        for r in calls {
+            r.err(401, account_error);
+        }
+    }
+}
+
+/// account status: "lets a taken-down account export its spaces". Divergent:
+/// the takendown-scope session the reference lets export gets nothing on
+/// space routes here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn taken_down_account_exports_nothing() {
+    let net = Net::new(0).await;
+    let josie = net.actor("josie", 0).await;
+    let space = net.create_space(&josie, SpaceOpts::default()).await;
+    let blob = upload_blob(&josie, b"\x89PNG taken down").await;
+    write(&josie, &space, W::new().record(json!({"$type": TEST_COLLECTION, "text": "hi", "image": blob}))).await.ok();
+    set_repo_takedown(&net.pds[0], &josie.did, true).await;
+    let r = net.pds[0]
+        .xrpc
+        .post(
+            "com.atproto.server.createSession",
+            &json!({"identifier": josie.did, "password": crate::oauth::PASSWORD, "allowTakendown": true}),
+            &Auth::None,
+        )
+        .await
+        .ok();
+    let auth = Auth::Bearer(r["accessJwt"].as_str().unwrap().into());
+    let x = &net.pds[0].xrpc;
+    let params = [("space", space.as_str()), ("repo", josie.did.as_str())];
+    let calls = [
+        x.get("com.atproto.space.listSpaces", &[], &auth).await,
+        x.get("com.atproto.space.exportSpaceMeta", &[("space", &space)], &auth).await,
+        x.get("com.atproto.space.getRepo", &params, &auth).await,
+        x.get("com.atproto.space.listBlobs", &params, &auth).await,
+        x.get("com.atproto.space.listRecords", &params, &auth).await,
+        x.post(
+            "com.atproto.space.createRecord",
+            &json!({"space": space, "repo": josie.did, "collection": TEST_COLLECTION, "record": record(TEST_COLLECTION, "no")}),
+            &auth,
+        )
+        .await,
+    ];
+    for r in calls {
+        r.err(400, "InvalidToken");
+        assert_eq!(r.json["message"], "Bad token scope", "{}", r.text());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -725,4 +886,21 @@ async fn oauth_requires_delete_on_every_collection_a_clear_removes() {
     let app = regrant(&alice, &grant(&alice, &format!("collection={first}&collection={second}&action=delete"))).await;
     assert_eq!(clear(&app, &space).await.ok(), json!({}));
     assert!(all_records(&alice, &space).await.is_empty());
+}
+
+/// OAuth scopes: "enforces the manage operations a grant names"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn oauth_enforces_the_manage_operations_a_grant_names() {
+    let net = Net::new(0).await;
+    let alice = net.actor("alice", 0).await;
+    let space = net.create_space(&alice, SpaceOpts::default()).await;
+    let update = |c: SpaceClient| {
+        let space = space.clone();
+        async move {
+            c.post("com.atproto.space.updateSpace", json!({"space": space, "policy": memberspace(json!({}))})).await
+        }
+    };
+    // collection=* keeps the grant from needing the space type's lexicon at approval
+    scope_missing(&update(regrant(&alice, &grant(&alice, "collection=*")).await).await);
+    update(regrant(&alice, &grant(&alice, "collection=*&manage=update")).await).await.ok();
 }

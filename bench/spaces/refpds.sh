@@ -5,7 +5,7 @@
 # (its `pds` target). Skips what already exists.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-PIN=16bfeba760aede46f0b87bf94febef9e6ea84b95
+PIN=6747610566eee1b6d743617bd8eb1136adccb362
 IMAGE="vlpds-spaces-refpds:${PIN:0:8}"
 src="$here/.scratch/atproto"
 mkdir -p "$here/.scratch"

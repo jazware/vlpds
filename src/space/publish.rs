@@ -60,6 +60,7 @@ mod tests {
     fn did_record_keys() {
         assert_eq!(did_rkey("did:web:localhost%3A2583"), "did:web:localhost:2583");
         assert_eq!(did_rkey("did:plc:abc"), "did:plc:abc");
+        assert_eq!(did_rkey("did:web:example.com"), "did:web:example.com");
         assert!(vlatproto::syntax::valid_rkey(&did_rkey("did:web:localhost%3A2583")));
         assert_eq!(member_path("did:plc:abc"), "com.atproto.memberspace.member/did:plc:abc");
     }

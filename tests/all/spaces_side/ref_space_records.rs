@@ -1,4 +1,4 @@
-//! Ported from the reference's `tests/space/records.test.ts` (5b95b2f2):
+//! Ported from the reference's `tests/space/records.test.ts` (67476105):
 //! reading and writing records in a space. Each test names its reference
 //! case.
 //!
@@ -65,13 +65,38 @@ async fn refuses_a_write_to_another_account_repo() {
     let net = Net::new(0).await;
     let (alice, dan) = (net.actor("alice", 0).await, net.actor("dan", 0).await);
     let space = net.create_space(&alice, SpaceOpts::default()).await;
-    let r = dan
-        .post(
-            "com.atproto.space.createRecord",
-            json!({"space": space, "repo": alice.did, "collection": TEST_COLLECTION, "record": record(TEST_COLLECTION, "x")}),
+    let path = json!({"space": space, "repo": alice.did, "collection": TEST_COLLECTION, "rkey": "self"});
+    let with_record = |mut b: J| {
+        b["record"] = record(TEST_COLLECTION, "x");
+        b
+    };
+    let writes = [
+        dan.post("com.atproto.space.createRecord", with_record(path.clone())).await,
+        dan.post("com.atproto.space.putRecord", with_record(path.clone())).await,
+        dan.post("com.atproto.space.deleteRecord", path).await,
+        dan.post("com.atproto.space.applyWrites", json!({"space": space, "repo": alice.did, "writes": []})).await,
+    ];
+    for r in writes {
+        r.err(403, "Forbidden");
+    }
+}
+
+/// "writes to another authority's space without checking it exists": the
+/// authority's host is told of the write, not asked first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn writes_to_another_authoritys_space_without_checking_it_exists() {
+    let net = Net::new(1).await;
+    let (alice, bob) = (net.actor("alice", 0).await, net.actor("bob", 1).await);
+    let space = net.create_space(&alice, SpaceOpts { ungoverned: true, ..Default::default() }).await;
+    let created = write(&bob, &space, W::new().rkey("first")).await.ok();
+    let got = bob
+        .get(
+            "com.atproto.space.getRecord",
+            &[("space", &space), ("repo", &bob.did), ("collection", TEST_COLLECTION), ("rkey", "first")],
         )
-        .await;
-    r.err(403, "Forbidden");
+        .await
+        .ok();
+    assert_eq!(got["cid"], created["cid"]);
 }
 
 /// "deletes a record"
@@ -98,10 +123,13 @@ async fn delete_record_is_idempotent() {
     let net = Net::new(0).await;
     let alice = net.actor("alice", 0).await;
     let space = net.create_space(&alice, SpaceOpts::default()).await;
-    del(&alice, &space, None, "gone").await.ok();
+    del(&alice, &space, None, "never").await.ok();
+    assert_eq!(repo_state(&alice, &space).await, None, "deleting what was never there writes no head");
     write(&alice, &space, W::new().rkey("gone").text("here")).await.ok();
     del(&alice, &space, None, "gone").await.ok();
+    let deleted = repo_state(&alice, &space).await;
     del(&alice, &space, None, "gone").await.ok();
+    assert_eq!(repo_state(&alice, &space).await, deleted, "a repeated delete changes nothing");
 }
 
 /// putRecord: "creates a record that does not yet exist"
@@ -180,6 +208,7 @@ async fn apply_writes_rejects_a_duplicate_create_within_one_batch() {
     let space = net.create_space(&alice, SpaceOpts::default()).await;
     let r = dan.apply_writes(&space, json!([create_op("dupe", "one"), create_op("dupe", "two")])).await;
     r.err(400, "RecordAlreadyExists");
+    assert_eq!(repo_state(&dan, &space).await, None, "the refused batch leaves no head");
     expect_set_hash_matches_store(&dan, &space).await;
 }
 
@@ -266,7 +295,8 @@ async fn apply_writes_refuses_an_unrecognized_write_type() {
     r.err(400, "InvalidRequest");
 }
 
-/// validation: "rejects a record whose $type disagrees with its collection"
+/// validation: "rejects a record whose $type disagrees with its collection".
+/// The message quotes the `$type` it got, as the public repo's does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rejects_a_record_whose_type_disagrees_with_its_collection() {
     let net = Net::new(0).await;
@@ -274,6 +304,12 @@ async fn rejects_a_record_whose_type_disagrees_with_its_collection() {
     let space = net.create_space(&alice, SpaceOpts::default()).await;
     let r = write(&alice, &space, W::new().record(record(TEST_COLLECTION_ALT, "mismatched"))).await;
     r.err(400, "InvalidRequest");
+    assert_eq!(
+        r.json["message"],
+        format!("Invalid $type: expected {TEST_COLLECTION}, got \"{TEST_COLLECTION_ALT}\""),
+        "{}",
+        r.text()
+    );
 }
 
 /// validation: "reports unknown for a collection with no resolvable schema"
@@ -465,6 +501,41 @@ async fn flag_off_serves_an_unreferenced_upload() {
     let cid = blob_cid(&blob);
     let r = public_get_blob(&s.url, &a.did, &cid).await;
     assert_eq!((r.status, &r.body[..]), (200, &[9u8, 8, 7, 6][..]), "{}", r.text());
+}
+
+/// blobs: "releases a blob a replacing record no longer references"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn blobs_releases_a_blob_a_replacing_record_no_longer_references() {
+    let net = Net::new(0).await;
+    let alice = net.actor("alice", 0).await;
+    let space = net.create_space(&alice, SpaceOpts::default()).await;
+    let replaced = upload_blob(&alice, &[1, 1, 2]).await;
+    let current = upload_blob(&alice, &[3, 5, 8]).await;
+    let (replaced_cid, current_cid) = (blob_cid(&replaced), blob_cid(&current));
+    put(&alice, &space, W::new().record(image_record("first", &replaced))).await.ok();
+    put(&alice, &space, W::new().record(image_record("second", &current))).await.ok();
+    let q = [("space", space.as_str()), ("repo", alice.did.as_str())];
+    assert_eq!(alice.get("com.atproto.space.listBlobs", &q).await.ok()["cids"], json!([current_cid]));
+    let q = [("space", space.as_str()), ("repo", alice.did.as_str()), ("cid", replaced_cid.as_str())];
+    alice.get("com.atproto.space.getBlob", &q).await.client_err();
+    let q = [("space", space.as_str()), ("repo", alice.did.as_str()), ("cid", current_cid.as_str())];
+    assert_eq!(alice.get_raw("com.atproto.space.getBlob", &q).await.0, 200);
+}
+
+/// blobs: "keeps a blob a replacing record still references"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn blobs_keeps_a_blob_a_replacing_record_still_references() {
+    let net = Net::new(0).await;
+    let alice = net.actor("alice", 0).await;
+    let space = net.create_space(&alice, SpaceOpts::default()).await;
+    let blob = upload_blob(&alice, &[2, 7, 1]).await;
+    let cid = blob_cid(&blob);
+    put(&alice, &space, W::new().record(image_record("first", &blob))).await.ok();
+    put(&alice, &space, W::new().record(image_record("second", &blob))).await.ok();
+    let q = [("space", space.as_str()), ("repo", alice.did.as_str())];
+    assert_eq!(alice.get("com.atproto.space.listBlobs", &q).await.ok()["cids"], json!([cid]));
+    let q = [("space", space.as_str()), ("repo", alice.did.as_str()), ("cid", cid.as_str())];
+    assert_eq!(alice.get_raw("com.atproto.space.getBlob", &q).await.0, 200);
 }
 
 /// blobs: "keeps a blob shared with a public record"

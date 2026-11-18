@@ -20,11 +20,21 @@ fn invalid(m: impl Into<String>) -> XrpcError {
 /// can't be replayed here; `routing` (the authority) is where its `jti` is
 /// claimed.
 pub async fn verify(app: &crate::xrpc::App, attestation: &str, aud: &str, routing: &str) -> XResult<String> {
-    let t = token::parse(TokenType::ClientAttestation, attestation).map_err(|e| invalid(e.message))?;
+    let t = token::parse(TokenType::ClientAttestation, attestation)
+        .map_err(|e| invalid(format!("Malformed client attestation: {}", e.message)))?;
     let client_id = t.claims.iss.clone();
-    let client = crate::oauth::client::get_client(&client_id, app.config.dev_mode, &app.public_url)
-        .await
-        .map_err(|_| invalid(format!("Could not resolve client metadata for \"{client_id}\"")))?;
+    let client =
+        crate::oauth::client::get_client(&client_id, app.config.dev_mode, &app.public_url).await.map_err(|e| {
+            let jwks_uri = e
+                .description
+                .strip_prefix(crate::oauth::client::JWKS_FETCH_FAILED)
+                .and_then(|r| r.trim_start().strip_prefix('"')?.split_once('"'))
+                .map(|(uri, _)| uri);
+            match jwks_uri {
+                Some(uri) => invalid(format!("Could not resolve client JWKS from \"{uri}\"")),
+                None => invalid(format!("Could not resolve client metadata for \"{client_id}\"")),
+            }
+        })?;
     if client.jwks.is_empty() {
         return Err(invalid(format!("Client \"{client_id}\" publishes no keys to verify an attestation against")));
     }

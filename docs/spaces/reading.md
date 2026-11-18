@@ -86,19 +86,19 @@ write of either collection in any repo gets 400.
 | Session | Space reads and writes | `getDelegationToken` |
 |---|---|---|
 | OAuth with a matching `space:` scope | yes | only with `action=read` on the whole space |
-| App password, scoped or not | refused | refused |
-| Password session (`createSession`) | refused | refused |
+| App password, scoped or not | 400 InvalidToken "Bad token scope" | the same |
+| Password session (`createSession`) | 403 InsufficientScope | the same |
 
-Space data is OAuth-only on vlpds. The reference lets legacy app passwords read and write the
-account's own space records, so this is a deliberate divergence
-([Interop](interop.md#where-vlpds-differs)). `getServiceAuth` follows the same rule for a
+Space data is OAuth-only on vlpds. The reference refuses app passwords as well, with the same error,
+but lets a full password session read and write the account's own space records, so refusing those
+is a deliberate divergence ([Interop](interop.md#where-vlpds-differs)). `getServiceAuth` follows the same rule for a
 `com.atproto.space.*` or policy method (`com.atproto.memberspace.*`, `managedspace.*`), with `--spaces` on or off: an app
 password or password session never gets a token for one, and an OAuth app needs a `space:` grant
 that covers it. `transition:generic` or `rpc:` alone isn't enough. A `notifyCredentialsRevoked`
 token (an authority's app revoking at member hosts) needs `manage` or the account's own spaces, a
 `notifyRepoUpdate` token a write action, and any other space method some `space:` grant. Otherwise an
 app could fake the account's writes to an authority or revoke credentials in spaces it runs. `com.atproto.space.importRepo` is OAuth
-too, so an account moving in imports after it's activated ([Moving a repo in](storage.md#moving-a-repo-in)). The consent screen names a space type by its
+too, with full access to the space (`collection=*` and every action), so an account moving in imports after it's activated ([Moving a repo in](storage.md#moving-a-repo-in)). The consent screen names a space type by its
 declaration, an authority by its handle when the handle resolves back to it (else the DID), and
 says which actions a grant allows. It warns on a `space:*?authority=*` grant that reads what members
 share (`read`) or writes anything. One that only reads your own space repos (`read_self`, as the

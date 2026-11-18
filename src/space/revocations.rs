@@ -682,6 +682,7 @@ mod tests {
         assert!(a.refresh(&s, 100).await.unwrap().is_empty());
         // past `until`: gone from the set, and pruned at the next append
         let later = 100 + KEEP_SECS;
+        assert!(a.is_revoked("sp", "1", later - 1), "still revoked the second before it lapses");
         assert!(!a.is_revoked("sp", "1", later));
         a.refresh(&s, later).await.unwrap();
         assert!(a.is_empty());

@@ -104,8 +104,10 @@ it, and isn't built.
 `com.atproto.space.importRepo` takes the STAR archive that `space.getRepo` serves on the old host.
 The space comes from the archive's metadata, so the call has no query parameter. It's an OAuth call
 like any space write, so an account moving in imports once it's active here (OAuth signs no
-deactivated account in). The archive is the account's own data, uploaded with its own grant, so
-the import checks no signature, MAC or PLC history. It checks that the metadata names the
+deactivated account in), and its grant must give full access to the space: `read`, and `create`,
+`update` and `delete` on every collection (`collection=*`), since an import replaces the account's
+whole repo there. The archive is the account's own data, uploaded with its own grant, so the import
+checks no signature, MAC or PLC history. It checks that the metadata names the
 authenticated account and that the records fold to the commit's `data`.
 
 The records stream in as the body arrives. Each must be canonical DRISL, and they must come in

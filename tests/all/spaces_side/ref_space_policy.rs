@@ -1,4 +1,4 @@
-//! Ported from the reference's `tests/space/policy.test.ts` (16bfeba7):
+//! Ported from the reference's `tests/space/policy.test.ts` (67476105):
 //! the `com.atproto.space` lifecycle methods and the baseline policies
 //! (`personalspace`, `memberspace`, `managedspace`), with the records a
 //! policy publishes. Each test names its reference case. The
@@ -65,8 +65,13 @@ fn stored_memberspace(config: J) -> J {
 async fn creates_a_space_anchored_on_the_caller() {
     let net = Net::new(0).await;
     let alice = net.actor("alice", 0).await;
-    let space = net.create_space(&alice, SpaceOpts::default()).await;
-    assert!(space.starts_with(&format!("at://{}/space/", alice.did)));
+    let r = alice
+        .post("com.atproto.space.createSpace", json!({"spaceType": TEST_SPACE_TYPE, "policy": memberspace(json!({}))}))
+        .await
+        .ok();
+    let space = r["space"].as_str().unwrap().to_string();
+    assert!(space.starts_with(&format!("at://{}/space/{TEST_SPACE_TYPE}/", alice.did)), "{space}");
+    assert!(vlatproto::tid::Tid::parse(last_segment(&space)).is_some(), "the key is a TID: {space}");
     let listed = alice.get("com.atproto.space.listSpaces", &[]).await.ok();
     assert!(uris(&listed).contains(&space), "{listed}");
 }
@@ -143,6 +148,8 @@ async fn refuses_an_owner_write_until_create_space() {
     net.create_space(&alice, SpaceOpts { skey: Some("lazy"), ..Default::default() }).await;
     write(&alice, &space, W::new().text("lazy space")).await.ok();
     assert_eq!(all_records(&alice, &space).await.len(), 1);
+    delete_space(&alice, &space).await.ok();
+    write(&alice, &space, W::new().text("after delete")).await.err(400, "SpaceNotFound");
 }
 
 // ---------------------------------------------------------------------------
@@ -405,14 +412,59 @@ async fn refuses_an_unrecognized_policy() {
     update_space(&alice, &space, json!({"$type": "com.example.whatever"})).await.err(400, "UnsupportedPolicy");
 }
 
-/// policy: "refuses a managingApp that does not name a service"
+/// policy: "refuses a managingApp that is not a did#serviceId reference"
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn refuses_a_managing_app_that_is_not_a_did() {
+async fn refuses_a_managing_app_that_is_not_a_service_ref() {
     let net = Net::new(0).await;
     let alice = net.actor("alice", 0).await;
     let space = net.create_space(&alice, SpaceOpts::default()).await;
-    let r = update_space(&alice, &space, managedspace("not-a-did-at-all")).await;
-    refused_mentioning(&r, &["must be a DID"]);
+    for app in ["not-a-did-at-all", "did:web:example.com"] {
+        let r = update_space(&alice, &space, managedspace(app)).await;
+        r.err(400, "InvalidRequest");
+        assert_eq!(r.json["message"], format!("managingApp must be a did#serviceId reference, got: {app}"));
+    }
+    // the reference's rule: an atproto DID (plc or web), so no did:key
+    let app = "did:key:zabc#x";
+    let r = alice
+        .post("com.atproto.space.createSpace", json!({"spaceType": TEST_SPACE_TYPE, "policy": managedspace(app)}))
+        .await;
+    r.err(400, "InvalidRequest");
+    assert_eq!(r.json["message"], format!("managingApp must be a did#serviceId reference, got: {app}"));
+}
+
+/// authority: "refuses management methods to an account other than the
+/// authority"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn refuses_management_methods_to_a_non_authority() {
+    let net = Net::new(0).await;
+    let (alice, dan, carol) = (net.actor("alice", 0).await, net.actor("dan", 0).await, net.actor("carol", 0).await);
+    let space = net.create_space(&alice, SpaceOpts { members: &[&dan], ..Default::default() }).await;
+    let calls = [
+        get_space(&dan, &space).await,
+        update_space(&dan, &space, memberspace(json!({"publicRead": true}))).await,
+        delete_space(&dan, &space).await,
+        list_members(&dan, &space).await,
+        put_member(&dan, &space, &carol, true, true).await,
+        remove_member(&dan, &space, &dan).await,
+    ];
+    for r in calls {
+        r.err(400, "NotAuthorized");
+    }
+}
+
+/// authority: "keeps the policy and member list from a space credential":
+/// the authority-only methods don't take a credential's scheme. Divergent:
+/// 401 AuthenticationRequired, where the reference answers 400 InvalidToken.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn keeps_the_policy_and_members_from_a_credential() {
+    let net = Net::new(2).await;
+    let (alice, carol) = (net.actor("alice", 0).await, net.actor("carol", 2).await);
+    let space = net.create_space(&alice, SpaceOpts { members: &[&carol], ..Default::default() }).await;
+    let cred = net.credential_for(&carol, &space).await;
+    let q = [("space", space.as_str())];
+    for nsid in ["com.atproto.space.getSpace", "com.atproto.memberspace.listMembers"] {
+        cred.get(&net.pds[0].url, nsid, &q).await.err(401, "AuthenticationRequired");
+    }
 }
 
 /// policy: "refuses the policy to a member with a space credential"
@@ -612,9 +664,9 @@ async fn keeps_the_published_records_when_the_authority_clears() {
     assert_eq!(repo_state(&alice, &space).await, cleared);
 }
 
-/// publishing to readers: "notifies the space of what it publishes"
+/// publishing to readers: "records the authority as a writer when it publishes"
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn notifies_the_space_of_what_it_publishes() {
+async fn records_the_authority_as_a_writer_when_it_publishes() {
     let net = Net::new(0).await;
     let alice = net.actor("alice", 0).await;
     let space = net.create_space(&alice, with_policy(memberspace(json!({"publishPolicy": true})))).await;
@@ -777,13 +829,15 @@ async fn hides_the_space_from_a_member_without_read_access() {
 }
 
 /// credential mint gates: "always admits the authority, whatever the
-/// policy"
+/// policy": a personalspace, and a managedspace whose app is unreachable.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn always_admits_the_authority() {
     let net = Net::new(0).await;
     let alice = net.actor("alice", 0).await;
-    let space = net.create_space(&alice, with_policy(managedspace("did:web:unreachable.invalid#forum"))).await;
-    assert!(!net.credential_for(&alice, &space).await.credential.is_empty());
+    for policy in [personalspace(), managedspace("did:web:unreachable.invalid#forum")] {
+        let space = net.create_space(&alice, with_policy(policy)).await;
+        assert!(!net.credential_for(&alice, &space).await.credential.is_empty());
+    }
 }
 
 /// credential mint gates: "refuses when apps are restricted and no
@@ -850,7 +904,26 @@ async fn managing_app_admits_a_user_it_authorizes() {
     let auth = asked[0].auth.as_deref().unwrap_or("");
     assert!(auth.starts_with("Bearer "), "{auth}");
     let claims = jwt_claims(auth.trim_start_matches("Bearer "));
-    assert_eq!((&claims["iss"], &claims["lxm"]), (&json!(alice.did), &json!(CHECK_ACCESS)));
+    assert_eq!(
+        (&claims["iss"], &claims["aud"], &claims["lxm"]),
+        (&json!(alice.did), &json!(app.service_ref()), &json!(CHECK_ACCESS))
+    );
+}
+
+/// managedspace policy: "tells the managing app which client is asking"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn managing_app_is_told_which_client_is_asking() {
+    let net = Net::new(2).await;
+    let (alice, carol) = (net.actor("alice", 0).await, net.actor("carol", 2).await);
+    let app = forum(Some((true, true))).await;
+    let client = MockClientApp::spawn(Keys::Uri).await;
+    let space = net.create_space(&alice, with_policy(managedspace(&app.service_ref()))).await;
+    let attestation = client.attest(&vlpds::space::token::space_host_aud(&alice.did), Attest::default());
+    let token = delegation_token(&carol, &space).await;
+    net.mint_credential(&space, &token, Some(&attestation)).await.0.ok();
+    let asked = app.calls_to(CHECK_ACCESS);
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].body, json!({"space": space, "repo": carol.did, "clientId": client.client_id}));
 }
 
 /// managedspace policy: "asks the managing app about a request with no
@@ -919,6 +992,10 @@ async fn managing_app_outage_keeps_a_registration() {
     app.respond(500, json!({"error": "InternalError"}));
     reauthorize().await.err(502, "UpstreamFailure");
     assert_eq!(registrations(&net, &alice, &space).await, 1);
+    write(&alice, &space, W::new().text("through the outage")).await.ok();
+    let sent = updates(&syncer, 1).await;
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0]["$type"], json!(REPO_WRITE));
     app.respond(200, json!({"read": false, "write": false}));
     reauthorize().await.err(400, "SpaceNotFound");
     assert_eq!(registrations(&net, &alice, &space).await, 0);
@@ -934,6 +1011,25 @@ async fn managing_app_outage_retries_a_write_notification() {
     let app = forum(None).await;
     let space = net.create_space(&alice, with_policy(managedspace(&app.service_ref()))).await;
     let outbox = net.pds[1].app.spaces.as_ref().unwrap().outbox.clone();
+    outbox.set_retry_base(Duration::from_millis(200));
+    write(&bob, &space, W::new()).await.ok();
+    app.await_calls(CHECK_ACCESS, 1, Duration::from_secs(10)).await.expect("asked");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!net.writer_dids(&alice, &space).await.contains(&bob.did));
+    app.respond(200, json!({"read": false, "write": true}));
+    assert!(net.await_writer(&alice, &space, &bob.did).await.contains(&bob.did), "recorded on retry");
+}
+
+/// managedspace policy: "retries a write notification through a managing
+/// app outage", the writer on the authority's own host: the notification
+/// is local, so the refusal is the app's, not the network's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn managing_app_outage_retries_a_co_located_write_notification() {
+    let net = Net::new(0).await;
+    let (alice, bob) = (net.actor("alice", 0).await, net.actor("bob", 0).await);
+    let app = forum(None).await;
+    let space = net.create_space(&alice, with_policy(managedspace(&app.service_ref()))).await;
+    let outbox = net.pds[0].app.spaces.as_ref().unwrap().outbox.clone();
     outbox.set_retry_base(Duration::from_millis(200));
     write(&bob, &space, W::new()).await.ok();
     app.await_calls(CHECK_ACCESS, 1, Duration::from_secs(10)).await.expect("asked");
@@ -1287,20 +1383,35 @@ async fn delete_leaves_a_member_repo_untouched() {
     assert!(uris(&listed).contains(&space), "{listed}");
 }
 
+/// deletion: "refuses a space that was never created"
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delete_refuses_a_space_never_created() {
+    let net = Net::new(0).await;
+    let alice = net.actor("alice", 0).await;
+    let space = net.create_space(&alice, SpaceOpts { ungoverned: true, ..Default::default() }).await;
+    delete_space(&alice, &space).await.err(400, "SpaceNotFound");
+}
+
 /// deletion: "allows re-creating a deleted space, with a fresh policy"
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn allows_re_creating_a_deleted_space_with_a_fresh_policy() {
     let net = Net::new(0).await;
     let alice = net.actor("alice", 0).await;
+    let bob = net.actor("bob", 0).await;
+    let members = [&bob];
     let opts = |p: bool| SpaceOpts {
         skey: Some("recreate"),
         policy: p.then(|| memberspace(json!({"publicRead": true, "publicWrite": true}))),
+        members: if p { &members } else { &[] },
         ..Default::default()
     };
     let space = net.create_space(&alice, opts(true)).await;
+    write(&alice, &space, W::new().text("before deletion")).await.ok();
     delete_space(&alice, &space).await.ok();
     assert_eq!(net.create_space(&alice, opts(false)).await, space);
     let got = get_space(&alice, &space).await.ok();
     assert_eq!((&got["policy"]["publicRead"], &got["policy"]["publicWrite"]), (&json!(false), &json!(false)));
+    assert_eq!(list_members(&alice, &space).await.ok()["members"], json!([]));
+    assert!(net.writer_dids(&alice, &space).await.is_empty());
     write(&alice, &space, W::new().text("after recreation")).await.ok();
 }

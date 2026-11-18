@@ -159,7 +159,7 @@ impl Stub {
 async fn stub(fragment: &str) -> Stub {
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
-    let (base, did) = (format!("http://{addr}"), format!("did:web:127.0.0.1%3A{}", addr.port()));
+    let (base, did) = (format!("http://{addr}"), format!("did:web:localhost%3A{}", addr.port()));
     let seen: Arc<Mutex<Vec<Seen>>> = Default::default();
     let answer = Arc::new(Mutex::new(Answer::Access(true, true)));
     let (s, a, d, f, url) = (seen.clone(), answer.clone(), did.clone(), fragment.to_string(), base.clone());
@@ -203,7 +203,7 @@ async fn dead_did() -> String {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = l.local_addr().unwrap().port();
     drop(l);
-    format!("did:web:127.0.0.1%3A{port}")
+    format!("did:web:localhost%3A{port}")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -749,37 +749,40 @@ async fn refuses_a_repo_over_the_record_cap() {
     import_repo(&o.bob, &b.build().star()).await.ok();
 }
 
-/// Importing a repo is creating its records: the grant must allow `create`
-/// in the archive's space for every collection it holds (the reference's
-/// `assertSpaceRef` per collection), so a grant naming one collection
-/// refuses an archive with another, and a read-only grant refuses any.
+/// migration: OAuth scopes: "requires full access to the space to import a
+/// repo into it". An import replaces the account's whole repo in the space,
+/// so it takes `read` and `create`, `update` and `delete` on every
+/// collection (`collection=*`): grants naming each collection the archive
+/// holds fall short, as do every collection without `read`, a read-only
+/// grant, and one for another space type.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn import_needs_create_on_every_collection() {
+async fn import_needs_full_access_to_the_space() {
     let o = one().await;
     let rev = rev_ago(Duration::from_secs(60));
     let both = records(RepoBuilder::new(&o.space, &o.bob.did, &rev), 2)
         .record(TEST_COLLECTION_ALT, "n1", record(TEST_COLLECTION_ALT, "a note"))
         .build();
-    let one_coll = records(RepoBuilder::new(&o.space, &o.bob.did, &rev), 2).build();
-    let narrow =
-        regrant(&o.bob, &format!("space:{TEST_SPACE_TYPE}?authority=*&collection={TEST_COLLECTION}&action=create"))
-            .await;
-    let r = import_repo(&narrow, &both.star()).await;
-    assert!((400..500).contains(&r.status), "a collection the grant doesn't name: {}", r.text());
-    nothing_written(&o.bob, &o.space, "a collection the grant doesn't name").await;
-    let read_only = regrant(&o.bob, &format!("space:{TEST_SPACE_TYPE}?authority=*&collection=*&action=read")).await;
-    let r = import_repo(&read_only, &one_coll.star()).await;
-    assert!((400..500).contains(&r.status), "a read-only grant: {}", r.text());
-    nothing_written(&o.bob, &o.space, "a read-only grant").await;
-    let other_type = regrant(&o.bob, &format!("space:{OTHER_SPACE_TYPE}?authority=*&collection=*&action=create")).await;
-    let r = import_repo(&other_type, &one_coll.star()).await;
-    assert!((400..500).contains(&r.status), "a grant for another space type: {}", r.text());
+    let scoped = |q: &str| format!("space:{TEST_SPACE_TYPE}?authority=*&{q}");
+    let refused = async |q: &str, needle: &str| {
+        let sc = regrant(&o.bob, &scoped(q)).await;
+        let r = import_repo(&sc, &both.star()).await;
+        r.err(403, "ScopeMissingError");
+        assert!(r.text().contains(needle), "{q}: {}", r.text());
+        nothing_written(&o.bob, &o.space, q).await;
+    };
+    refused(&format!("collection={TEST_COLLECTION}&collection={TEST_COLLECTION_ALT}"), "collection=*").await;
+    refused("collection=*&action=create&action=update&action=delete", "action=read").await;
+    refused("collection=*&action=read&action=create&action=update", "action=delete").await;
+    refused("collection=*&action=read", "collection=*").await;
+    let other_type = regrant(&o.bob, &format!("space:{OTHER_SPACE_TYPE}?authority=*&collection=*")).await;
+    let r = import_repo(&other_type, &both.star()).await;
+    r.err(403, "ScopeMissingError");
     nothing_written(&o.bob, &o.space, "a grant for another space type").await;
-    import_repo(&narrow, &one_coll.star()).await.ok();
+    import_repo(&regrant(&o.bob, &scoped("collection=*")).await, &both.star()).await.ok();
 }
 
-/// Space data is OAuth-only: a password session and app passwords are
-/// refused.
+/// Space data is OAuth-only: a password session is refused, and app
+/// passwords get the reference's "Bad token scope".
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn import_is_oauth_only() {
     let o = one().await;
@@ -804,7 +807,10 @@ async fn import_is_oauth_only() {
     auths.push(("no auth", Auth::None));
     for (what, auth) in &auths {
         let r = import_repo_as(&s.url, auth, &star).await;
-        assert!(r.status == 401 || r.status == 403, "{what}: {}", r.text());
+        match *what {
+            "app password" => r.err(400, "InvalidToken"),
+            _ => assert!(r.status == 401 || r.status == 403, "{what}: {}", r.text()),
+        }
         nothing_written(&o.bob, &o.space, what).await;
     }
     import_repo(&o.bob, &star).await.ok();
@@ -860,6 +866,32 @@ async fn import_over_a_repo_replaces_it() {
     let ops = o.bob.get("com.atproto.space.listRepoOps", &[("space", &o.space), ("repo", &o.bob.did)]).await.ok();
     assert_eq!((ops["ops"].clone(), ops["commit"]["rev"].clone()), (json!([]), json!(again)), "{ops}");
     check_space_ok(s, &o.bob.did, &o.space).await;
+}
+
+/// migration: "releases the blobs of the records a re-import drops, and
+/// keeps the rest": the archive names the kept blob again but not the
+/// dropped one, and the kept blob survives the import on its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reimport_releases_the_blobs_of_dropped_records() {
+    let o = one().await;
+    let (kept, dropped) = (upload_blob(&o.bob, &[5, 6, 7, 8]).await, upload_blob(&o.bob, &[9, 10]).await);
+    let (kept_cid, dropped_cid) = (blob_cid(&kept), blob_cid(&dropped));
+    let with_blob = |text: &str, blob: &J| json!({"$type": TEST_COLLECTION, "text": text, "image": blob});
+    write(&o.bob, &o.space, W::new().rkey("kept").record(with_blob("kept", &kept))).await.ok();
+    write(&o.bob, &o.space, W::new().rkey("dropped").record(with_blob("dropped", &dropped))).await.ok();
+    let built = RepoBuilder::new(&o.space, &o.bob.did, &rev_ago(Duration::from_secs(30)))
+        .record(TEST_COLLECTION, "kept", with_blob("kept", &kept))
+        .build();
+    import_repo(&o.bob, &built.star()).await.ok();
+
+    let q = [("space", o.space.as_str()), ("repo", o.bob.did.as_str())];
+    assert_eq!(o.bob.get("com.atproto.space.listBlobs", &q).await.ok()["cids"], json!([kept_cid]));
+    let blob_status = async |cid: &str| {
+        let q = [("space", o.space.as_str()), ("repo", o.bob.did.as_str()), ("cid", cid)];
+        o.bob.get_raw("com.atproto.space.getBlob", &q).await.0
+    };
+    assert_eq!(blob_status(&kept_cid).await, 200);
+    assert!((400..500).contains(&blob_status(&dropped_cid).await), "the dropped record's blob is released");
 }
 
 /// A refused import leaves the repo as it was ("replaces what the new host

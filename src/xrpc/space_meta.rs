@@ -137,7 +137,7 @@ async fn import_space_meta(
     body: Body,
 ) -> XResult<StatusCode> {
     spaces(&app)?;
-    creds.need_any_space_write()?;
+    creds.need_any_space_create()?;
     let did = creds.user_did()?.to_string();
     if let Some(st) = app.account(&did).await?.status {
         return Err(inactive_account_error(&st));

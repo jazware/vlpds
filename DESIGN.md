@@ -5491,7 +5491,9 @@ active level and is restored only by a build whose window contains it).
 
 AT Protocol Spaces (permissioned data) tracks the reference's alpha, which
 changes often. Pinned: bluesky-social/atproto PR #5187 (branch
-`permissioned-data`) at `16bfeba7`, the Nov 13 2026 alpha: commits with no
+`permissioned-data`) at `67476105`, the Nov 17 2026 alpha (its wire is the
+Nov 13 alpha's, with app passwords refused and importRepo taking full access
+to the space): commits with no
 signature, MACed per response as an RFC 9421 signature under a key HPKE
 exports to the author's `#atproto_kem` key (proposals #141, #142), getRepo
 as a STAR archive, the `Atproto-Space-Credential` scheme, tokens addressed
@@ -5853,9 +5855,11 @@ the space row, and counts a mismatch in
   so a replaced forward leaves no gap, or the true predecessor, never one
   that forks the chain. A lost one does, and the service
   catches up with listWriters as it would with the reference.
-- Space data is OAuth-only. App passwords (scoped or not) and password
-  sessions are refused on every space and policy method, delegation
-  tokens included. `getServiceAuth` mints a token for a
+- Space data is OAuth-only. Password sessions are refused on every space
+  and policy method, delegation tokens included (403 InsufficientScope),
+  where the reference lets a full session in. App passwords (scoped or
+  not) are refused by both, with the reference's 400 InvalidToken "Bad
+  token scope". `getServiceAuth` mints a token for a
   `com.atproto.space.*` or policy method (with
   `--spaces` on or off) only to an OAuth app whose `space:` grant covers
   the action: `manage` or the account's own spaces for
@@ -5864,8 +5868,7 @@ the space row, and counts a mismatch in
   `transition:generic` or `rpc:` alone never does, where the reference
   checks only `rpc:`; otherwise an app could forge the account's writer
   state or revoke credentials in its spaces. The `atproto-proxy`
-  pipethrough never carries a space method. The
-  reference lets them read and write the account's own space records.
+  pipethrough never carries a space method.
   `com.atproto.space.importRepo` is OAuth too, so an account moving in
   imports after it's activated (see below).
 - The notifyRepoUpdate outbox is the `sP` row written in the write's own entry,
@@ -5899,11 +5902,14 @@ the space row, and counts a mismatch in
   only, each call audited (`space.read`) before it reads.
 - `com.atproto.space.importRepo` takes the STAR archive space.getRepo
   serves (the space from its metadata, no query parameter) on an OAuth
-  grant that may create records in the space. The archive is the account's
-  own data, so there's no signature, MAC or PLC-history check: the
-  metadata must name the authenticated account, each record must be
-  canonical, in path order and in a collection the grant can create in, and
-  the records must fold to the commit's `data`. The records are staged in
+  grant with full access to the space (`read`, and `create`, `update` and
+  `delete` on `collection=*`, as the reference asks, since an import
+  replaces the whole repo). The archive is the account's own data, so
+  there's no signature, MAC or PLC-history check: the metadata must name
+  the authenticated account, each record must be canonical and in path
+  order, and the records must fold to the commit's `data`. The reference
+  indexes only the records that differ from what it holds; vlpds restages
+  the whole archive, which serves the same records, commit and blobs. The records are staged in
   bounded frameless entries, and the head goes in last at a new rev after
   the archive's and any held here, with the same data and an empty oplog. A
   rev more than 5 min ahead gets FutureRev (every notify of it would be
@@ -5919,7 +5925,7 @@ the space row, and counts a mismatch in
   staged, and rows a crashed one left with no head over them are cleared by
   the next import or the repo's first write before it lands.
   Everything that costs memory is decided before the body is read: a grant
-  with `create` in some space, the `space-import` bucket, 2 imports per
+  that creates in every collection of some space, the `space-import` bucket, 2 imports per
   account and 8 per node (fewer when the import budget can't hold 8 at
   their largest, so chunked bodies are refused at once rather than overdraw
   or queue on it), and a reservation from the import budget sized by the

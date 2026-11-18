@@ -234,11 +234,12 @@ async fn legacy_auth_and_missing_scopes() {
         .ok();
     let ap = s.create_session(&a.handle, ap["password"].as_str().unwrap()).await.ok();
     let app_pw = Auth::Bearer(ap["accessJwt"].as_str().unwrap().into());
-    for auth in [&session, &app_pw] {
-        s.xrpc.get("com.atproto.space.getRecord", &read, auth).await.err(403, "InsufficientScope");
-        s.xrpc.post("com.atproto.space.createRecord", &write, auth).await.err(403, "InsufficientScope");
+    // the reference's answer to an app password on a space route
+    for (auth, status, error) in [(&session, 403, "InsufficientScope"), (&app_pw, 400, "InvalidToken")] {
+        s.xrpc.get("com.atproto.space.getRecord", &read, auth).await.err(status, error);
+        s.xrpc.post("com.atproto.space.createRecord", &write, auth).await.err(status, error);
         let q = [("space", space.as_str())];
-        s.xrpc.get("com.atproto.space.getDelegationToken", &q, auth).await.err(403, "InsufficientScope");
+        s.xrpc.get("com.atproto.space.getDelegationToken", &q, auth).await.err(status, error);
         // nor a service token for a space method, which would carry it
         for lxm in ["com.atproto.space.notifyRepoUpdate", "com.atproto.space.notifyCredentialsRevoked"] {
             let q = [("aud", "did:web:space.example"), ("lxm", lxm)];

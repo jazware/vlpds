@@ -1,12 +1,12 @@
 //! Ported from the reference's `tests/client-attestation.test.ts`
-//! (5b95b2f2), a unit test of `ClientAttestationVerifier` against an
+//! (67476105), a unit test of `ClientAttestationVerifier` against an
 //! injected fetch, plus the "client attestation" cases of
 //! `space/policy.test.ts`. vlpds verifies an attestation inside
 //! authorizeSpaceSync, so each case is a credential mint for a space whose
 //! `allowedApps` lists a [`MockClientApp`] served over loopback HTTP.
 //!
-//! Every refusal is a 4xx: the reference pins "Invalid client attestation"
-//! and friends by message, which vlpds isn't held to.
+//! Every refusal is a 400 InvalidClientAttestation whose message names the
+//! failure, as the reference pins them.
 
 use super::ref_net::*;
 use crate::common::spaces::SpaceClient;
@@ -19,6 +19,13 @@ struct Fixture {
     carol: SpaceClient,
     app: MockClientApp,
     space: String,
+}
+
+/// A refusal as the reference's verifier words it.
+#[track_caller]
+fn invalid(r: &Resp, message: &str) {
+    r.err(400, "InvalidClientAttestation");
+    assert!(r.json["message"].as_str().unwrap_or("").contains(message), "{}", r.text());
 }
 
 impl Fixture {
@@ -76,7 +83,7 @@ async fn refuses_a_replayed_attestation_but_not_a_fresh_one() {
     let f = Fixture::new(Keys::Uri).await;
     let replayed = f.app.attest(&f.aud(), Attest::default());
     f.mint(&replayed).await.ok();
-    f.mint(&replayed).await.client_err();
+    invalid(&f.mint(&replayed).await, "already been used");
     f.mint(&f.app.attest(&f.aud(), Attest::default())).await.ok();
 }
 
@@ -85,7 +92,8 @@ async fn refuses_a_replayed_attestation_but_not_a_fresh_one() {
 async fn refuses_an_attestation_with_no_jti() {
     let f = Fixture::new(Keys::Uri).await;
     f.control().await;
-    f.mint(&f.app.attest(&f.aud(), Attest { jti: Some(None), ..Default::default() })).await.client_err();
+    let r = f.mint(&f.app.attest(&f.aud(), Attest { jti: Some(None), ..Default::default() })).await;
+    invalid(&r, "Malformed client attestation");
 }
 
 /// "refuses an attestation signed by a key the client does not publish"
@@ -96,7 +104,8 @@ async fn refuses_an_attestation_signed_by_an_unpublished_key() {
     let f = Fixture::new(Keys::Uri).await;
     f.control().await;
     let attacker = new_p256();
-    f.mint(&f.app.attest(&f.aud(), Attest { sign_with: Some(&attacker), ..Default::default() })).await.client_err();
+    let r = f.mint(&f.app.attest(&f.aud(), Attest { sign_with: Some(&attacker), ..Default::default() })).await;
+    invalid(&r, &format!("Invalid client attestation for \"{}\"", f.app.client_id));
 }
 
 /// "refuses an attestation addressed to another space host" (policy:
@@ -105,7 +114,8 @@ async fn refuses_an_attestation_signed_by_an_unpublished_key() {
 async fn refuses_an_attestation_addressed_to_another_space_host() {
     let f = Fixture::new(Keys::Uri).await;
     f.control().await;
-    f.mint(&f.app.attest(&space_host_aud(&f.carol.did), Attest::default())).await.client_err();
+    let r = f.mint(&f.app.attest(&space_host_aud(&f.carol.did), Attest::default())).await;
+    invalid(&r, &format!("Invalid client attestation for \"{}\"", f.app.client_id));
 }
 
 /// "refuses an expired attestation" (both suites)
@@ -113,7 +123,8 @@ async fn refuses_an_attestation_addressed_to_another_space_host() {
 async fn refuses_an_expired_attestation() {
     let f = Fixture::new(Keys::Uri).await;
     f.control().await;
-    f.mint(&f.app.attest(&f.aud(), Attest { expires_in: Some(-120), ..Default::default() })).await.client_err();
+    let r = f.mint(&f.app.attest(&f.aud(), Attest { expires_in: Some(-120), ..Default::default() })).await;
+    invalid(&r, &format!("Invalid client attestation for \"{}\"", f.app.client_id));
 }
 
 /// Divergence: attestations live at most 300 s (single-use token cap).
@@ -129,16 +140,16 @@ async fn refuses_an_attestation_living_past_300_seconds() {
 async fn refuses_an_attestation_whose_iss_and_sub_disagree() {
     let f = Fixture::new(Keys::Uri).await;
     f.control().await;
-    f.mint(&f.app.attest(&f.aud(), Attest { sub: Some("https://other.example/x"), ..Default::default() }))
-        .await
-        .client_err();
+    let r =
+        f.mint(&f.app.attest(&f.aud(), Attest { sub: Some("https://other.example/x"), ..Default::default() })).await;
+    invalid(&r, "Malformed client attestation");
 }
 
 /// "refuses when the client publishes no keys"
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn refuses_when_the_client_publishes_no_keys() {
     let f = Fixture::new(Keys::None).await;
-    f.mint(&f.app.attest(&f.aud(), Attest::default())).await.client_err();
+    invalid(&f.mint(&f.app.attest(&f.aud(), Attest::default())).await, "publishes no keys");
 }
 
 /// "refuses when the client metadata cannot be resolved"
@@ -146,14 +157,14 @@ async fn refuses_when_the_client_publishes_no_keys() {
 async fn refuses_when_the_client_metadata_cannot_be_resolved() {
     let f = Fixture::new(Keys::Uri).await;
     f.app.serve_metadata(false);
-    f.mint(&f.app.attest(&f.aud(), Attest::default())).await.client_err();
+    invalid(&f.mint(&f.app.attest(&f.aud(), Attest::default())).await, "Could not resolve client metadata");
 }
 
 /// "refuses when the jwks_uri cannot be resolved"
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn refuses_when_the_jwks_uri_cannot_be_resolved() {
     let f = Fixture::new(Keys::UriMissing).await;
-    f.mint(&f.app.attest(&f.aud(), Attest::default())).await.client_err();
+    invalid(&f.mint(&f.app.attest(&f.aud(), Attest::default())).await, "Could not resolve client JWKS");
 }
 
 /// policy client attestation: "refuses an attestation from an app that

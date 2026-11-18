@@ -11,7 +11,7 @@ import { XrpcError } from '../../lib/xrpc'
 import { retry } from '../../lib/backoff'
 
 export const OLD_SCOPE = 'atproto space:*?authority=*&action=read_self'
-export const NEW_SCOPE = 'atproto space:*?authority=*&collection=*&action=create&action=read_self'
+export const NEW_SCOPE = 'atproto space:*?authority=*&collection=*'
 export const BLOB_SCOPE = 'blob:*/*'
 /** Importing the spaces the account runs (`authority` defaults to the account itself). */
 export const GOVERN_SCOPE = 'space:*?manage=create&manage=update'
