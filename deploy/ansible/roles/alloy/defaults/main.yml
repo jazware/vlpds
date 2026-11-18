@@ -54,7 +54,7 @@ alloy_enable_docker_logs: true
 # alloy_run_as_root or the docker-monitoring fragment (cAdvisor needs the
 # raw socket and containerd).
 alloy_docker_socket_proxy: true
-alloy_docker_proxy_image: "nginx:1.31.6-alpine@sha256:df221db836e1754089190208cee7eeda94f233197056426eda74a43ab1abeac2"
+alloy_docker_proxy_image: "nginx:1.31.9-alpine@sha256:0713660ff64e819a478be0d69ae314e52d21623c93672edd9f381a6e66fd95ff"
 alloy_docker_proxy_container: alloy-docker-proxy
 alloy_docker_proxy_user: alloy-docker-proxy
 alloy_docker_proxy_config_dir: /etc/alloy-docker-proxy
