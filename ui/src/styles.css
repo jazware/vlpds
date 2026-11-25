@@ -1923,6 +1923,11 @@ table.data.nodes tbody tr.sel td:first-child {
   border-color: var(--amber);
   color: var(--amber);
 }
+/* scope strings run to 70+ characters with no spaces: break them so they can't widen their table */
+.pill.scope {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 table.data th:first-child,
 table.data td:first-child {
   padding-left: 18px;

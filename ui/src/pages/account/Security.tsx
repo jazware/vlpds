@@ -202,7 +202,7 @@ function AccessSummary({ p, appviewAud }: { p: AppPassword; appviewAud?: string 
         <div className="row" style={{ gap: 4 }}>
           <span className="pill amber">Custom{p.privileged ? ', DMs allowed' : ''}</span>
           {p.scopes!.split(' ').map((sc) => (
-            <span key={sc} className="pill mono">
+            <span key={sc} className="pill mono scope">
               {sc}
             </span>
           ))}
@@ -420,7 +420,7 @@ function ConnectedApps() {
                   <td>
                     <div className="row" style={{ gap: 4 }}>
                       {x.scope.split(' ').map((sc) => (
-                        <span key={sc} className="pill mono">
+                        <span key={sc} className="pill mono scope">
                           {sc}
                         </span>
                       ))}
