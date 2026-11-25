@@ -4,18 +4,17 @@
 //! only on its pages: the auto-submit of the `response_mode=form_post`
 //! page, and the passkey ceremony on the sign-in pages ([`PASSKEY_JS`]).
 
-use super::scopes::{IncludeScope, Permission, SpacePermission};
+use super::rollup::{self, Line, Row, Tier};
 use super::util::{html_escape as e, sha256};
 use base64::Engine;
-use serde_json::Value as J;
 use std::sync::LazyLock;
 
 const STYLE: &str = r#"
 .u{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
 @font-face{font-family:"Schibsted Grotesk";src:url(/fonts/schibsted-grotesk.woff2) format("woff2");font-weight:400 900;font-display:swap}
 @font-face{font-family:"JetBrains Mono";src:url(/fonts/jetbrains-mono.woff2) format("woff2");font-weight:100 800;font-display:swap}
-:root{--paper:#edefea;--sheet:#f8f9f6;--ink:#18222d;--ink2:#4d5966;--rule:#c9cfc8;--accent:#17705f;--accent-ink:#fff;--amber:#b9770e;--danger:#a93a24;--focus:#3561c9;color-scheme:light}
-@media (prefers-color-scheme:dark){:root{--paper:#121820;--sheet:#19212b;--ink:#dce4e3;--ink2:#93a0a8;--rule:#2a3542;--accent:#4fbf9f;--accent-ink:#0c1a16;--amber:#e3a43a;--danger:#f0806a;--focus:#8fb0ff;color-scheme:dark}}
+:root{--paper:#edefea;--sheet:#f8f9f6;--ink:#18222d;--ink2:#4d5966;--ink3:#7a858f;--rule:#c9cfc8;--accent:#17705f;--accent-ink:#fff;--amber:#b9770e;--danger:#a93a24;--focus:#3561c9;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--paper:#121820;--sheet:#19212b;--ink:#dce4e3;--ink2:#93a0a8;--ink3:#6b7884;--rule:#2a3542;--accent:#4fbf9f;--accent-ink:#0c1a16;--amber:#e3a43a;--danger:#f0806a;--focus:#8fb0ff;color-scheme:dark}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.55 "Schibsted Grotesk",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
 main{max-width:480px;margin:6vh auto 8vh;padding:0 16px}
@@ -31,7 +30,9 @@ p{margin:8px 0}
 b{font-weight:650}
 a{color:var(--accent);text-underline-offset:3px}
 .muted{color:var(--ink2);font-size:13.5px}
-.client{font-family:"JetBrains Mono",ui-monospace,Menlo,monospace;font-size:12.5px;overflow-wrap:anywhere;background:var(--paper);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:4px;padding:9px 11px;margin:10px 0}
+.client{display:flex;flex-direction:column;gap:2px;min-width:0;overflow-wrap:anywhere;font-size:14px;background:var(--paper);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:4px;padding:9px 11px;margin:10px 0}
+.client b{font-size:16px}
+.client code{font:12.5px/1.45 "JetBrains Mono",ui-monospace,Menlo,monospace;color:var(--ink2);overflow-wrap:anywhere}
 label{display:block;font-size:13.5px;font-weight:600;margin:16px 0 5px}
 input[type=text],input[type=password],input[type=email]{width:100%;padding:10px 12px;border:1px solid var(--rule);border-radius:5px;background:var(--paper);color:var(--ink);font:inherit;font-size:15px}
 .affix{display:flex;align-items:stretch}
@@ -57,50 +58,40 @@ table{width:100%;border-collapse:collapse;font-size:13.5px}
 td{border-top:1px solid var(--rule);padding:10px 4px;vertical-align:top;overflow-wrap:anywhere}
 td:last-child{text-align:right;width:1%;white-space:nowrap;overflow-wrap:normal;padding-left:10px}
 footer{margin-top:14px;text-align:center}
-fieldset{border:0;margin:14px 0 0;padding:0;min-width:0}
-legend{padding:0;font-weight:600}
-ul.scopes,ul.ents,ul.ns{list-style:none;padding:0;margin:0}
-ul.scopes{margin:8px 0 12px}
-ul.scopes>li{border-top:1px solid var(--rule)}
-li.ent{display:flex;gap:11px;align-items:flex-start;padding:10px 0}
-li.ent>input[type=checkbox]{flex:none;width:17px;height:17px;margin:3px 0 0;accent-color:var(--accent)}
-li.ent>div{min-width:0;flex:1}
-li.ent label,li.ent .et{display:inline;margin:0;font-size:15px;font-weight:600;cursor:pointer;overflow-wrap:anywhere}
-li.ent .et{cursor:default;font-size:14px}
-li.ent input:disabled+div label{cursor:default}
-details.grp>summary{display:block;cursor:pointer;padding:10px 0 10px 24px;position:relative;list-style:none}
-details.grp>summary::-webkit-details-marker{display:none}
-details.grp>summary:before{content:"";position:absolute;left:5px;top:17px;width:7px;height:7px;border:solid var(--ink2);border-width:0 2px 2px 0;transform:rotate(-45deg)}
-details.grp[open]>summary:before{transform:rotate(45deg);top:14px}
-details.grp>summary:hover .gl{color:var(--accent)}
+p.lead{font-weight:650;margin:14px 0 6px}
+ul.rows{list-style:none;margin:0;padding:0;border-top:1px solid var(--rule)}
+ul.rows>li{display:flex;gap:11px;align-items:flex-start;padding:11px 0;border-bottom:1px solid var(--rule)}
+ul.rows>li>input[type=checkbox]{flex:none;width:17px;height:17px;margin:3px 0 0;accent-color:var(--accent)}
+.cb{flex:none;width:17px;height:17px;margin:3px 0 0;border-radius:3px;background:var(--ink3);display:grid;place-items:center}
+.cb:after{content:"";width:5px;height:9px;border:solid var(--sheet);border-width:0 2px 2px 0;transform:translate(0,-1px) rotate(45deg)}
+.rb{min-width:0;flex:1}
+details.r>summary{list-style:none;cursor:pointer;display:block;position:relative;padding-right:22px}
+details.r>summary::-webkit-details-marker{display:none}
+details.r>summary:after{content:"";position:absolute;right:4px;top:6px;width:7px;height:7px;border:solid var(--ink2);border-width:0 2px 2px 0;transform:rotate(45deg)}
+details.r[open]>summary:after{transform:rotate(-135deg);top:10px}
+details.r>summary:hover .rl{color:var(--accent)}
 summary:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:3px}
-.gl{font-weight:650;overflow-wrap:anywhere}
-code.gp,ul.ns code,ul.raw code{font:12px/1.5 "JetBrains Mono",ui-monospace,Menlo,monospace;overflow-wrap:anywhere}
-ul.ns code{overflow-wrap:break-word}
-code.gp{color:var(--ink2);margin-left:6px}
-.gl code.gp{margin-left:0;color:inherit;font-size:13px}
-.gs{display:block;color:var(--ink2);font-size:13.5px;margin-top:1px}
-summary .warn{display:block}
-ul.ents{margin:0 0 6px 24px}
-ul.ents>li{border-top:1px dashed var(--rule)}
-ul.ents>li.ent{padding:8px 0}
-li.sg>.sgh{padding:9px 0 2px;font-size:13.5px}
-li.sg>.sgh .gl{font-weight:600}
-li.sg>.sgh .gs{margin:0}
-li.sg>ul.ents{margin:0 0 4px 12px}
-li.sg>ul.ents>li{border-top:0}
-ul.ns{margin-top:3px;color:var(--ink2);font-size:12.5px}
-ul.ns li{padding:1px 0}
-ul.ns span{overflow-wrap:break-word}
-ul.ns code{color:var(--ink);margin-right:2px}
-ul.scopes.inner{margin:8px 0 2px}
-ul.scopes.inner>li{border-top-style:dashed}
-details.raw{margin:12px 0 0}
-details.raw summary{cursor:pointer;color:var(--accent);font-size:13.5px}
+.rl{font-weight:650;overflow-wrap:anywhere}
+.rs{display:block;color:var(--ink2);font-size:13.5px;margin-top:1px}
+.tag{display:inline-block;margin-left:6px;padding:0 6px;border-radius:3px;font-size:11px;font-weight:600;line-height:1.6;vertical-align:1px;border:1px solid currentColor}
+.tag.t1{color:var(--danger)}
+.tag.t2{color:var(--amber)}
+.src{display:inline-block;margin:6px 6px 0 0;padding:1px 7px;border-radius:3px;font-size:12px;font-weight:600;background:var(--paper);border:1px solid var(--rule);color:var(--ink2)}
+ul.dl{margin:8px 0 2px;padding:0;list-style:none;font-size:13.5px}
+ul.dl>li{padding:6px 0;border-top:1px dashed var(--rule)}
+ul.dl .v{display:block;font-weight:600;font-size:13px}
+ul.dl .o{display:block;color:var(--ink2)}
+ul.dl code,ul.raw li{font:11.5px/1.5 "JetBrains Mono",ui-monospace,Menlo,monospace;overflow-wrap:anywhere}
+ul.dl code{display:block;color:var(--ink3)}
+.rn{display:block;font-size:12.5px;color:var(--ink2);margin-top:6px}
+.quote{display:block;font-size:13px;color:var(--ink2);border-left:2px solid var(--rule);padding-left:8px;margin:6px 0 0}
+details.raw{margin:12px 0 0;font-size:13.5px}
+details.raw summary{cursor:pointer;color:var(--accent)}
 ul.raw{list-style:none;margin:6px 0 0;padding:8px 10px;background:var(--paper);border:1px solid var(--rule);border-radius:4px;color:var(--ink2)}
-.req{display:inline-block;margin-left:7px;padding:0 5px;border:1px solid var(--rule);border-radius:3px;color:var(--ink2);font-size:11.5px;font-weight:600;vertical-align:1px}
-.sd{margin:4px 0 0;color:var(--ink2);font-size:13.5px}
-.warn{margin:6px 0 0;padding:6px 9px;border-left:3px solid var(--amber);background:var(--paper);font-size:13.5px;font-weight:400;color:var(--ink)}
+ul.raw li.gh{font:600 12px/1.5 "Schibsted Grotesk",ui-sans-serif,system-ui,sans-serif;color:var(--ink);margin-top:6px}
+ul.raw li.gh:first-child{margin-top:0}
+ul.raw li.ig{font-family:inherit;font-style:italic}
+.warn{display:block;margin:6px 0 0;padding:6px 9px;border-left:3px solid var(--amber);background:var(--paper);font-size:13.5px;font-weight:400;color:var(--ink)}
 label.check{display:flex;gap:8px;align-items:center;font-weight:500}
 .wide{width:100%}
 form.pk{margin:14px 0 4px}
@@ -204,7 +195,11 @@ fn client_block(ctx: &Ctx) -> String {
     if ctx.loopback {
         "<div class=\"client\">A development app running on your own computer (http://localhost)</div>".into()
     } else {
-        format!("<div class=\"client\">{}</div>", e(ctx.client_id))
+        format!(
+            "<div class=\"client\"><b>{}</b><code>{}</code></div>",
+            e(&rollup::client_label(ctx.client_id, false)),
+            e(ctx.client_id)
+        )
     }
 }
 
@@ -643,764 +638,113 @@ pub fn chooser(ctx: &Ctx, accounts: &[(String, String)]) -> String {
     page("Choose an account", &b)
 }
 
-/// Where a permission sits on the consent screen.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Place {
-    /// An NSID authority: the NSID minus its last segment.
-    Nsid(String),
-    /// A group of its own: a key and its label.
-    Fixed(&'static str, &'static str),
-    /// Never grouped: a permission set, which lists its own permissions.
-    Alone,
-}
-
-/// What a group's summary line counts.
-#[derive(Clone, Debug, Default)]
-pub struct Tally {
-    repo: Vec<&'static str>,
-    collections: Vec<String>,
-    lxms: Vec<String>,
-    space: Vec<&'static str>,
-    types: Vec<String>,
-    /// Phrases for permissions that name no NSID ("upload images").
-    other: Vec<String>,
-}
-
-const VERB_ORDER: [&str; 6] = ["read", "read your own", "create", "update", "delete", "manage"];
-
-fn push_unique<T: PartialEq + Clone>(v: &mut Vec<T>, x: &[T]) {
-    for x in x {
-        if !v.contains(x) {
-            v.push(x.clone());
-        }
-    }
-}
-
-fn count(n: usize, one: &str) -> String {
-    if n == 1 {
-        format!("1 {one}")
-    } else {
-        format!("{n} {one}s")
-    }
-}
-
-impl Tally {
-    fn add(&mut self, o: &Tally) {
-        push_unique(&mut self.repo, &o.repo);
-        push_unique(&mut self.collections, &o.collections);
-        push_unique(&mut self.lxms, &o.lxms);
-        push_unique(&mut self.space, &o.space);
-        push_unique(&mut self.types, &o.types);
-        push_unique(&mut self.other, &o.other);
-    }
-
-    /// "Create and delete in 4 collections · call 2 methods".
-    fn summary(&self) -> String {
-        let verbs = |v: &[&'static str]| {
-            let mut v = v.to_vec();
-            if v.contains(&"read") {
-                v.retain(|x| *x != "read your own");
-            }
-            v.sort_by_key(|x| VERB_ORDER.iter().position(|o| o == x));
-            join_and(&v)
-        };
-        let mut parts = Vec::new();
-        if !self.collections.is_empty() {
-            let r#where = match self.collections.iter().any(|c| c == "*") {
-                true => "any collection".to_string(),
-                false => count(self.collections.len(), "collection"),
-            };
-            parts.push(format!("{} in {where}", verbs(&self.repo)));
-        }
-        if !self.lxms.is_empty() {
-            parts.push(match self.lxms.iter().any(|l| l == "*") {
-                true => "make any request".to_string(),
-                false => format!("call {}", count(self.lxms.len(), "method")),
-            });
-        }
-        if !self.types.is_empty() {
-            let r#where = match self.types.iter().any(|t| t == "*") {
-                true => "every space".to_string(),
-                false => count(self.types.len(), "space type"),
-            };
-            parts.push(match self.space.is_empty() {
-                true => format!("no access in {where}"),
-                false => format!("{} in {where}", verbs(&self.space)),
-            });
-        }
-        parts.extend(self.other.iter().cloned());
-        capitalize(&parts.join(" · "))
-    }
-}
-
-/// One permission as the consent screen shows it: plain text, escaped
-/// when rendered.
-#[derive(Clone, Debug)]
-pub struct Item {
-    pub title: String,
-    pub place: Place,
-    /// The NSIDs it covers, each with its actions.
-    pub lines: Vec<(String, String)>,
-    pub warning: Option<&'static str>,
-    pub tally: Tally,
-}
-
-impl Item {
-    fn fixed(title: &str, key: &'static str, label: &'static str, warning: Option<&'static str>) -> Item {
-        Item {
-            title: title.to_string(),
-            place: Place::Fixed(key, label),
-            lines: Vec::new(),
-            warning,
-            tally: Tally { other: vec![decapitalize(title)], ..Default::default() },
-        }
-    }
-}
-
-/// One requested scope: one checkbox.
-pub struct ScopeRow {
-    pub scope: String,
-    pub required: bool,
-    pub item: Item,
-    /// A permission set's description.
-    pub detail: Option<String>,
-    /// A permission set's permissions.
-    pub inner: Vec<Item>,
-}
-
-/// atproto has no client-declared "required" scopes; only `atproto` itself,
-/// without which the token grants nothing.
-pub const REQUIRED_SCOPES: [&str; 1] = ["atproto"];
-
-const GENERIC_WARNING: &str = "A broad grant: it covers everything except private messages and account settings, \
-and it can't be narrowed. Untick it to refuse it entirely.";
-const CHAT_WARNING: &str =
-    "A broad grant covering all of your private messages. It only works together with full access to your account.";
-
-const SPACE_UNIVERSAL_READ_WARNING: &str = "This app is asking to read every space on the network: whatever anyone \
-shares with you in a space, anywhere. That's a very broad grant. Only allow it for an app you trust completely.";
-const SPACE_UNIVERSAL_WRITE_WARNING: &str = "This app is asking to write in every space on the network you're a \
-member of, as you. That's a very broad grant. Only allow it for an app you trust completely.";
-const SPACE_UNIVERSAL_READ_WRITE_WARNING: &str = "This app is asking to read whatever anyone shares with you in a \
-space, anywhere on the network, and to write in every space you're a member of, as you. That's a very broad grant. \
-Only allow it for an app you trust completely.";
-
-/// A `space:*?authority=*` grant that reads what others share or writes
-/// anything. One that only reads your own space repos gets no warning.
-fn space_warning(p: &SpacePermission) -> Option<&'static str> {
-    if p.space_type != "*" || p.authority != "*" {
-        return None;
-    }
-    let reads = p.action.iter().any(|a| a == "read");
-    let writes = p.writes() || p.manage.as_ref().is_some_and(|m| !m.is_empty());
-    match (reads, writes) {
-        (true, true) => Some(SPACE_UNIVERSAL_READ_WRITE_WARNING),
-        (true, false) => Some(SPACE_UNIVERSAL_READ_WARNING),
-        (false, true) => Some(SPACE_UNIVERSAL_WRITE_WARNING),
-        (false, false) => None,
-    }
-}
-
-/// Names for `space:` grants on the consent screen (`--spaces`): type
-/// declarations by NSID and the handles of authority DIDs that resolve back
-/// to them. A missing one shows the NSID or the DID.
-#[derive(Debug, Default)]
-pub struct SpaceNames {
-    pub decls: std::collections::HashMap<String, crate::lexicon::SpaceDecl>,
-    pub handles: std::collections::HashMap<String, String>,
-}
-
-/// One row per requested scope, in request order. `names`: Some with
-/// `--spaces`.
-pub fn describe_scopes(scope: &str, sets: &[(IncludeScope, J)], names: Option<&SpaceNames>) -> Vec<ScopeRow> {
-    let mut out = Vec::new();
-    for s in scope.split(' ').filter(|s| !s.is_empty()) {
-        let row = |item| ScopeRow {
-            scope: s.to_string(),
-            required: REQUIRED_SCOPES.contains(&s),
-            item,
-            detail: None,
-            inner: Vec::new(),
-        };
-        match s {
-            "atproto" => out.push(row(Item::fixed(
-                "Know who you are: your account identifier (DID) and handle",
-                "atproto",
-                "Who you are",
-                None,
-            ))),
-            "transition:generic" => out.push(row(Item::fixed(
-                "Full access to your account: create, change and delete any of your public data, upload media, and use other services on your behalf",
-                "generic",
-                "Full access",
-                Some(GENERIC_WARNING),
-            ))),
-            "transition:chat.bsky" => {
-                let mut i = Item::fixed("Read and send your Bluesky private messages", "", "", Some(CHAT_WARNING));
-                i.place = Place::Nsid("chat.bsky".into());
-                out.push(row(i))
-            }
-            "transition:email" => {
-                out.push(row(Item::fixed("Read your email address", "account", "Your account settings", None)))
-            }
-            _ => {
-                if let Some(p) = Permission::parse(s) {
-                    out.push(row(item(&p, names)));
-                } else if let Some(inc) = IncludeScope::parse(s) {
-                    let set = sets.iter().find(|(i, _)| i == &inc).map(|(_, j)| j);
-                    let title = set.and_then(|j| j.get("title")).and_then(|t| t.as_str()).unwrap_or(&inc.nsid);
-                    let mut r = row(Item {
-                        title: title.to_string(),
-                        place: Place::Alone,
-                        lines: vec![(inc.nsid.clone(), "permission set".into())],
-                        warning: None,
-                        tally: Tally::default(),
-                    });
-                    r.detail = set.and_then(|j| j.get("detail")).and_then(|t| t.as_str()).map(String::from);
-                    if let Some(set) = set {
-                        r.inner = inc.to_permissions(set, names.is_some()).iter().map(|p| item(p, names)).collect();
-                    }
-                    out.push(r);
-                }
-            }
-        }
-    }
-    out
-}
-
-/// The NSID minus its last segment.
-fn authority(nsid: &str) -> &str {
-    nsid.rsplit_once('.').map_or(nsid, |(a, _)| a)
-}
-
-/// The longest authority every NSID shares, if it's a real one (two
-/// segments at least); `any`: the group for a `*`.
-fn place_of(nsids: &[String], any: (&'static str, &'static str)) -> Place {
-    if nsids.iter().any(|n| n == "*") {
-        return Place::Fixed(any.0, any.1);
-    }
-    let mut common: Option<Vec<&str>> = None;
-    for n in nsids {
-        let segs: Vec<&str> = authority(n).split('.').collect();
-        common = Some(match common {
-            None => segs,
-            Some(c) => c.iter().zip(&segs).take_while(|(a, b)| a == b).map(|(a, _)| *a).collect(),
-        });
-    }
-    match common {
-        Some(c) if c.len() >= 2 => Place::Nsid(c.join(".")),
-        _ => Place::Fixed("several", "Several apps"),
-    }
-}
-
-/// create, update, delete: in that order.
-fn write_verbs(action: &[String]) -> Vec<&'static str> {
-    ["create", "update", "delete"].into_iter().filter(|v| action.iter().any(|a| a == v)).collect()
-}
-
-fn item(p: &Permission, names: Option<&SpaceNames>) -> Item {
-    let title = match (p, names) {
-        (Permission::Space(s), Some(n)) => describe_space(s, n),
-        _ => describe_permission(p),
-    };
-    match p {
-        Permission::Repo { collection, action } => {
-            let verbs = write_verbs(action);
-            Item {
-                place: place_of(collection, ("any-collection", "Any collection")),
-                lines: collection.iter().map(|c| (c.clone(), join_and(&verbs))).collect(),
-                warning: None,
-                tally: Tally { repo: verbs, collections: collection.clone(), ..Default::default() },
-                title,
-            }
-        }
-        Permission::Rpc { aud, lxm } => {
-            let via = if aud == "*" { "call on any service".to_string() } else { format!("call on {aud}") };
-            Item {
-                place: place_of(lxm, ("any-request", "Any request")),
-                lines: lxm.iter().map(|l| (l.clone(), via.clone())).collect(),
-                warning: None,
-                tally: Tally { lxms: lxm.clone(), ..Default::default() },
-                title,
-            }
-        }
-        Permission::Blob { .. } => Item::fixed(&title, "blob", "Uploads", None),
-        Permission::Account { .. } | Permission::Identity { .. } => {
-            Item::fixed(&title, "account", "Your account settings", None)
-        }
-        Permission::Space(s) => {
-            let s = match names.and_then(|n| n.decls.get(&s.space_type)) {
-                Some(d) if s.space_type != "*" => s.clone().with_default_collections(&d.collections),
-                _ => s.clone(),
-            };
-            let mut verbs: Vec<&'static str> = Vec::new();
-            if s.action.iter().any(|a| a == "read") {
-                verbs.push("read");
-            } else if s.action.iter().any(|a| a == "read_self") {
-                verbs.push("read your own");
-            }
-            let writes = write_verbs(&s.action);
-            verbs.extend(&writes);
-            let mut on_type: Vec<String> =
-                verbs.first().filter(|v| v.starts_with("read")).map(|v| v.to_string()).into_iter().collect();
-            let mut other = Vec::new();
-            if let Some(m) = s.manage.as_ref().filter(|m| !m.is_empty()) {
-                let ops: Vec<&str> = m
-                    .iter()
-                    .map(|op| match op.as_str() {
-                        "create" => "create",
-                        "update" => "change",
-                        _ => "delete",
-                    })
-                    .collect();
-                // management bound to one account isn't "in every space"
-                // the type covers: the summary says whose
-                let whose = match s.authority.as_str() {
-                    "*" => None,
-                    "self" => Some("your".to_string()),
-                    did => Some(format!("{did}'s")),
-                };
-                match whose {
-                    None => {
-                        verbs.push("manage");
-                        on_type.push(format!("{} spaces", join_and(&ops)));
-                    }
-                    Some(w) => {
-                        other.push(format!("manage {w} spaces"));
-                        on_type.push(format!("{} {w} spaces", join_and(&ops)));
-                    }
-                }
-            }
-            let mut lines = vec![(
-                s.space_type.clone(),
-                if on_type.is_empty() {
-                    "space type".into()
-                } else {
-                    join_and(&on_type.iter().map(String::as_str).collect::<Vec<_>>())
-                },
-            )];
-            if let Some(c) = s.collection.as_ref().filter(|_| !writes.is_empty()) {
-                lines.extend(c.iter().map(|c| (c.clone(), join_and(&writes))));
-            }
-            Item {
-                place: place_of(std::slice::from_ref(&s.space_type), ("all-spaces", "Every space")),
-                lines,
-                warning: names.and_then(|_| space_warning(&s)),
-                tally: Tally { space: verbs, types: vec![s.space_type.clone()], other, ..Default::default() },
-                title,
-            }
-        }
-    }
-}
-
-/// A small map of well-known NSID authorities; anything else shows its prefix.
-fn group_label(prefix: &str) -> Option<&'static str> {
-    Some(match prefix {
-        "app.bsky" => "Bluesky",
-        "app.bsky.feed" => "Bluesky posts and feeds",
-        "app.bsky.graph" => "Bluesky follows and lists",
-        "app.bsky.actor" => "Bluesky profile",
-        "app.bsky.notification" => "Bluesky notifications",
-        "chat.bsky" => "Bluesky chat",
-        "chat.bsky.convo" => "Bluesky chat conversations",
-        "chat.bsky.actor" => "Bluesky chat settings",
-        "com.atproto" => "Your atproto account",
-        "com.atproto.repo" => "Your repository",
-        "com.atproto.server" => "Your account and sessions",
-        "com.atproto.identity" => "Your handle and identity",
-        "com.atproto.sync" => "Repository sync",
-        _ => return None,
-    })
-}
-
-/// A group's heading: its label, then its prefix in code; a prefix without
-/// a label is the label.
-fn group_head(place: &Place, prefix: &str) -> String {
-    match (place, group_label(prefix)) {
-        (Place::Fixed(_, label), _) => format!("<span class=\"gl\">{}</span>", e(label)),
-        (_, Some(label)) => format!("<span class=\"gl\">{}</span><code class=\"gp\">{}</code>", e(label), e(prefix)),
-        (_, None) => format!("<span class=\"gl\"><code class=\"gp\">{}</code></span>", e(prefix)),
-    }
-}
-
-enum Node<'a, E> {
-    One(&'a E),
-    /// A sub-authority with two or more entries.
-    Sub(String, Vec<&'a E>),
-}
-
-struct Group<'a, E> {
-    place: Place,
-    prefix: String,
-    entries: Vec<&'a E>,
-}
-
-/// Groups by NSID authority, two segments at the top (`app.bsky`), in
-/// order of first appearance. A group whose entries share one authority
-/// takes that authority's name, so `app.bsky.feed` alone doesn't nest under
-/// `app.bsky`.
-fn groups<'a, E>(entries: &'a [E], item: &impl Fn(&E) -> &Item) -> Vec<Group<'a, E>> {
-    let mut out: Vec<Group<'a, E>> = Vec::new();
-    for (i, en) in entries.iter().enumerate() {
-        let place = item(en).place.clone();
-        let key = match &place {
-            Place::Nsid(a) => format!("n:{}", a.split('.').take(2).collect::<Vec<_>>().join(".")),
-            Place::Fixed(k, _) => format!("f:{k}"),
-            Place::Alone => format!("a:{i}"),
-        };
-        match out.iter_mut().find(|g| g.prefix == key) {
-            Some(g) => g.entries.push(en),
-            None => out.push(Group { place, prefix: key, entries: vec![en] }),
-        }
-    }
-    for g in &mut out {
-        g.prefix = match &g.place {
-            Place::Nsid(_) => {
-                let auths: Vec<&str> = g
-                    .entries
-                    .iter()
-                    .filter_map(|en| match &item(en).place {
-                        Place::Nsid(a) => Some(a.as_str()),
-                        _ => None,
-                    })
-                    .collect();
-                match auths.iter().all(|a| *a == auths[0]) {
-                    true => auths[0].to_string(),
-                    false => g.prefix[2..].to_string(),
-                }
-            }
-            _ => String::new(),
-        };
-    }
-    out
-}
-
-/// A group's entries under its prefix: an authority with two or more
-/// entries nests one level, and one with a single entry doesn't.
-fn nodes<'a, E>(g: &Group<'a, E>, item: &impl Fn(&E) -> &Item) -> Vec<Node<'a, E>> {
-    let auth = |en: &E| match &item(en).place {
-        Place::Nsid(a) => a.clone(),
-        _ => String::new(),
-    };
-    let mut out: Vec<Node<'a, E>> = Vec::new();
-    for en in &g.entries {
-        let a = auth(en);
-        if a == g.prefix || g.entries.iter().filter(|x| auth(x) == a).count() < 2 {
-            out.push(Node::One(en));
-        } else if let Some(Node::Sub(_, v)) = out.iter_mut().find(|n| matches!(n, Node::Sub(s, _) if *s == a)) {
-            v.push(en);
-        } else {
-            out.push(Node::Sub(a, vec![en]));
-        }
-    }
-    out
-}
-
-/// `<li>`s for a `ul.scopes`: a group with one entry is that entry, shown
-/// flat with its warning. A larger one is a `<details>`, open when it
-/// carries a warning, whose summary has the label, the combined verbs and
-/// counts, and every warning (entries inside don't repeat them).
-fn render_groups<E>(entries: &[E], item: impl Fn(&E) -> &Item, entry: impl Fn(&E, bool) -> String) -> String {
-    let mut b = String::new();
-    for g in groups(entries, &item) {
-        if let [one] = g.entries[..] {
-            b.push_str(&entry(one, true));
-            continue;
-        }
-        let mut tally = Tally::default();
-        let mut warnings: Vec<&str> = Vec::new();
-        for en in &g.entries {
-            tally.add(&item(en).tally);
-            push_unique(&mut warnings, &item(en).warning.into_iter().collect::<Vec<_>>());
-        }
-        b.push_str(&format!(
-            "<li class=\"grp\"><details class=\"grp\"{}><summary>{}<span class=\"gs\">{}</span>",
-            if warnings.is_empty() { "" } else { " open" },
-            group_head(&g.place, &g.prefix),
-            e(&tally.summary())
-        ));
-        for w in warnings {
-            b.push_str(&format!("<span class=\"warn\">{}</span>", e(w)));
-        }
-        b.push_str("</summary><ul class=\"ents\">");
-        for n in nodes(&g, &item) {
-            match n {
-                Node::One(en) => b.push_str(&entry(en, false)),
-                Node::Sub(a, v) => {
-                    let mut t = Tally::default();
-                    for en in &v {
-                        t.add(&item(en).tally);
-                    }
-                    b.push_str(&format!(
-                        "<li class=\"sg\"><div class=\"sgh\">{}<span class=\"gs\">{}</span></div><ul class=\"ents\">",
-                        group_head(&Place::Nsid(a.clone()), &a),
-                        e(&t.summary())
-                    ));
-                    for en in v {
-                        b.push_str(&entry(en, false));
-                    }
-                    b.push_str("</ul></li>");
-                }
-            }
-        }
-        b.push_str("</ul></details></li>");
-    }
-    b
-}
-
-fn lines_html(it: &Item) -> String {
-    if it.lines.is_empty() {
+fn lines_html(lines: &[Line]) -> String {
+    if lines.is_empty() {
         return String::new();
     }
-    let mut b = String::from("<ul class=\"ns\">");
-    for (nsid, actions) in &it.lines {
-        b.push_str(&format!("<li><code>{}</code> <span>{}</span></li>", e(nsid), e(actions)));
+    let mut b = String::from("<ul class=\"dl\">");
+    for l in lines {
+        b.push_str("<li>");
+        if !l.verb.is_empty() {
+            b.push_str(&format!("<span class=\"v\">{}</span>", e(&l.verb)));
+        }
+        if !l.objects.is_empty() {
+            b.push_str(&format!("<span class=\"o\">{}</span>", e(&l.objects)));
+        }
+        if !l.code.is_empty() {
+            b.push_str(&format!("<code>{}</code>", e(&l.code)));
+        }
+        b.push_str("</li>");
     }
     b.push_str("</ul>");
     b
 }
 
-fn warn_html(it: &Item, show: bool) -> String {
-    it.warning.filter(|_| show).map(|w| format!("<p class=\"warn\">{}</p>", e(w))).unwrap_or_default()
-}
-
-/// A permission set's permissions, grouped, without checkboxes: the set is
-/// granted or refused whole.
-fn inner_html(items: &[Item]) -> String {
-    if items.is_empty() {
-        return String::new();
-    }
-    let rows = render_groups(
-        items,
-        |i| i,
-        |it, warn| {
-            format!(
-                "<li class=\"ent\"><div><span class=\"et\">{}</span>{}{}</div></li>",
-                e(&it.title),
-                lines_html(it),
-                warn_html(it, warn)
-            )
-        },
-    );
-    format!("<ul class=\"scopes inner\">{rows}</ul>")
-}
-
-/// "a, b and c".
-fn join_and(v: &[&str]) -> String {
-    match v {
-        [] => String::new(),
-        [one] => one.to_string(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
-    }
-}
-
-fn collection_name(nsid: &str) -> Option<&'static str> {
-    Some(match nsid {
-        "app.bsky.feed.post" => "posts",
-        "app.bsky.feed.like" => "likes",
-        "app.bsky.feed.repost" => "reposts",
-        "app.bsky.graph.follow" => "follows",
-        "app.bsky.graph.block" => "blocks",
-        "app.bsky.graph.list" => "lists",
-        "app.bsky.graph.listitem" => "list members",
-        "app.bsky.graph.starterpack" => "starter packs",
-        "app.bsky.actor.profile" => "profile",
-        "app.bsky.feed.threadgate" => "reply settings",
-        "app.bsky.feed.postgate" => "quote settings",
-        "app.bsky.feed.generator" => "feeds",
-        _ => return None,
-    })
-}
-
-pub fn describe_permission(p: &Permission) -> String {
-    match p {
-        Permission::Repo { collection, action } => {
-            let verbs: Vec<&str> = action
-                .iter()
-                .map(|a| match a.as_str() {
-                    "create" => "create",
-                    "update" => "update",
-                    _ => "delete",
-                })
-                .collect();
-            let verbs = capitalize(&join_and(&verbs));
-            let names: Option<Vec<&str>> = collection.iter().map(|c| collection_name(c)).collect();
-            match names {
-                Some(n) if !n.is_empty() => format!("{verbs} your {}", join_and(&n)),
-                _ if collection.iter().any(|c| c == "*") => format!("{verbs} records in any collection"),
-                _ => format!("{verbs} records in {}", collection.join(", ")),
-            }
-        }
-        Permission::Rpc { aud, lxm } => {
-            let svc = if aud == "*" { "any service".to_string() } else { aud.clone() };
-            if !lxm.is_empty() && lxm.iter().all(|l| l.starts_with("chat.bsky.")) {
-                if aud == "did:web:api.bsky.chat#bsky_chat" {
-                    "Read and send your Bluesky private messages".to_string()
-                } else {
-                    format!("Read and send your Bluesky private messages (through {svc})")
-                }
-            } else if lxm.iter().any(|l| l == "*") {
-                format!("Make any request on your behalf to {svc}")
-            } else {
-                format!("Make requests on your behalf to {svc} ({})", lxm.join(", "))
-            }
-        }
-        Permission::Blob { accept } => {
-            let kinds: Vec<&str> = accept
-                .iter()
-                .map(|a| match a.as_str() {
-                    "*/*" => "files of any type",
-                    "image/*" => "images",
-                    "video/*" => "video",
-                    "audio/*" => "audio",
-                    other => other,
-                })
-                .collect();
-            format!("Upload {}", join_and(&kinds))
-        }
-        Permission::Account { attr, action } => {
-            let manage = action.iter().any(|a| a == "manage");
-            let what = match attr.as_str() {
-                "email" => "your email address",
-                "repo" => "your repository (import/export)",
-                _ => "your account status (activate/deactivate)",
-            };
-            format!("{} {what}", if manage { "Read and change" } else { "Read" })
-        }
-        Permission::Identity { attr } => {
-            if attr == "handle" {
-                "Change your handle".into()
-            } else {
-                "Manage your identity (handle and DID document)".into()
-            }
-        }
-        Permission::Space(p) => describe_space(p, &SpaceNames::default()),
-    }
-}
-
-/// Reference consent `SpaceRow`: the declaration's name for the type, the
-/// authority's verified handle (else its DID), and a bare grant's writes as
-/// its declaration's collections, which is what the token will carry.
-pub fn describe_space(p: &SpacePermission, names: &SpaceNames) -> String {
-    let decl = names.decls.get(&p.space_type);
-    let p = match decl {
-        Some(d) if p.space_type != "*" => p.clone().with_default_collections(&d.collections),
-        _ => p.clone(),
+/// One row: its checkbox (a hidden field when it has none), label, tier
+/// tag, summary and set chips. A row that isn't account control opens to
+/// its lines; an account-control row shows everything at once.
+fn row_html(i: usize, r: &Row) -> String {
+    let id = format!("r{i}");
+    let grants = e(&r.grants.join(" "));
+    let described = if r.summary.is_empty() { String::new() } else { format!(" aria-describedby=\"{id}s\"") };
+    let input = match r.fixed {
+        true => format!("<input type=\"hidden\" name=\"row\" value=\"{grants}\"><span class=\"cb\" aria-hidden=\"true\"></span>"),
+        false => format!(
+            "<input type=\"checkbox\" id=\"{id}\" name=\"row\" value=\"{grants}\"{} aria-labelledby=\"{id}l\"{described}>",
+            if r.checked { " checked" } else { "" }
+        ),
     };
-    let owner = match p.authority.as_str() {
-        "self" => "your account".to_string(),
-        did => names.handles.get(did).map(|h| format!("@{h}")).unwrap_or_else(|| did.to_string()),
+    let tag = match (r.key.as_str(), r.tier.tag()) {
+        ("identity", _) | (_, None) => String::new(),
+        (_, Some(t)) => format!("<span class=\"tag {}\">{t}</span>", r.tier.class()),
     };
-    let kind = decl.map(|d| d.name.clone()).unwrap_or_else(|| p.space_type.clone());
-    let what = match (p.space_type.as_str(), p.authority.as_str()) {
-        ("*", "*") => "All spaces on the network".to_string(),
-        ("*", _) => format!("All spaces on {owner}"),
-        (_, "*") => format!("{kind} spaces"),
-        _ => format!("{kind} spaces on {owner}"),
+    let summary = if r.summary.is_empty() {
+        String::new()
+    } else {
+        format!("<span class=\"rs\" id=\"{id}s\">{}</span>", e(&r.summary))
     };
-    let mut parts: Vec<String> = Vec::new();
-    if p.action.iter().any(|a| a == "read") {
-        parts.push("read what members share with you".into());
-    } else if p.action.iter().any(|a| a == "read_self") {
-        parts.push("read your own space repos".into());
+    let head = format!("<span class=\"rl\" id=\"{id}l\">{}</span>{tag}{summary}", e(&r.label));
+    let chips: String = r
+        .sets
+        .iter()
+        .filter_map(|s| s.title.as_ref())
+        .map(|t| format!("<span class=\"src\">{}</span>", e(t)))
+        .collect();
+    let mut inner = String::new();
+    for s in &r.sets {
+        if let Some(d) = &s.detail {
+            inner.push_str(&format!("<span class=\"quote\">{}</span>", e(d)));
+        }
+        inner.push_str(&format!("<span class=\"rn\">{}</span>", e(&rollup::set_note(s))));
     }
-    let verbs: Vec<&str> =
-        p.action.iter().map(String::as_str).filter(|a| ["create", "update", "delete"].contains(a)).collect();
-    let write = match verbs.len() {
-        3 => "write".to_string(),
-        _ => join_and(&verbs),
+    inner.push_str(&lines_html(&r.lines));
+    if !r.not_in_set.is_empty() {
+        inner.push_str("<span class=\"rn\"><b>Not in the set</b></span>");
+        inner.push_str(&lines_html(&r.not_in_set));
+    }
+    if !r.includes.is_empty() {
+        inner.push_str(&format!("<span class=\"rn\">Also covers: {}</span>", e(&r.includes.join(" · "))));
+    }
+    let warns: String = r.warnings.iter().map(|w| format!("<span class=\"warn\">{}</span>", e(w))).collect();
+    let openable = r.tier != Tier::Control && !inner.is_empty();
+    let body = match openable {
+        true => format!("<details class=\"r\"><summary>{head}{chips}</summary>{inner}</details>{warns}"),
+        false => format!("{head}{chips}{inner}{warns}"),
     };
-    if let Some(c) = p.collection.as_ref().filter(|_| !verbs.is_empty()) {
-        let colls = match c.iter().any(|c| c == "*") {
-            true => "any collection".to_string(),
-            false => join_and(&c.iter().map(String::as_str).collect::<Vec<_>>()),
-        };
-        parts.push(format!("{write} records in {colls}"));
-    }
-    // the token request fails rather than guess at what was meant
-    let unresolved =
-        (p.collection.is_none() && !verbs.is_empty() && decl.is_none() && p.space_type != "*").then(|| {
-            format!(
-                "{write} records in the collections {} declares, which could not be looked up, so approving this will fail",
-                p.space_type
-            )
-        });
-    if let Some(m) = p.manage.as_ref().filter(|m| !m.is_empty()) {
-        let ops: Vec<&str> = m
-            .iter()
-            .map(|op| match op.as_str() {
-                "create" => "create",
-                "update" => "change",
-                _ => "delete",
-            })
-            .collect();
-        let members = if m.iter().any(|op| op == "update") { " and their members" } else { "" };
-        parts.push(format!("{} spaces{members}", join_and(&ops)));
-    }
-    let parts: Vec<&str> = parts.iter().map(String::as_str).collect();
-    match (parts.is_empty(), unresolved) {
-        (true, None) => format!("{what}: no access"),
-        (true, Some(u)) => format!("{what}: {u}"),
-        (false, None) => format!("{what}: {}", join_and(&parts)),
-        (false, Some(u)) => format!("{what}: {}. It also asks to {u}", join_and(&parts)),
-    }
+    format!("<li>{input}<div class=\"rb\">{body}</div></li>")
 }
 
-fn capitalize(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-        None => String::new(),
-    }
-}
-
-fn decapitalize(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        Some(f) => f.to_lowercase().collect::<String>() + c.as_str(),
-        None => String::new(),
-    }
-}
-
-/// One checkbox per scope, all ticked, posted as repeated `scope` fields so
-/// the page needs no script. Disabled inputs aren't submitted, so a hidden
-/// field carries each required scope. Scopes are grouped by NSID authority
-/// in native `<details>`, so a checkbox can sit in a closed group.
-/// `scope`: as requested, shown raw at the bottom.
-pub fn consent(ctx: &Ctx, did: &str, handle: &str, scope: &str, rows: &[ScopeRow]) -> String {
+/// One checkbox per row, ticked unless nothing on screen describes it,
+/// posted as repeated `row` fields so the page needs no script. A row's
+/// value is its grant keys ([`rollup::grant_key`]); a row without a
+/// checkbox posts them in a hidden field. The requested scopes, grouped
+/// by row, are at the bottom.
+pub fn consent(ctx: &Ctx, did: &str, handle: &str, rows: &[Row]) -> String {
     let mut b = format!(
-        "<h1>Authorize access</h1><p class=\"muted\">Signed in as <b>@{}</b></p><p>This app wants access to your account:</p>{}\
+        "<h1>Authorize access</h1><p class=\"muted\">Signed in as <b>@{}</b></p>{}\
 <form method=\"post\" action=\"/oauth/authorize/consent\">{}<input type=\"hidden\" name=\"did\" value=\"{}\">\
-<fieldset><legend>It will be able to:</legend><p class=\"hint\">Open a group to see each permission. Untick anything you don't want to allow. The app might not work fully without it.</p><ul class=\"scopes\">",
+<p class=\"lead\">It will be able to:</p><ul class=\"rows\">",
         e(handle),
         client_block(ctx),
         hidden(ctx),
         e(did)
     );
-    let entries: Vec<(usize, &ScopeRow)> = rows.iter().enumerate().collect();
-    b.push_str(&render_groups(&entries, |(_, r)| &r.item, |&(i, r), warn| {
-        let sc = e(&r.scope);
-        let input = if r.required {
-            format!("<input type=\"hidden\" name=\"scope\" value=\"{sc}\"><input type=\"checkbox\" id=\"s{i}\" checked disabled aria-describedby=\"s{i}d\">")
-        } else {
-            format!("<input type=\"checkbox\" id=\"s{i}\" name=\"scope\" value=\"{sc}\" checked aria-describedby=\"s{i}d\">")
-        };
-        let req = if r.required { "<span class=\"req\">Required</span>" } else { "" };
-        let detail = r.detail.as_ref().map(|d| format!("<p class=\"sd\">{}</p>", e(d))).unwrap_or_default();
-        format!(
-            "<li class=\"ent\">{input}<div><label for=\"s{i}\">{}{req}</label><div id=\"s{i}d\">{}{}{detail}{}</div></div></li>",
-            e(&r.item.title),
-            lines_html(&r.item),
-            warn_html(&r.item, warn),
-            inner_html(&r.inner)
-        )
-    }));
-    b.push_str("</ul></fieldset><details class=\"raw\"><summary>Show requested scopes</summary><ul class=\"raw\">");
-    for s in scope.split(' ').filter(|s| !s.is_empty()) {
-        b.push_str(&format!("<li><code>{}</code></li>", e(s)));
+    for (i, r) in rows.iter().enumerate() {
+        b.push_str(&row_html(i, r));
+    }
+    let n: usize = rows.iter().map(|r| r.scopes.len()).sum();
+    b.push_str(&format!("</ul><details class=\"raw\"><summary>Requested scopes ({n})</summary><ul class=\"raw\">"));
+    for (label, scopes, notes) in rollup::raw_groups(rows) {
+        b.push_str(&format!("<li class=\"gh\">{}</li>", e(&label)));
+        for s in scopes {
+            b.push_str(&format!("<li>{}</li>", e(&s)));
+        }
+        for n in notes {
+            b.push_str(&format!("<li class=\"ig\">{}</li>", e(&n)));
+        }
     }
     b.push_str(
-        "</ul></details><p class=\"muted\">You can revoke this access at any time under <b>Connected apps</b> in your account settings on this server.</p>\
+        "</ul></details><p class=\"muted\">You can revoke this under <b>Connected apps</b> in your account.</p>\
 <div class=\"row\"><button type=\"submit\" name=\"action\" value=\"deny\">Deny</button><button type=\"submit\" class=\"primary\" name=\"action\" value=\"allow\" autofocus>Allow</button></div></form>",
     );
     page("Authorize access", &b)
@@ -1532,39 +876,13 @@ pub fn account_page(csrf: &str, accounts: &[AccountRow], notice: Option<(&str, b
 
 #[cfg(test)]
 mod tests {
+    use super::rollup::{Request, SpaceNames};
     use super::*;
-    use serde_json::json;
+    use crate::oauth::scopes::IncludeScope;
+    use serde_json::{json, Value as J};
 
-    const APPVIEW: &str = "did:web:api.bsky.app%23bsky_appview";
-    const CHAT: &str = "did:web:api.bsky.chat%23bsky_chat";
     const BOARDS: &str = "space:dev.example.boards.board?authority=*&collection=dev.example.boards.post&collection=dev.example.boards.comment&collection=dev.example.boards.vote&action=read&action=create&action=update&action=delete";
     const BOARDS_SET: &str = "include:dev.example.boards.basePermissions?aud=did:web:boards.example%23boards";
-
-    fn big() -> String {
-        [
-            "atproto".to_string(),
-            "transition:generic".into(),
-            "repo:app.bsky.feed.post".into(),
-            "repo:app.bsky.feed.like?action=create&action=delete".into(),
-            "repo:app.bsky.feed.repost?action=create&action=delete".into(),
-            "repo:app.bsky.graph.follow?action=create&action=delete".into(),
-            "repo:app.bsky.graph.block?action=create&action=delete".into(),
-            "repo:app.bsky.graph.list".into(),
-            "repo:app.bsky.actor.profile?action=update".into(),
-            format!("rpc:app.bsky.feed.getTimeline?aud={APPVIEW}"),
-            format!("rpc:app.bsky.feed.getFeed?aud={APPVIEW}"),
-            format!("rpc:app.bsky.actor.getPreferences?aud={APPVIEW}"),
-            "transition:chat.bsky".into(),
-            format!("rpc:chat.bsky.convo.sendMessage?aud={CHAT}"),
-            format!("rpc:chat.bsky.convo.getLog?aud={CHAT}"),
-            format!("rpc:chat.bsky.actor.exportAccountData?aud={CHAT}"),
-            "blob:image/*".into(),
-            "blob:video/*".into(),
-            "account:email".into(),
-            "identity:handle".into(),
-        ]
-        .join(" ")
-    }
 
     fn boards_names(name: &str) -> SpaceNames {
         let decl = crate::lexicon::SpaceDecl {
@@ -1577,7 +895,7 @@ mod tests {
         SpaceNames { decls: [("dev.example.boards.board".to_string(), decl)].into(), handles: Default::default() }
     }
 
-    fn boards_set(title: &str, detail: &str) -> Vec<(IncludeScope, J)> {
+    fn boards_set(title: &str, detail: &str) -> Vec<(IncludeScope, Result<J, String>)> {
         let set = json!({
             "type": "permission-set",
             "title": title,
@@ -1588,28 +906,24 @@ mod tests {
                 {"type": "permission", "resource": "space", "spaceType": "dev.example.boards.board", "action": ["read", "create", "update", "delete"]},
             ],
         });
-        vec![(IncludeScope::parse(BOARDS_SET).unwrap(), set)]
+        vec![(IncludeScope::parse(BOARDS_SET).unwrap(), Ok(set))]
     }
 
-    fn page_for(scope: &str, sets: &[(IncludeScope, J)], names: Option<&SpaceNames>) -> String {
+    fn page_for(scope: &str, sets: &[(IncludeScope, Result<J, String>)], names: Option<&SpaceNames>) -> String {
+        let client_id = "https://app.example/client-metadata.json";
         let ctx = Ctx {
             request_uri: "urn:ietf:params:oauth:request_uri:req-x",
             csrf: "c",
-            client_id: "https://app.example/client-metadata.json",
+            client_id,
             loopback: false,
             server_name: "vlpds",
         };
-        consent(&ctx, "did:plc:abc", "alice.test", scope, &describe_scopes(scope, sets, names))
+        let rows = rollup::rows(&Request { scope, sets, client_id, loopback: false, names });
+        consent(&ctx, "did:plc:abc", "alice.test", &rows)
     }
 
-    fn summary_of<'a>(html: &'a str, head: &str) -> &'a str {
-        let at = html.find(head).unwrap_or_else(|| panic!("no {head}: {html}"));
-        let start = html[..at].rfind("<details").unwrap();
-        &html[start..at + html[at..].find("</summary>").unwrap()]
-    }
-
-    fn scopes_posted(html: &str) -> Vec<String> {
-        html.split("name=\"scope\" value=\"").skip(1).map(|r| r[..r.find('"').unwrap()].replace("&amp;", "&")).collect()
+    fn posted(html: &str) -> Vec<String> {
+        html.split("name=\"row\" value=\"").skip(1).map(|r| r[..r.find('"').unwrap()].replace("&amp;", "&")).collect()
     }
 
     /// `VLPDS_CONSENT_DUMP=<dir>` writes the pages, for screenshots.
@@ -1620,69 +934,42 @@ mod tests {
     }
 
     #[test]
-    fn a_lone_authority_takes_its_own_name() {
-        let html = page_for("atproto repo:app.bsky.feed.post repo:app.bsky.feed.like", &[], None);
-        let s = summary_of(&html, "Bluesky posts and feeds");
-        assert!(s.contains("<code class=\"gp\">app.bsky.feed</code>"), "{s}");
-        assert!(s.contains("Create, update and delete in 2 collections"), "{s}");
-        assert!(!html.contains(">Bluesky<"), "app.bsky.feed alone doesn't nest under app.bsky: {html}");
-        assert!(!html.contains("class=\"sg\""), "{html}");
-        // a group of one is just its row
-        assert!(!html.contains("Who you are"), "{html}");
-    }
-
-    #[test]
-    fn authorities_nest_one_level_and_single_children_merge_up() {
-        let html = page_for(&big(), &[], None);
-        dump("big", &html);
-        let s = summary_of(&html, "<span class=\"gl\">Bluesky</span>");
-        assert!(s.contains("<code class=\"gp\">app.bsky</code>"), "{s}");
-        assert!(s.contains("Create, update and delete in 7 collections · call 3 methods"), "{s}");
-        // feed and graph have several entries each; actor's profile and
-        // getPreferences make two as well
-        for sub in ["Bluesky posts and feeds", "Bluesky follows and lists", "Bluesky profile"] {
-            assert!(html.contains(&format!("<div class=\"sgh\"><span class=\"gl\">{sub}</span>")), "{sub}: {html}");
-        }
-        assert!(html.contains("<span class=\"gl\">Bluesky follows and lists</span><code class=\"gp\">app.bsky.graph</code><span class=\"gs\">Create, update and delete in 3 collections</span>"), "{html}");
-        // chat: transition:chat.bsky sits at chat.bsky itself, convo nests,
-        // and actor's single method merges up
-        let s = summary_of(&html, "<span class=\"gl\">Bluesky chat</span>");
-        assert!(s.contains("Call 3 methods · read and send your Bluesky private messages"), "{s}");
-        assert!(html.contains("<span class=\"gl\">Bluesky chat conversations</span>"), "{html}");
-        assert!(!html.contains("<span class=\"gl\">Bluesky chat settings</span>"), "{html}");
-        let s = summary_of(&html, "<span class=\"gl\">Uploads</span>");
-        assert!(s.contains("Upload images · upload video"), "{s}");
-        let s = summary_of(&html, "<span class=\"gl\">Your account settings</span>");
-        assert!(s.contains("Read your email address · change your handle"), "{s}");
-        // every scope keeps its checkbox, in request order
-        let mut posted = scopes_posted(&html);
-        posted.sort();
-        let mut want: Vec<String> = big().split(' ').map(String::from).collect();
-        want.sort();
-        assert_eq!(posted, want);
+    fn rows_post_their_grant_keys_and_identity_is_hidden() {
+        let html = page_for("atproto account:email repo:app.bsky.feed.post blob:image/*", &[], None);
+        assert!(html.contains("<input type=\"hidden\" name=\"row\" value=\"identity\"><span class=\"cb\""), "{html}");
+        let mut p = posted(&html);
+        p.sort();
+        assert_eq!(p, ["email", "identity", "ns:app.bsky", "uploads"]);
+        assert_eq!(html.matches("type=\"checkbox\"").count(), 3, "{html}");
+        let bsky = "<span class=\"rl\" id=\"r2l\">Bluesky</span><span class=\"tag t2\">As you</span><span class=\"rs\" id=\"r2s\">Change posts</span>";
+        assert!(html.contains(bsky), "{html}");
+        assert!(html.contains("id=\"r2\" name=\"row\" value=\"ns:app.bsky\" checked aria-labelledby=\"r2l\" aria-describedby=\"r2s\">"), "{html}");
         assert!(!html.contains("<script"), "{html}");
+        assert!(
+            html.contains(
+                "<div class=\"client\"><b>app.example</b><code>https://app.example/client-metadata.json</code></div>"
+            ),
+            "{html}"
+        );
     }
 
     #[test]
-    fn warnings_stay_at_the_summary_and_open_their_group() {
-        let html = page_for(&big(), &[], None);
-        // generic is a group of one: its row carries the warning
-        assert_eq!(html.matches("class=\"warn\"").count(), 2, "{html}");
-        let s = summary_of(&html, "<span class=\"gl\">Bluesky chat</span>");
-        assert!(s.starts_with("<details class=\"grp\" open>"), "{s}");
-        assert!(s.contains("<span class=\"warn\">A broad grant covering all of your private messages."), "{s}");
-        let s = summary_of(&html, "<span class=\"gl\">Bluesky</span>");
-        assert!(s.starts_with("<details class=\"grp\">"), "collapsed without a warning: {s}");
+    fn account_control_rows_show_in_full() {
+        let html = page_for("atproto identity:handle transition:generic transition:chat.bsky", &[], None);
+        dump("control", &html);
+        assert!(!html.contains("<details class=\"r\">"), "nothing to open: {html}");
+        assert_eq!(html.matches("<span class=\"tag t1\">Account control</span>").count(), 3, "{html}");
+        assert!(html.contains("Read and send Bluesky private messages · Needs Full access"), "{html}");
+    }
 
-        // a universal space read in a group of two: the warning is in the summary
+    #[test]
+    fn warnings_stay_on_their_row() {
         let names = SpaceNames::default();
         let html =
             page_for("atproto space:*?authority=*&action=read space:*?authority=*&action=read_self", &[], Some(&names));
-        let s = summary_of(&html, "<span class=\"gl\">Every space</span>");
-        assert!(s.starts_with("<details class=\"grp\" open>"), "{s}");
-        assert!(s.contains("Read in every space"), "{s}");
-        assert!(s.contains("asking to read every space on the network"), "{s}");
+        assert!(html.contains("asking to read every space on the network"), "{html}");
         assert_eq!(html.matches("class=\"warn\"").count(), 1, "{html}");
+        assert!(html.contains(">Every space</span><span class=\"tag t1\">"), "{html}");
     }
 
     /// The account page's owner grant manages only the user's own spaces,
@@ -1695,10 +982,13 @@ mod tests {
             &[],
             Some(&names),
         );
-        let s = summary_of(&html, "<span class=\"gl\">Every space</span>");
-        assert!(s.contains("Read your own in every space · manage your spaces"), "{s}");
-        assert!(!s.contains("manage in every space"), "{s}");
-        assert!(html.contains("read your own and change and delete your spaces"), "{html}");
+        assert!(
+            html.contains(
+                "All spaces on your account: read your own space repos and change and delete spaces and their members"
+            ),
+            "{html}"
+        );
+        assert!(!html.contains("manage in every space"), "{html}");
     }
 
     #[test]
@@ -1707,17 +997,12 @@ mod tests {
         let html = page_for(&format!("atproto {BOARDS}"), &[], Some(&names));
         dump("boards", &html);
         assert!(html.contains("Boards spaces: read what members share with you and write records in dev.example.boards.post, dev.example.boards.comment and dev.example.boards.vote"), "{html}");
-        assert!(html.contains("<li><code>dev.example.boards.board</code> <span>read</span></li><li><code>dev.example.boards.post</code> <span>create, update and delete</span></li>"), "{html}");
+        assert!(html.contains(">Boards spaces</span>"), "{html}");
         assert!(!html.contains("class=\"warn\""), "{html}");
-        // two space types under one authority: grouped, counted
-        let html =
-            page_for(&format!("atproto {BOARDS} space:dev.example.boards.archive?action=read_self"), &[], Some(&names));
-        let s = summary_of(&html, "<code class=\"gp\">dev.example.boards</code>");
-        assert!(s.contains("Read, create, update and delete in 2 space types"), "{s}");
     }
 
     #[test]
-    fn a_permission_set_groups_its_permissions() {
+    fn a_permission_set_is_one_row_with_its_title_as_a_chip() {
         let names = boards_names("Boards");
         let html = page_for(
             &format!("atproto {BOARDS_SET}"),
@@ -1725,13 +1010,11 @@ mod tests {
             Some(&names),
         );
         dump("include", &html);
-        assert_eq!(scopes_posted(&html), ["atproto", BOARDS_SET]);
-        assert!(html.contains("<label for=\"s1\">Boards</label>"), "{html}");
-        assert!(html.contains("<p class=\"sd\">Post, comment and vote on boards</p>"), "{html}");
-        let s = summary_of(&html, "<span class=\"gl\"><code class=\"gp\">dev.example.boards</code></span>");
-        assert!(s.contains("Create, update and delete in 1 collection · call 2 methods · read, create, update and delete in 1 space type"), "{s}");
-        // the set is granted whole: one checkbox
-        assert_eq!(html.matches("type=\"checkbox\"").count(), 2, "{html}");
+        assert_eq!(posted(&html), ["identity", "set:dev.example.boards.basePermissions"]);
+        assert!(html.contains("<span class=\"src\">Boards</span>"), "{html}");
+        assert!(html.contains("<span class=\"quote\">Post, comment and vote on boards</span>"), "{html}");
+        assert!(html.contains(". Can add dev.example.boards permissions later.</span>"), "{html}");
+        assert_eq!(html.matches("type=\"checkbox\"").count(), 1, "the set is granted whole: {html}");
     }
 
     #[test]
@@ -1741,39 +1024,47 @@ mod tests {
         let html = page_for(&format!("atproto {BOARDS} {BOARDS_SET}"), &boards_set(x, x), Some(&names));
         assert!(!html.contains("<img"), "{html}");
         assert!(html.contains("&lt;img src=x onerror=alert(1)&gt; spaces: read"), "{html}");
-        // NSIDs and actions are escaped too, wherever they come from
-        let row = |scope: &str| ScopeRow {
-            scope: scope.into(),
-            required: false,
-            item: Item {
-                title: "<zi>t</zi>".into(),
-                place: Place::Nsid("a.<zb>".into()),
-                lines: vec![("a.<zb>.c".into(), "<zu>do</zu>".into())],
-                warning: None,
-                tally: Tally { other: vec!["<zs>x</zs>".into()], ..Default::default() },
-            },
-            detail: Some("<zp>d".into()),
-            inner: vec![],
+        let row = Row {
+            key: "ns:a.<zb>".into(),
+            grants: vec!["\"><zg>".into()],
+            label: "<zi>t</zi>".into(),
+            tier: Tier::AsYou,
+            summary: "<zs>x</zs>".into(),
+            chip: String::new(),
+            lines: vec![Line { verb: "<zu>do</zu>".into(), objects: "<zo>".into(), code: "a.<zb>.c".into() }],
+            not_in_set: vec![],
+            sets: vec![rollup::SetInfo {
+                nsid: "a.b.c".into(),
+                title: Some("<zt>".into()),
+                detail: Some("<zp>d".into()),
+                publisher: "<zw>".into(),
+                group: "a.b".into(),
+                ignored: 0,
+                unavailable: false,
+            }],
+            includes: vec![],
+            scopes: vec!["repo:\"><zb>x".into()],
+            fixed: false,
+            checked: true,
+            warnings: vec!["<zx>".into()],
         };
-        let two = [row("repo:\"><zb>x"), row("y")];
         let ctx = Ctx { request_uri: "r", csrf: "c", client_id: "x", loopback: true, server_name: "s" };
-        let html = consent(&ctx, "d", "h", "repo:\"><zb>x y", &two);
-        for bad in ["<zb>", "<zi>", "<zu>", "<zs>", "<zp>d"] {
+        let html = consent(&ctx, "d", "h", &[row]);
+        for bad in ["<zb>", "<zi>", "<zu>", "<zs>", "<zp>d", "<zt>", "<zw>", "<zx>", "<zo>", "<zg>"] {
             assert!(!html.contains(bad), "{bad}: {html}");
         }
-        assert!(html.contains("<code class=\"gp\">a.&lt;zb&gt;</code>"), "{html}");
-        assert!(html.contains("value=\"repo:&quot;&gt;&lt;zb&gt;x\""), "{html}");
+        assert!(html.contains("value=\"&quot;&gt;&lt;zg&gt;\""), "{html}");
     }
 
     #[test]
-    fn the_raw_scopes_are_at_the_bottom() {
-        let scope = format!("atproto {BOARDS}");
+    fn the_raw_scopes_are_at_the_bottom_grouped_by_row() {
+        let scope = format!("atproto {BOARDS} blob:image/*");
         let html = page_for(&scope, &[], Some(&boards_names("Boards")));
         let raw = &html[html.find("<details class=\"raw\">").unwrap()..];
-        assert!(raw.starts_with("<details class=\"raw\"><summary>Show requested scopes</summary>"), "{raw}");
-        assert!(raw.contains("<li><code>atproto</code></li>"), "{raw}");
-        assert!(raw.contains(&format!("<li><code>{}</code></li>", e(BOARDS))), "{raw}");
-        assert!(!raw.contains("name=\"scope\""), "{raw}");
+        assert!(raw.starts_with("<details class=\"raw\"><summary>Requested scopes (3)</summary>"), "{raw}");
+        assert!(raw.contains("<li class=\"gh\">Who you are</li><li>atproto</li>"), "{raw}");
+        assert!(raw.contains(&format!("<li class=\"gh\">Boards spaces</li><li>{}</li>", e(BOARDS))), "{raw}");
+        assert!(!raw.contains("name=\"row\""), "{raw}");
         assert!(raw.find("</details>").unwrap() < raw.find("Allow</button>").unwrap(), "{raw}");
     }
 

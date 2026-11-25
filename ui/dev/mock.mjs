@@ -2,6 +2,8 @@
 // the few /xrpc methods they need from memory (writes stick until the dev server restarts).
 // VLPDS_MOCK_LEVEL=1 shows the sign-in providers page below feature level 2.
 
+import { readFileSync } from 'node:fs'
+
 const env = (k) => (typeof process !== 'undefined' ? process.env[k] : undefined)
 const now = Date.now()
 const iso = (ago) => new Date(now - ago).toISOString()
@@ -85,6 +87,18 @@ const nodeList = () => [
   { node: 'node-c', ok: !low && providers.length !== 2, error: 'timed out' },
 ]
 
+// listSessions for stream.place, TOKIMEKI Poll, Blacksky and Graysky (testdata/oauth), rows as
+// the server computes them: regenerate with VLPDS_ROLLUP_DUMP=<dir> cargo test --lib
+// oauth::rollup::tests::dump_rows and copy <dir>/oauth-sessions.json here.
+const days = 86400_000
+const oauthSessions = JSON.parse(readFileSync(new URL('./oauth-sessions.json', import.meta.url), 'utf8')).map((x, i) => ({
+  id: `ses-mock${i}`,
+  ...x,
+  createdAt: iso([13, 3, 54, 30][i] * days),
+  updatedAt: iso([0.1, 3, 1, 6][i] * days),
+  accessExpiresAt: iso(-days / 24),
+}))
+
 let mockTicket = 1
 const fail = (status, error, message) => ({ status, body: { error, message } })
 
@@ -160,7 +174,7 @@ function handle(nsid, body, method) {
     case 'com.atproto.server.listAppPasswords':
       return { body: { passwords: [] } }
     case 'vlpds.oauth.listSessions':
-      return { body: { sessions: [] } }
+      return { body: { sessions: oauthSessions } }
     case 'vlpds.server.getSignInSecurity':
       return { body: { oauthOnly: false, blockAppPasswords: false, alerts: { password: true, appPassword: true }, alertsPerDay: 5, secondFactor: false, trustDays: 30, trustedBrowsers: [], recentSignIns: [] } }
     default:

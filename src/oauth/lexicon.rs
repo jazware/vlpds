@@ -444,15 +444,36 @@ pub async fn build_token_scope_cached(
     Ok(concrete.join(" "))
 }
 
-pub async fn permission_sets_for_scope(app: &App, scope: &str) -> Result<Vec<(IncludeScope, J)>, String> {
+/// Each `include:` scope's set, looked up on its own: one that fails
+/// doesn't take the others with it.
+pub async fn permission_sets_for_scope(app: &App, scope: &str) -> Vec<(IncludeScope, Result<J, String>)> {
+    let incs: Vec<IncludeScope> = scope.split(' ').filter_map(IncludeScope::parse).collect();
+    let sets = futures::future::join_all(incs.iter().map(|inc| permission_set(app, &inc.nsid))).await;
+    incs.into_iter().zip(sets).collect()
+}
+
+/// [`permission_sets_for_scope`] from copies already held, memory then
+/// durable, never a lookup: for listing what sessions were granted.
+pub async fn permission_sets_cached_only(app: &App, scope: &str) -> Vec<(IncludeScope, Result<J, String>)> {
     let mut out = Vec::new();
-    for s in scope.split(' ') {
-        if let Some(inc) = IncludeScope::parse(s) {
-            let set = permission_set(app, &inc.nsid).await?;
-            out.push((inc, set));
-        }
+    for inc in scope.split(' ').filter_map(IncludeScope::parse) {
+        let held = CACHE.lock().get(&inc.nsid).map(|(_, doc)| doc.clone());
+        let doc = match held {
+            Some(d) => Some(d),
+            None => store::get_lexicon(app, &inc.nsid).await.ok().flatten().map(|l| l.doc),
+        };
+        let set = match doc {
+            Some(d) => main_def(&inc.nsid, &d),
+            None => Err(format!("No copy of {}", inc.nsid)),
+        };
+        out.push((inc, set));
     }
-    Ok(out)
+    out
+}
+
+/// The sets that resolved.
+pub fn resolved(sets: &[(IncludeScope, Result<J, String>)]) -> Vec<(IncludeScope, J)> {
+    sets.iter().filter_map(|(i, s)| s.as_ref().ok().map(|j| (i.clone(), j.clone()))).collect()
 }
 
 #[cfg(test)]

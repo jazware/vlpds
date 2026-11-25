@@ -1,5 +1,5 @@
 // Screenshots of the sign-in providers console page and the account page's Sign-in methods
-// section against the mock (dev/mock.mjs): `npm run shots [outDir]` (default shots/, gitignored).
+// and Connected apps sections against the mock (dev/mock.mjs): `npm run shots [outDir]` (default shots/, gitignored).
 // Starts two dev servers (feature level 2, and level 1 for the not-available state), shoots
 // desktop and phone, and exits 1 on page errors or console errors.
 
@@ -131,6 +131,30 @@ for (const [w, theme, tag] of [[1440, 'light', 'desktop'], [1440, 'dark', 'dark'
   const n = await pg.locator('#sign-in-methods').count()
   console.log(n === 0 ? 'ok: section hidden when unavailable and empty' : 'FAIL: section shown')
   if (n) failures++
+  await pg.context().close()
+}
+
+// connected apps: the four testdata/oauth apps as cards, as loaded and with stream.place's
+// permissions opened; no sideways scroll, every Revoke inside the viewport
+for (const [w, theme, tag] of [[1280, 'light', 'desktop'], [1280, 'dark', 'desktop-dark'], [390, 'light', 'phone'], [390, 'dark', 'phone-dark']]) {
+  const pg = await page('', { w, theme, account: true })
+  await pg.goto('http://localhost:5731/account/security')
+  const apps = pg.locator('#oauth')
+  await apps.getByText('graysky.app').first().waitFor()
+  await apps.scrollIntoViewIfNeeded()
+  await shot(pg, `apps-${tag}`, '#oauth')
+  const wide = await pg.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  if (wide > 0) (failures++, console.error(`apps-${tag}: ${wide} px of sideways scroll`))
+  for (const b of await apps.getByRole('button', { name: 'Revoke' }).all()) {
+    const box = await b.boundingBox()
+    if (!box || box.x < 0 || box.x + box.width > w) (failures++, console.error(`apps-${tag}: Revoke outside the viewport`, box))
+  }
+  const card = apps.locator('.app-card').first()
+  await card.locator('.perm-all > summary').click()
+  for (const s of await card.locator('.perm-row > summary').all()) await s.click()
+  await shot(pg, `apps-${tag}-open`, '#oauth')
+  const wideOpen = await pg.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  if (wideOpen > 0) (failures++, console.error(`apps-${tag}-open: ${wideOpen} px of sideways scroll`))
   await pg.context().close()
 }
 

@@ -1,0 +1,24 @@
+{
+  "client_id": "https://poll.tokimeki.tech/oauth/client-metadata.json",
+  "client_name": "TOKIMEKI Poll",
+  "client_uri": "https://poll.tokimeki.tech",
+  "logo_uri": "https://tokimeki.blue/favicon.png",
+  "tos_uri": "https://poll.tokimeki.tech/terms",
+  "policy_uri": "https://poll.tokimeki.tech/privacy",
+  "redirect_uris": [
+    "https://poll.tokimeki.tech/oauth/callback"
+  ],
+  "grant_types": [
+    "authorization_code",
+    "refresh_token"
+  ],
+  "response_types": [
+    "code"
+  ],
+  "scope": "atproto include:tech.tokimeki.poll.authFull repo:app.bsky.feed.post?action=create blob:image/* transition:generic",
+  "token_endpoint_auth_method": "private_key_jwt",
+  "token_endpoint_auth_signing_alg": "ES256",
+  "dpop_bound_access_tokens": true,
+  "jwks_uri": "https://poll.tokimeki.tech/oauth/jwks.json",
+  "application_type": "web"
+}

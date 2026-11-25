@@ -370,16 +370,179 @@ function AppPasswords() {
 
 // ---------------------------------------------------------------- OAuth apps
 
-type OAuthSession = { id: string; clientId: string; scope: string; createdAt: string; updatedAt: string; accessExpiresAt: string }
+type Tier = 'control' | 'asYou' | 'thisApp'
+type PermLine = { verb: string; objects: string; code: string }
+type PermSet = { nsid: string; title?: string | null; detail?: string | null; publisher: string; group: string; ignored: number; unavailable: boolean }
+type PermRow = {
+  key: string
+  label: string
+  tier: Tier
+  summary: string
+  chip: string
+  lines: PermLine[]
+  notInSet: PermLine[]
+  sets: PermSet[]
+  includes: string[]
+  scopes: string[]
+}
+type OAuthSession = {
+  id: string
+  clientId: string
+  name?: string
+  scope: string
+  rows?: PermRow[]
+  createdAt: string
+  updatedAt: string
+  accessExpiresAt: string
+}
 
-function clientName(id: string) {
+const TIER_TAG: Record<Tier, string | undefined> = { control: 'Account control', asYou: 'As you', thisApp: undefined }
+const TIER_CLASS: Record<Tier, string> = { control: 't1', asYou: 't2', thisApp: 't3' }
+
+function clientName(s: Pick<OAuthSession, 'clientId' | 'name'>) {
+  if (s.name) return s.name
   try {
-    const u = new URL(id)
+    const u = new URL(s.clientId)
     if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') return 'Development app on this computer'
     return u.hostname
   } catch {
-    return id
+    return s.clientId
   }
+}
+
+function fmtDay(s: string) {
+  const d = new Date(s)
+  if (isNaN(d.getTime())) return s
+  const year = d.getFullYear() === new Date().getFullYear() ? undefined : 'numeric'
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year })
+}
+
+function PermLines({ lines }: { lines: PermLine[] }) {
+  if (!lines.length) return null
+  return (
+    <ul className="perm-lines">
+      {lines.map((l, i) => (
+        <li key={i}>
+          {l.verb && <span className="v">{l.verb}</span>}
+          {l.objects && <span className="o">{l.objects}</span>}
+          {l.code && <code className="mono">{l.code}</code>}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function setNote(s: PermSet) {
+  return s.unavailable
+    ? `Set published by ${s.publisher}. Its contents couldn't be loaded.`
+    : `Set published by ${s.publisher}. Can add ${s.group} permissions later.`
+}
+
+/** One row, read-only: the consent screen's row with a dot for its tier. */
+function PermRowView({ r }: { r: PermRow }) {
+  const tag = r.key !== 'identity' && TIER_TAG[r.tier]
+  const head = (
+    <>
+      <span className="pl">{r.label}</span>
+      {tag && <span className={`perm-tag ${TIER_CLASS[r.tier]}`}>{tag}</span>}
+      {r.summary && <span className="ps">{r.summary}</span>}
+      {r.sets.map((s) => s.title && <span key={s.nsid} className="perm-src">{s.title}</span>)}
+    </>
+  )
+  const inner = (
+    <>
+      {r.sets.map((s) => (
+        <div key={s.nsid}>
+          {s.detail && <span className="perm-quote">{s.detail}</span>}
+          <span className="perm-note">{setNote(s)}</span>
+        </div>
+      ))}
+      <PermLines lines={r.lines} />
+      {r.notInSet.length > 0 && (
+        <>
+          <span className="perm-note">
+            <b>Not in the set</b>
+          </span>
+          <PermLines lines={r.notInSet} />
+        </>
+      )}
+      {r.includes.length > 0 && <span className="perm-note">Also covers: {r.includes.join(' · ')}</span>}
+    </>
+  )
+  const openable = r.tier !== 'control' && (r.lines.length > 0 || r.notInSet.length > 0 || r.sets.length > 0)
+  return (
+    <li>
+      <span className={`perm-dot ${r.key === 'identity' ? '' : TIER_CLASS[r.tier]}`} aria-hidden="true" />
+      <div className="pb">
+        {openable ? (
+          <details className="perm-row">
+            <summary>{head}</summary>
+            {inner}
+          </details>
+        ) : (
+          <>
+            {head}
+            {inner}
+          </>
+        )}
+      </div>
+    </li>
+  )
+}
+
+function AppCard({ x, onRevoke }: { x: OAuthSession; onRevoke: () => void }) {
+  const rows = x.rows ?? []
+  const chips = rows.filter((r) => r.key !== 'identity')
+  return (
+    <li className="app-card">
+      <div className="ah">
+        <div className="an">
+          <b>{clientName(x)}</b>
+          <code className="mono" title={x.clientId}>
+            {x.clientId}
+          </code>
+        </div>
+        <button className="btn danger sm" onClick={onRevoke}>
+          Revoke
+        </button>
+      </div>
+      <div className="small muted">
+        <span title={fmtTime(x.createdAt)}>Authorized {fmtDay(x.createdAt)}</span> · <span title={fmtTime(x.updatedAt)}>Last used {fmtDay(x.updatedAt)}</span>
+      </div>
+      {chips.length > 0 && (
+        <div className="perm-chips">
+          {chips.map((r) => (
+            <span key={r.key} className={`perm-chip ${TIER_CLASS[r.tier]}`}>
+              {r.chip}
+            </span>
+          ))}
+        </div>
+      )}
+      <details className="perm-all">
+        <summary>Permissions</summary>
+        {rows.length > 0 && (
+          <ul className="perm-rows">
+            {rows.map((r) => (
+              <PermRowView key={r.key} r={r} />
+            ))}
+          </ul>
+        )}
+        <details className="perm-raw">
+          <summary>Granted scopes ({x.scope.split(' ').filter(Boolean).length})</summary>
+          <ul>
+            {x.scope
+              .split(' ')
+              .filter(Boolean)
+              .map((sc) => (
+                <li key={sc} className="mono">
+                  {sc}
+                </li>
+              ))}
+          </ul>
+        </details>
+      </details>
+    </li>
+  )
 }
 
 function ConnectedApps() {
@@ -399,48 +562,15 @@ function ConnectedApps() {
       ) : ss.length === 0 ? (
         <Empty title="No connected apps">When you sign in to an app with your handle, it shows up here.</Empty>
       ) : (
-        <div className="table-wrap">
-          <table className="data">
-            <thead>
-              <tr>
-                <th>App</th>
-                <th>Permissions</th>
-                <th className="hide-sm">Last used</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {ss.map((x) => (
-                <tr key={x.id}>
-                  <td>
-                    <b className="break">{clientName(x.clientId)}</b>
-                    <div className="mono small muted break">{x.clientId}</div>
-                    <div className="small muted">Authorized {fmtTime(x.createdAt)}</div>
-                  </td>
-                  <td>
-                    <div className="row" style={{ gap: 4 }}>
-                      {x.scope.split(' ').map((sc) => (
-                        <span key={sc} className="pill mono scope">
-                          {sc}
-                        </span>
-                      ))}
-                    </div>
-                  </td>
-                  <td className="nowrap hide-sm">{fmtTime(x.updatedAt)}</td>
-                  <td className="num">
-                    <button className="btn danger sm" onClick={() => setRevoking(x)}>
-                      Revoke
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <ul className="app-cards">
+          {ss.map((x) => (
+            <AppCard key={x.id} x={x} onRevoke={() => setRevoking(x)} />
+          ))}
+        </ul>
       )}
       <Confirm
         open={!!revoking}
-        title={`Disconnect ${revoking ? clientName(revoking.clientId) : ''}?`}
+        title={`Disconnect ${revoking ? clientName(revoking) : ''}?`}
         action="Revoke access"
         danger
         busy={revoke.busy}

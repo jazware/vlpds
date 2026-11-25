@@ -1251,6 +1251,62 @@ async fn include_permission_set() {
     // an include: that does not resolve is refused at PAR
     let f2 = Flow::loopback("atproto include:com.example.vlpdstest.missing", &key);
     assert_eq!(f2.par(&s, &pkce(), "x").await.body["error"], "invalid_scope");
+
+    // the set and the inline scopes in its namespace are one row: unticking
+    // it drops the include: and every one of them, and nothing else
+    let scope = format!(
+        "atproto include:{nsid} repo:com.example.vlpdstest.thing repo:com.example.vlpdstest.extra repo:app.bsky.feed.post"
+    );
+    let f3 = Flow::loopback(&scope, &key).with("login_hint", &user.handle);
+    let ru = f3.request_uri(&s, &pkce(), "rows").await;
+    let (_, _, html) = b.authorize(&s, &f3, &ru).await;
+    let posted: Vec<String> =
+        html.split("name=\"row\" value=\"").skip(1).map(|r| r[..r.find('"').unwrap()].to_string()).collect();
+    let set_row = format!("set:{nsid} ns:com.example.vlpdstest");
+    assert_eq!(posted, ["identity", set_row.as_str(), "ns:app.bsky"], "{html}");
+    assert!(html.contains("<span class=\"src\">Basic test permissions</span>"), "{html}");
+    assert!(html.contains("Not in the set"), "the extra collection: {html}");
+    for (ticked, want) in [
+        (vec!["identity", "ns:app.bsky", set_row.as_str()], scope.clone()),
+        (vec!["identity", "ns:app.bsky"], "atproto repo:app.bsky.feed.post".to_string()),
+        (
+            vec!["identity", set_row.as_str()],
+            format!("atproto include:{nsid} repo:com.example.vlpdstest.thing repo:com.example.vlpdstest.extra"),
+        ),
+    ] {
+        let p = pkce();
+        let ru = f3.request_uri(&s, &p, "rows").await;
+        let extra: Vec<(&str, &str)> = ticked.iter().map(|r| ("row", *r)).collect();
+        let (st, h, body) = browser_consent(&s, &mut b, &f3, &user, &ru, &extra).await;
+        assert_eq!(st, 303, "{body}");
+        exchange(&s, &f3, &location_params(&h).1["code"], &p, &[]).await;
+        let sessions = vlpds::oauth::store::list_sessions(&s.app, &user.did).await.unwrap();
+        assert!(sessions.iter().any(|x| x.scope == want), "{ticked:?}: {want}");
+    }
+
+    // listSessions: rows from the copy already held, without a lookup
+    vlpds::oauth::lexicon::forget_cached(nsid);
+    let (_, list) = s.bearer(&user.jwt, "vlpds.oauth.listSessions", false, None).await;
+    let full = list["sessions"].as_array().unwrap().iter().find(|x| x["scope"] == json!(scope)).unwrap().clone();
+    assert_eq!(full["name"], "A development app running on your own computer");
+    let labels: Vec<&str> = full["rows"].as_array().unwrap().iter().map(|r| r["label"].as_str().unwrap()).collect();
+    assert_eq!(labels, ["Sees your handle and DID", "vlpdstest.example.com", "Bluesky"]);
+    assert_eq!(full["rows"][1]["sets"][0]["title"], "Basic test permissions");
+    assert_eq!(full["rows"][1]["tier"], "asYou", "a loopback client owns no namespace");
+    assert!(!vlpds::oauth::lexicon::is_cached(nsid), "listSessions looked the set up");
+
+    // and a set with no copy anywhere is a row of its own
+    let mut ses = vlpds::oauth::store::list_sessions(&s.app, &user.did).await.unwrap().remove(0);
+    let (_, raw) = vlpds::oauth::store::get_session_raw(&s.app, &user.did, &ses.id).await.unwrap().unwrap();
+    ses.scope = "atproto include:com.example.vlpdstest.neverSeen".into();
+    let guard = vlpds::oauth::store::SessionGuard::Row(raw);
+    assert!(vlpds::oauth::store::put_session_if(&s.app, &ses, guard).await.unwrap());
+    let (_, list) = s.bearer(&user.jwt, "vlpds.oauth.listSessions", false, None).await;
+    let one = list["sessions"].as_array().unwrap().iter().find(|x| x["id"] == json!(ses.id)).unwrap().clone();
+    assert_eq!(one["rows"][1]["label"], "com.example.vlpdstest.neverSeen");
+    assert_eq!(one["rows"][1]["summary"], "Contents unavailable");
+    assert_eq!(one["rows"][1]["sets"][0]["unavailable"], true);
+    assert!(!vlpds::oauth::lexicon::is_cached("com.example.vlpdstest.neverSeen"), "listSessions looked it up");
 }
 
 /// Wrong authenticator codes: a few are fine, three drop the pending sign-in
@@ -1770,23 +1826,19 @@ async fn consent_scope_narrowing() {
         (q, scope)
     }
 
-    // what a browser posts for the page's `scope` fields with every box
-    // left ticked: the hidden required ones and each enabled checkbox
-    fn page_scopes(html: &str) -> Vec<String> {
-        html.split("name=\"scope\" value=\"").skip(1).map(|r| r[..r.find('"').unwrap()].replace("&amp;", "&")).collect()
-    }
-    fn scope_pairs(v: &[&str]) -> Vec<(&'static str, String)> {
-        v.iter().map(|x| ("scope", x.to_string())).collect()
+    // what a browser posts for the page's `row` fields with every box left
+    // ticked: the hidden identity row and each checkbox's grant keys
+    fn page_rows(html: &str) -> Vec<String> {
+        html.split("name=\"row\" value=\"").skip(1).map(|r| r[..r.find('"').unwrap()].replace("&amp;", "&")).collect()
     }
     async fn post(
         s: &Srv,
         b: &mut Browser,
         f: &Flow<'_>,
         acct: &Account,
-        scopes: &[&str],
+        rows: &[&str],
     ) -> (HashMap<String, String>, Option<String>) {
-        let pairs = scope_pairs(scopes);
-        let extra: Vec<(&str, &str)> = pairs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let extra: Vec<(&str, &str)> = rows.iter().map(|r| ("row", *r)).collect();
         consent(s, b, f, acct, &extra).await
     }
 
@@ -1794,42 +1846,48 @@ async fn consent_scope_narrowing() {
     let consents = |r: &str| vlpds::metrics::OAUTH_CONSENTS.with_label_values(&[r]).get();
     let before = ["full", "narrowed", "refused"].map(consents);
 
-    // no scope field: allowed as requested
+    // no row field: allowed as requested
     assert_eq!(consent(&s, &mut b, &f, &acct, &[]).await.1.as_deref(), Some(scope));
 
-    // one checkbox per requested scope; atproto is ticked, disabled and
-    // carried by a hidden field
+    // one checkbox per row; the identity row has none and is carried by a
+    // hidden field
     let f = f.with("login_hint", &acct.handle);
     let ru = f.request_uri(&s, &pkce(), "page").await;
     let (_, _, html) = b.authorize(&s, &f, &ru).await;
-    assert_eq!(page_scopes(&html), scope.split(' ').collect::<Vec<_>>(), "{html}");
-    assert!(html.contains("<input type=\"hidden\" name=\"scope\" value=\"atproto\"><input type=\"checkbox\" id=\"s0\" checked disabled"), "{html}");
-    assert!(html.contains("Required</span>"), "{html}");
+    assert_eq!(page_rows(&html), ["identity", "email", "ns:app.bsky"], "{html}");
+    assert!(html.contains("<input type=\"hidden\" name=\"row\" value=\"identity\">"), "{html}");
+    assert!(html.contains("Sees your handle and DID"), "{html}");
     assert!(html.contains("Read your email address"), "{html}");
-    assert!(html.contains("Create, update and delete your posts"), "{html}");
+    assert!(html.contains("Change posts"), "{html}");
     assert!(!html.contains("<script"), "the consent page works without script: {html}");
-    assert_eq!(html.matches("type=\"checkbox\"").count(), 3, "{html}");
+    assert_eq!(html.matches("type=\"checkbox\"").count(), 2, "{html}");
 
     // everything left ticked: unchanged
-    let all = page_scopes(&html);
+    let all = page_rows(&html);
     let all: Vec<&str> = all.iter().map(String::as_str).collect();
     assert_eq!(post(&s, &mut b, &f, &acct, &all).await.1.as_deref(), Some(scope));
     // email unticked: the token's scope is exactly the narrowed set
-    let (_, sc) = post(&s, &mut b, &f, &acct, &["atproto", "repo:app.bsky.feed.post"]).await;
+    let (_, sc) = post(&s, &mut b, &f, &acct, &["identity", "ns:app.bsky"]).await;
     assert_eq!(sc.as_deref(), Some("atproto repo:app.bsky.feed.post"));
     // the narrowed grant is what the session holds
     let sessions = vlpds::oauth::store::list_sessions(&s.app, &acct.did).await.unwrap();
     assert!(sessions.iter().any(|x| x.scope == "atproto repo:app.bsky.feed.post"));
     // every optional box unticked
-    assert_eq!(post(&s, &mut b, &f, &acct, &["atproto"]).await.1.as_deref(), Some("atproto"));
-    // a space-separated override works too, and is an intersection only
-    // (nothing can be added)
-    let (_, sc) =
-        consent(&s, &mut b, &f, &acct, &[("scope", "atproto transition:generic repo:app.bsky.feed.post")]).await;
+    assert_eq!(post(&s, &mut b, &f, &acct, &["identity"]).await.1.as_deref(), Some("atproto"));
+    // a space-separated value works too, and unknown keys and scope strings
+    // add nothing: the scopes come from the stored request
+    let (_, sc) = consent(
+        &s,
+        &mut b,
+        &f,
+        &acct,
+        &[("row", "identity generic ns:app.bsky"), ("row", "transition:generic"), ("scope", "account:email")],
+    )
+    .await;
     assert_eq!(sc.as_deref(), Some("atproto repo:app.bsky.feed.post"));
-    // a forged post without the required scope is refused, not granted
+    // a forged post without the identity row is refused, not granted
     // without it
-    for forged in [&["repo:app.bsky.feed.post", "account:email"][..], &[""][..], &["transition:generic"][..]] {
+    for forged in [&["ns:app.bsky", "email"][..], &[""][..], &["atproto"][..]] {
         let (q, sc) = post(&s, &mut b, &f, &acct, forged).await;
         assert_eq!(sc, None, "{forged:?}");
         assert_eq!(q["error"], "access_denied", "{forged:?}");
@@ -1838,18 +1896,20 @@ async fn consent_scope_narrowing() {
         assert!(consents(r) >= b + n, "vlpds_oauth_consents_total{{result={r}}} grew by {n}");
     }
 
-    // transition scopes: broad grants with a warning, each droppable whole;
+    // transition scopes: each droppable whole, as account-control rows;
     // chat.bsky doesn't work without generic, so it goes with it
     let ts = "atproto transition:generic transition:chat.bsky transition:email";
     let f2 = Flow::loopback(ts, &key).with("login_hint", &acct.handle);
     let ru = f2.request_uri(&s, &pkce(), "page2").await;
     let (_, _, html) = b.authorize(&s, &f2, &ru).await;
-    assert_eq!(page_scopes(&html), ts.split(' ').collect::<Vec<_>>(), "{html}");
-    assert_eq!(html.matches("class=\"warn\"").count(), 2, "{html}");
-    assert_eq!(post(&s, &mut b, &f2, &acct, &ts.split(' ').collect::<Vec<_>>()).await.1.as_deref(), Some(ts));
-    let (_, sc) = post(&s, &mut b, &f2, &acct, &["atproto", "transition:generic", "transition:email"]).await;
+    assert_eq!(page_rows(&html), ["identity", "generic", "messages", "email"], "{html}");
+    assert_eq!(html.matches("Account control</span>").count(), 2, "{html}");
+    assert!(html.contains("Read and send Bluesky private messages · Needs Full access"), "{html}");
+    let all = ["identity", "generic", "messages", "email"];
+    assert_eq!(post(&s, &mut b, &f2, &acct, &all).await.1.as_deref(), Some(ts));
+    let (_, sc) = post(&s, &mut b, &f2, &acct, &["identity", "generic", "email"]).await;
     assert_eq!(sc.as_deref(), Some("atproto transition:generic transition:email"));
-    let (_, sc) = post(&s, &mut b, &f2, &acct, &["atproto", "transition:chat.bsky", "transition:email"]).await;
+    let (_, sc) = post(&s, &mut b, &f2, &acct, &["identity", "messages", "email"]).await;
     assert_eq!(sc.as_deref(), Some("atproto transition:email"));
 }
 

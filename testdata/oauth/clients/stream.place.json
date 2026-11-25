@@ -1,0 +1,20 @@
+{
+  "redirect_uris": [
+    "https://stream.place/oauth/return"
+  ],
+  "response_types": [
+    "code"
+  ],
+  "grant_types": [
+    "authorization_code",
+    "refresh_token"
+  ],
+  "scope": "atproto blob:*/* repo?collection=app.bsky.feed.post&action=create repo?collection=app.bsky.actor.status repo?collection=app.bsky.graph.block repo?collection=app.bsky.graph.follow repo?collection=app.bsky.actor.profile rpc:app.bsky.actor.getProfile?aud=did:web:api.bsky.app%23bsky_appview rpc:app.bsky.actor.getProfiles?aud=did:web:api.bsky.app%23bsky_appview include:place.stream.authFull rpc:com.atproto.moderation.createReport?aud=* repo?collection=place.stream.badge.def repo?collection=place.stream.badge.issuance repo?collection=place.stream.beta.invite repo?collection=place.stream.beta.request repo?collection=place.stream.broadcast.origin repo?collection=place.stream.broadcast.syndication repo?collection=place.stream.chat.access repo?collection=place.stream.chat.gate repo?collection=place.stream.chat.message repo?collection=place.stream.chat.pinnedRecord repo?collection=place.stream.chat.profile repo?collection=place.stream.ingest.audioRendition repo?collection=place.stream.ingest.videoRendition repo?collection=place.stream.key repo?collection=place.stream.like repo?collection=place.stream.live.recommendations repo?collection=place.stream.live.teleport repo?collection=place.stream.live.viewerCount repo?collection=place.stream.livestream repo?collection=place.stream.media.origin repo?collection=place.stream.media.track repo?collection=place.stream.media.viewCount repo?collection=place.stream.metadata.configuration repo?collection=place.stream.moderation.permission repo?collection=place.stream.multistream.target repo?collection=place.stream.segment repo?collection=place.stream.server.settings repo?collection=place.stream.video repo?collection=place.stream.vod.comment repo?collection=place.stream.vod.draftVideo repo?collection=place.stream.vod.gate",
+  "token_endpoint_auth_method": "private_key_jwt",
+  "token_endpoint_auth_signing_alg": "ES256",
+  "jwks_uri": "https://stream.place/oauth/upstream/jwks.json",
+  "client_id": "https://stream.place/oauth/upstream/client-metadata.json",
+  "client_name": "Streamplace",
+  "client_uri": "https://stream.place",
+  "dpop_bound_access_tokens": true
+}

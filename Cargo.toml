@@ -87,6 +87,8 @@ hmac = "0.13"
 blake3 = "1"
 sha1 = "0.11"
 futures = "0.3"
+# the public suffix list, compiled in: which NSID namespaces a client's host owns (oauth/rollup.rs)
+psl = "2"
 hdrhistogram = "7"
 reqwest = { version = "0.13", default-features = false, features = ["json", "form", "query", "http2", "rustls", "stream"] }
 tokio-tungstenite = { version = "0.29", features = ["__rustls-tls"] }

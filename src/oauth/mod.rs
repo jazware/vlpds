@@ -43,6 +43,7 @@ pub mod client;
 pub mod gc;
 pub mod jose;
 pub mod lexicon;
+pub mod rollup;
 pub mod scopes;
 pub mod store;
 pub mod ui;

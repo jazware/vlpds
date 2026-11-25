@@ -8,6 +8,7 @@
     "dev:mock": "VLPDS_MOCK=1 vite",
     "test": "node --test test/",
     "shots": "node scripts/shots.mjs",
+    "consent-shots": "node scripts/consent-shots.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "check-docs": "node docs-build/check.mjs && node scripts/check-docs-private.mjs && node scripts/check-docs-ratelimits.mjs"

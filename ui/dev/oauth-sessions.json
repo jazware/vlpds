@@ -1,0 +1,556 @@
+[
+  {
+    "clientId": "https://stream.place/oauth/upstream/client-metadata.json",
+    "name": "stream.place",
+    "rows": [
+      {
+        "checked": true,
+        "chip": "Sees your handle and DID",
+        "fixed": true,
+        "includes": [],
+        "key": "identity",
+        "label": "Sees your handle and DID",
+        "lines": [],
+        "notInSet": [],
+        "scopes": [
+          "atproto"
+        ],
+        "sets": [],
+        "summary": "",
+        "tier": "thisApp",
+        "warnings": []
+      },
+      {
+        "checked": true,
+        "chip": "Bluesky",
+        "fixed": false,
+        "includes": [],
+        "key": "ns:app.bsky",
+        "label": "Bluesky",
+        "lines": [
+          {
+            "code": "app.bsky.feed.post",
+            "objects": "Posts",
+            "verb": "Create"
+          },
+          {
+            "code": "app.bsky.graph.follow · app.bsky.graph.block · app.bsky.actor.profile · app.bsky.actor.status",
+            "objects": "Follows, blocks, profile, status",
+            "verb": "Create, change and delete"
+          },
+          {
+            "code": "app.bsky.actor.getProfile · app.bsky.actor.getProfiles",
+            "objects": "Profiles",
+            "verb": "Read · through api.bsky.app"
+          }
+        ],
+        "notInSet": [],
+        "scopes": [
+          "repo?collection=app.bsky.feed.post&action=create",
+          "repo?collection=app.bsky.actor.status",
+          "repo?collection=app.bsky.graph.block",
+          "repo?collection=app.bsky.graph.follow",
+          "repo?collection=app.bsky.actor.profile",
+          "rpc:app.bsky.actor.getProfile?aud=did:web:api.bsky.app%23bsky_appview",
+          "rpc:app.bsky.actor.getProfiles?aud=did:web:api.bsky.app%23bsky_appview"
+        ],
+        "sets": [],
+        "summary": "Create posts · Change follows, blocks, profile and status · Read profiles",
+        "tier": "asYou",
+        "warnings": []
+      },
+      {
+        "checked": true,
+        "chip": "Reports",
+        "fixed": false,
+        "includes": [],
+        "key": "ns:com.atproto.moderation",
+        "label": "Reports",
+        "lines": [
+          {
+            "code": "com.atproto.moderation.createReport",
+            "objects": "Reports",
+            "verb": "Send · to any service"
+          }
+        ],
+        "notInSet": [],
+        "scopes": [
+          "rpc:com.atproto.moderation.createReport?aud=*"
+        ],
+        "sets": [],
+        "summary": "Send reports to any service",
+        "tier": "asYou",
+        "warnings": []
+      },
+      {
+        "checked": true,
+        "chip": "Uploads: any file",
+        "fixed": false,
+        "includes": [],
+        "key": "uploads",
+        "label": "Uploads",
+        "lines": [
+          {
+            "code": "blob:*/*",
+            "objects": "Any file type",
+            "verb": "Upload"
+          }
+        ],
+        "notInSet": [],
+        "scopes": [
+          "blob:*/*"
+        ],
+        "sets": [],
+        "summary": "Any file type",
+        "tier": "asYou",
+        "warnings": []
+      },
+      {
+        "checked": true,
+        "chip": "stream.place: 31 record types",
+        "fixed": false,
+        "includes": [],
+        "key": "ns:place.stream",
+        "label": "stream.place",
+        "lines": [
+          {
+            "code": "place.stream.*",
+            "objects": "Badge def, issuance · Beta invite, request · Broadcast origin, syndication · Chat gate, message, pinned record, profile · Key · Like · Live recommendations, teleport, viewer count · Livestream · Media origin, track, view count · Metadata configuration · Moderation permission · Multistream target · Segment · Server settings · Video · Vod comment, draft video, gate",
+            "verb": "Create, change and delete · 28 record types"
+          }
+        ],
+        "notInSet": [
+          {
+            "code": "place.stream.chat.access · place.stream.ingest.audioRendition · place.stream.ingest.videoRendition",
+            "objects": "Chat access · Ingest audio rendition, video rendition",
+            "verb": "Create, change and delete · 3 record types"
+          }
+        ],
+        "scopes": [
+          "include:place.stream.authFull",
+          "repo?collection=place.stream.badge.def",
+          "repo?collection=place.stream.badge.issuance",
+          "repo?collection=place.stream.beta.invite",
+          "repo?collection=place.stream.beta.request",
+          "repo?collection=place.stream.broadcast.origin",
+          "repo?collection=place.stream.broadcast.syndication",
+          "repo?collection=place.stream.chat.access",
+          "repo?collection=place.stream.chat.gate",
+          "repo?collection=place.stream.chat.message",
+          "repo?collection=place.stream.chat.pinnedRecord",
+          "repo?collection=place.stream.chat.profile",
+          "repo?collection=place.stream.ingest.audioRendition",
+          "repo?collection=place.stream.ingest.videoRendition",
+          "repo?collection=place.stream.key",
+          "repo?collection=place.stream.like",
+          "repo?collection=place.stream.live.recommendations",
+          "repo?collection=place.stream.live.teleport",
+          "repo?collection=place.stream.live.viewerCount",
+          "repo?collection=place.stream.livestream",
+          "repo?collection=place.stream.media.origin",
+          "repo?collection=place.stream.media.track",
+          "repo?collection=place.stream.media.viewCount",
+          "repo?collection=place.stream.metadata.configuration",
+          "repo?collection=place.stream.moderation.permission",
+          "repo?collection=place.stream.multistream.target",
+          "repo?collection=place.stream.segment",
+          "repo?collection=place.stream.server.settings",
+          "repo?collection=place.stream.video",
+          "repo?collection=place.stream.vod.comment",
+          "repo?collection=place.stream.vod.draftVideo",
+          "repo?collection=place.stream.vod.gate"
+        ],
+        "sets": [
+          {
+            "detail": "Full access to all Streamplace features and data.",
+            "group": "place.stream",
+            "ignored": 0,
+            "nsid": "place.stream.authFull",
+            "publisher": "stream.place",
+            "title": "Full Streamplace Access",
+            "unavailable": false
+          }
+        ],
+        "summary": "Create, change and delete 31 record types",
+        "tier": "thisApp",
+        "warnings": []
+      }
+    ],
+    "scope": "atproto blob:*/* repo?collection=app.bsky.feed.post&action=create repo?collection=app.bsky.actor.status repo?collection=app.bsky.graph.block repo?collection=app.bsky.graph.follow repo?collection=app.bsky.actor.profile rpc:app.bsky.actor.getProfile?aud=did:web:api.bsky.app%23bsky_appview rpc:app.bsky.actor.getProfiles?aud=did:web:api.bsky.app%23bsky_appview include:place.stream.authFull rpc:com.atproto.moderation.createReport?aud=* repo?collection=place.stream.badge.def repo?collection=place.stream.badge.issuance repo?collection=place.stream.beta.invite repo?collection=place.stream.beta.request repo?collection=place.stream.broadcast.origin repo?collection=place.stream.broadcast.syndication repo?collection=place.stream.chat.access repo?collection=place.stream.chat.gate repo?collection=place.stream.chat.message repo?collection=place.stream.chat.pinnedRecord repo?collection=place.stream.chat.profile repo?collection=place.stream.ingest.audioRendition repo?collection=place.stream.ingest.videoRendition repo?collection=place.stream.key repo?collection=place.stream.like repo?collection=place.stream.live.recommendations repo?collection=place.stream.live.teleport repo?collection=place.stream.live.viewerCount repo?collection=place.stream.livestream repo?collection=place.stream.media.origin repo?collection=place.stream.media.track repo?collection=place.stream.media.viewCount repo?collection=place.stream.metadata.configuration repo?collection=place.stream.moderation.permission repo?collection=place.stream.multistream.target repo?collection=place.stream.segment repo?collection=place.stream.server.settings repo?collection=place.stream.video repo?collection=place.stream.vod.comment repo?collection=place.stream.vod.draftVideo repo?collection=place.stream.vod.gate"
+  },
+  {
+    "clientId": "https://poll.tokimeki.tech/oauth/client-metadata.json",
+    "name": "poll.tokimeki.tech",
+    "rows": [
+      {
+        "checked": true,
+        "chip": "Sees your handle and DID",
+        "fixed": true,
+        "includes": [],
+        "key": "identity",
+        "label": "Sees your handle and DID",
+        "lines": [],
+        "notInSet": [],
+        "scopes": [
+          "atproto"
+        ],
+        "sets": [],
+        "summary": "",
+        "tier": "thisApp",
+        "warnings": []
+      },
+      {
+        "checked": true,
+        "chip": "Bluesky: posts",
+        "fixed": false,
+        "includes": [],
+        "key": "ns:app.bsky",
+        "label": "Bluesky",
+        "lines": [
+          {
+            "code": "app.bsky.feed.post",
+            "objects": "Posts",
+            "verb": "Create"
+          }
+        ],
+        "notInSet": [],
+        "scopes": [
+          "repo:app.bsky.feed.post?action=create"
+        ],
+        "sets": [],
+        "summary": "Create posts",
+        "tier": "asYou",
+        "warnings": []
+      },
+      {
+        "checked": true,
+        "chip": "Uploads: images",
+        "fixed": false,
+        "includes": [],
+        "key": "uploads",
+        "label": "Uploads",
+        "lines": [
+          {
+            "code": "blob:image/*",
+            "objects": "Images",
+            "verb": "Upload"
+          }
+        ],
+        "notInSet": [],
+        "scopes": [
+          "blob:image/*"
+        ],
+        "sets": [],
+        "summary": "Images",
+        "tier": "thisApp",
+        "warnings": []
+      },
+      {
+        "checked": true,
+        "chip": "poll.tokimeki.tech: poll, vote",
+        "fixed": false,
+        "includes": [],
+        "key": "ns:tech.tokimeki.poll",
+        "label": "poll.tokimeki.tech",
+        "lines": [
+          {
+            "code": "tech.tokimeki.poll.poll · tech.tokimeki.poll.vote",
+            "objects": "Poll, vote",
+            "verb": "Create and delete"
+          }
+        ],
+        "notInSet": [],
+        "scopes": [
+          "include:tech.tokimeki.poll.authFull"
+        ],
+        "sets": [
+          {
+            "detail": "Create polls and vote on them, and delete your own polls and votes.",
+            "group": "tech.tokimeki.poll",
+            "ignored": 0,
+            "nsid": "tech.tokimeki.poll.authFull",
+            "publisher": "poll.tokimeki.tech",
+            "title": "TOKIMEKI Poll",
+            "unavailable": false
+          }
+        ],
+        "summary": "Create and delete poll and vote",
+        "tier": "thisApp",
+        "warnings": []
+      }
+    ],
+    "scope": "atproto repo:app.bsky.feed.post?action=create blob:image/* include:tech.tokimeki.poll.authFull"
+  },
+  {
+    "clientId": "https://blacksky.community/oauth-client-metadata.json",
+    "name": "blacksky.community",
+    "rows": [
+      {
+        "checked": true,
+        "chip": "Sees your handle and DID",
+        "fixed": true,
+        "includes": [],
+        "key": "identity",
+        "label": "Sees your handle and DID",
+        "lines": [],
+        "notInSet": [],
+        "scopes": [
+          "atproto"
+        ],
+        "sets": [],
+        "summary": "",
+        "tier": "thisApp",
+        "warnings": []
+      },
+      {
+        "checked": true,
+        "chip": "Your handle",
+        "fixed": false,
+        "includes": [],
+        "key": "handle",
+        "label": "Your handle",
+        "lines": [],
+        "notInSet": [],
+        "scopes": [
+          "identity:handle"
+        ],
+        "sets": [],
+        "summary": "Change your handle",
+        "tier": "control",
+        "warnings": []
+      },
+      {
+        "checked": true,
+        "chip": "Account status",
+        "fixed": false,
+        "includes": [],
+        "key": "status",
+        "label": "Account status",
+        "lines": [],
+        "notInSet": [],
+        "scopes": [
+          "account:status?action=manage"
+        ],
+        "sets": [],
+        "summary": "Deactivate and reactivate your account",
+        "tier": "control",
+        "warnings": []
+      },
+      {
+        "checked": true,
+        "chip": "Email",
+        "fixed": false,
+        "includes": [],
+        "key": "email",
+        "label": "Email",
+        "lines": [],
+        "notInSet": [],
+        "scopes": [
+          "transition:email",
+          "account:email?action=manage"
+        ],
+        "sets": [],
+        "summary": "Read and change your email address",
+        "tier": "control",
+        "warnings": []
+      },
+      {
+        "checked": true,
+        "chip": "Full access",
+        "fixed": false,
+        "includes": [],
+        "key": "generic",
+        "label": "Full access",
+        "lines": [],
+        "notInSet": [],
+        "scopes": [
+          "transition:generic"
+        ],
+        "sets": [],
+        "summary": "Create, change and delete any record · Upload any file · Requests to any service except private messages",
+        "tier": "control",
+        "warnings": []
+      },
+      {
+        "checked": true,
+        "chip": "Private messages",
+        "fixed": false,
+        "includes": [],
+        "key": "messages",
+        "label": "Private messages",
+        "lines": [],
+        "notInSet": [],
+        "scopes": [
+          "transition:chat.bsky"
+        ],
+        "sets": [],
+        "summary": "Read and send Bluesky private messages · Needs Full access",
+        "tier": "control",
+        "warnings": []
+      }
+    ],
+    "scope": "atproto transition:generic transition:email transition:chat.bsky identity:handle account:email?action=manage account:status?action=manage"
+  },
+  {
+    "clientId": "https://graysky.app/oauth-client-metadata.json",
+    "name": "graysky.app",
+    "rows": [
+      {
+        "checked": true,
+        "chip": "Sees your handle and DID",
+        "fixed": true,
+        "includes": [],
+        "key": "identity",
+        "label": "Sees your handle and DID",
+        "lines": [],
+        "notInSet": [],
+        "scopes": [
+          "atproto"
+        ],
+        "sets": [],
+        "summary": "",
+        "tier": "thisApp",
+        "warnings": []
+      },
+      {
+        "checked": true,
+        "chip": "Your handle",
+        "fixed": false,
+        "includes": [],
+        "key": "handle",
+        "label": "Your handle",
+        "lines": [],
+        "notInSet": [],
+        "scopes": [
+          "identity:handle"
+        ],
+        "sets": [],
+        "summary": "Change your handle",
+        "tier": "control",
+        "warnings": []
+      },
+      {
+        "checked": true,
+        "chip": "Bluesky",
+        "fixed": false,
+        "includes": [],
+        "key": "ns:app.bsky",
+        "label": "Bluesky",
+        "lines": [
+          {
+            "code": "app.bsky.feed.* · app.bsky.graph.* · app.bsky.actor.* · app.bsky.notification.declaration",
+            "objects": "Posts, likes, reposts, threadgates, postgates · Follows, blocks, lists, list members, list blocks, starter packs, verifications · Profile, status, links · 3 more",
+            "verb": "Create, change and delete · 18 record types"
+          },
+          {
+            "code": "app.bsky.graph.* · app.bsky.feed.* · app.bsky.notification.* · app.bsky.video.* · app.bsky.actor.* · app.bsky.contact.* · …",
+            "objects": "Follows, mutes and lists 24 · Feeds and posts 19 · Notifications 11 · Video 8 · Profiles and preferences 7 · Contacts 7, including importing your contacts · Drafts 4 · Age assurance 3 · Bookmarks 3 · Other 27",
+            "verb": "Requests through api.bsky.app · 113 methods"
+          }
+        ],
+        "notInSet": [
+          {
+            "code": "app.bsky.actor.getPreferences · app.bsky.actor.putPreferences",
+            "objects": "Preferences",
+            "verb": "Read and change · to any service"
+          },
+          {
+            "code": "app.bsky.notification.registerPush",
+            "objects": "Push notifications",
+            "verb": "Register · through graysky.app"
+          }
+        ],
+        "scopes": [
+          "include:app.bsky.authFullApp?aud=did:web:api.bsky.app%23bsky_appview",
+          "rpc:app.bsky.actor.getPreferences?aud=*",
+          "rpc:app.bsky.actor.putPreferences?aud=*",
+          "rpc:app.bsky.notification.registerPush?aud=did:web:graysky.app%23bsky_notif"
+        ],
+        "sets": [
+          {
+            "detail": "Manage all public content and interactions, private preferences and subscriptions, and other Bluesky-specific app features and data.",
+            "group": "app.bsky",
+            "ignored": 0,
+            "nsid": "app.bsky.authFullApp",
+            "publisher": "bsky.app",
+            "title": "Full Bluesky Social App Permissions",
+            "unavailable": false
+          }
+        ],
+        "summary": "Create, change and delete 18 record types · 113 kinds of request",
+        "tier": "asYou",
+        "warnings": []
+      },
+      {
+        "checked": true,
+        "chip": "Reports",
+        "fixed": false,
+        "includes": [],
+        "key": "ns:com.atproto.moderation",
+        "label": "Reports",
+        "lines": [
+          {
+            "code": "com.atproto.moderation.createReport",
+            "objects": "Reports",
+            "verb": "Send · to any service"
+          }
+        ],
+        "notInSet": [],
+        "scopes": [
+          "rpc:com.atproto.moderation.createReport?aud=*"
+        ],
+        "sets": [],
+        "summary": "Send reports to any service",
+        "tier": "asYou",
+        "warnings": []
+      },
+      {
+        "checked": true,
+        "chip": "Email",
+        "fixed": false,
+        "includes": [],
+        "key": "email",
+        "label": "Email",
+        "lines": [
+          {
+            "code": "account:email",
+            "objects": "Email address",
+            "verb": "Read"
+          }
+        ],
+        "notInSet": [],
+        "scopes": [
+          "account:email"
+        ],
+        "sets": [],
+        "summary": "Read your email address",
+        "tier": "asYou",
+        "warnings": []
+      },
+      {
+        "checked": true,
+        "chip": "Uploads: images",
+        "fixed": false,
+        "includes": [],
+        "key": "uploads",
+        "label": "Uploads",
+        "lines": [
+          {
+            "code": "blob:image/*",
+            "objects": "Images",
+            "verb": "Upload"
+          }
+        ],
+        "notInSet": [],
+        "scopes": [
+          "blob:image/*"
+        ],
+        "sets": [],
+        "summary": "Images",
+        "tier": "thisApp",
+        "warnings": []
+      }
+    ],
+    "scope": "atproto include:app.bsky.authFullApp?aud=did:web:api.bsky.app%23bsky_appview rpc:app.bsky.actor.getPreferences?aud=* rpc:app.bsky.actor.putPreferences?aud=* blob:image/* rpc:app.bsky.notification.registerPush?aud=did:web:graysky.app%23bsky_notif rpc:com.atproto.moderation.createReport?aud=* account:email identity:handle"
+  }
+]
