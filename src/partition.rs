@@ -861,6 +861,8 @@ impl DiskCacheConfig {
     }
 }
 
+// SlateDB deprecated its disk cache for slatedb-mirror; the fork keeps it (PATCHES.md 13)
+#[allow(deprecated)]
 fn shard_settings(partition: ShardId, cache: Option<&DiskCache>) -> slatedb::Settings {
     // A whole repo lives in one shard, so one shard must absorb a bulk
     // import: L0 holds more than a slow compaction cycle's worth of ingest
@@ -2420,6 +2422,7 @@ mod disk_cache_tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn cap_reaches_slatedb_settings() {
         let cfg = DiskCacheConfig { dir: "/var/cache/vlpds".into(), node_bytes: Some(32 << 30), shard_bytes: None };
         let s = shard_settings(ShardId(7), Some(&cfg.for_shards(16)));

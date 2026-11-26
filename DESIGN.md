@@ -1736,14 +1736,16 @@ marker without one; `partition.rs`
 `merging_halves_that_share_many_l0s_keeps_them` pins it.
 
 vlpds builds slatedb (and slatedb-common) from the fork
-`github.com/jazware/slatedb` via `[patch.crates-io]`, pinned by rev to the
-fork's `main`: upstream `main` at `8c1c6c33`, which carries both fixes
-above, plus the patches in the fork's `PATCHES.md` (the synchronous
-`next` / `next_batch` scan fast path; a compactor guard that fails an
-admin-submitted spec, i.e. reshard GC's forced compactions, instead of
-promoting it when it collides with a claimed job's destination or sources,
-which the executor's `assert!` would otherwise panic on; compaction output
-seeded into the DB cache; and a cache peek before building a loader).
+`github.com/jazware/slatedb` through vlsync's `vlsync-slatedb`, pinned by
+rev to the fork's `main`: upstream `main` at `06717572` (0.18.1), which
+carries both fixes above, plus the patches in the fork's `PATCHES.md` (the
+synchronous `next` / `next_batch` scan fast path; a compactor guard that
+fails an admin-submitted spec, i.e. reshard GC's forced compactions,
+instead of promoting it when it collides with a claimed job's destination
+or sources, which the executor's `assert!` would otherwise panic on;
+compaction output seeded into the DB cache; a cache peek before building a
+loader; and the object-store disk cache behind `--cache-dir`, which
+upstream deleted for its local mirror).
 
 **Protocol.** One reshard op at a time, cluster-wide, recorded in the
 layout as `op = {id, parents, children, driver}`:

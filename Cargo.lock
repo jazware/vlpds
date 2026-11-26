@@ -1459,7 +1459,7 @@ dependencies = [
  "serde",
  "tracing",
  "twox-hash",
- "zstd",
+ "zstd 0.13.3",
 ]
 
 [[package]]
@@ -3476,11 +3476,11 @@ dependencies = [
 
 [[package]]
 name = "rand_xoshiro"
-version = "0.7.0"
+version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f703f4665700daf5512dcca5f43afa6af89f09db47fb56be587f80636bda2d41"
+checksum = "905ba3ffb2d41441ed3382287a8c9d7cde1bdf49c33db808956e9f01ebb13436"
 dependencies = [
- "rand_core 0.9.5",
+ "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -4141,7 +4141,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slate-metrics"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=b5531a1e0c0dc2eeffa9c5661e4d1bc72e3ed098#b5531a1e0c0dc2eeffa9c5661e4d1bc72e3ed098"
+source = "git+https://github.com/jazware/vlsync?rev=a1464f71605695102456aaaa8ec54475210779e6#a1464f71605695102456aaaa8ec54475210779e6"
 dependencies = [
  "parking_lot",
  "prometheus",
@@ -4153,8 +4153,8 @@ dependencies = [
 
 [[package]]
 name = "slatedb"
-version = "0.17.0"
-source = "git+https://github.com/jazware/slatedb?rev=08addd13a012741e3ada5bc78e83d5c2294f33e6#08addd13a012741e3ada5bc78e83d5c2294f33e6"
+version = "0.18.1"
+source = "git+https://github.com/jazware/slatedb?rev=e93f7c0c2954f5d79c5d7ec418f30960c97d7a29#e93f7c0c2954f5d79c5d7ec418f30960c97d7a29"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -4178,11 +4178,12 @@ dependencies = [
  "object_store",
  "ouroboros",
  "parking_lot",
- "rand 0.9.5",
+ "rand 0.10.3",
  "serde",
  "serde_json",
  "siphasher",
  "slatedb-common",
+ "slatedb-mirror",
  "slatedb-txn-obj",
  "smallvec",
  "sysinfo",
@@ -4194,18 +4195,22 @@ dependencies = [
  "url",
  "uuid",
  "walkdir",
- "zstd",
+ "zstd 0.14.3",
 ]
 
 [[package]]
 name = "slatedb-common"
-version = "0.17.0"
-source = "git+https://github.com/jazware/slatedb?rev=08addd13a012741e3ada5bc78e83d5c2294f33e6#08addd13a012741e3ada5bc78e83d5c2294f33e6"
+version = "0.18.1"
+source = "git+https://github.com/jazware/slatedb?rev=e93f7c0c2954f5d79c5d7ec418f30960c97d7a29#e93f7c0c2954f5d79c5d7ec418f30960c97d7a29"
 dependencies = [
+ "async-trait",
+ "bytes",
  "chrono",
  "log",
+ "lru",
  "object_store",
- "rand 0.9.5",
+ "parking_lot",
+ "rand 0.10.3",
  "rand_xoshiro",
  "serde",
  "thread_local",
@@ -4213,9 +4218,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "slatedb-mirror"
+version = "0.18.1"
+source = "git+https://github.com/jazware/slatedb?rev=e93f7c0c2954f5d79c5d7ec418f30960c97d7a29#e93f7c0c2954f5d79c5d7ec418f30960c97d7a29"
+dependencies = [
+ "async-trait",
+ "backon",
+ "bytes",
+ "chrono",
+ "futures",
+ "hex",
+ "log",
+ "md-5",
+ "object_store",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "slatedb-common",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "slatedb-txn-obj"
-version = "0.17.0"
-source = "git+https://github.com/jazware/slatedb?rev=08addd13a012741e3ada5bc78e83d5c2294f33e6#08addd13a012741e3ada5bc78e83d5c2294f33e6"
+version = "0.18.1"
+source = "git+https://github.com/jazware/slatedb?rev=e93f7c0c2954f5d79c5d7ec418f30960c97d7a29#e93f7c0c2954f5d79c5d7ec418f30960c97d7a29"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4438,7 +4466,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -5108,13 +5136,13 @@ dependencies = [
  "vlsync-store",
  "x509-parser",
  "zeroize",
- "zstd",
+ "zstd 0.13.3",
 ]
 
 [[package]]
 name = "vlsync-firehose"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=b5531a1e0c0dc2eeffa9c5661e4d1bc72e3ed098#b5531a1e0c0dc2eeffa9c5661e4d1bc72e3ed098"
+source = "git+https://github.com/jazware/vlsync?rev=a1464f71605695102456aaaa8ec54475210779e6#a1464f71605695102456aaaa8ec54475210779e6"
 dependencies = [
  "anyhow",
  "axum",
@@ -5138,7 +5166,7 @@ dependencies = [
 [[package]]
 name = "vlsync-heapprof"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=b5531a1e0c0dc2eeffa9c5661e4d1bc72e3ed098#b5531a1e0c0dc2eeffa9c5661e4d1bc72e3ed098"
+source = "git+https://github.com/jazware/vlsync?rev=a1464f71605695102456aaaa8ec54475210779e6#a1464f71605695102456aaaa8ec54475210779e6"
 dependencies = [
  "axum",
  "backtrace",
@@ -5154,7 +5182,7 @@ dependencies = [
 [[package]]
 name = "vlsync-slatedb"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=b5531a1e0c0dc2eeffa9c5661e4d1bc72e3ed098#b5531a1e0c0dc2eeffa9c5661e4d1bc72e3ed098"
+source = "git+https://github.com/jazware/vlsync?rev=a1464f71605695102456aaaa8ec54475210779e6#a1464f71605695102456aaaa8ec54475210779e6"
 dependencies = [
  "slatedb",
  "slatedb-common",
@@ -5163,7 +5191,7 @@ dependencies = [
 [[package]]
 name = "vlsync-store"
 version = "0.1.0"
-source = "git+https://github.com/jazware/vlsync?rev=b5531a1e0c0dc2eeffa9c5661e4d1bc72e3ed098#b5531a1e0c0dc2eeffa9c5661e4d1bc72e3ed098"
+source = "git+https://github.com/jazware/vlsync?rev=a1464f71605695102456aaaa8ec54475210779e6#a1464f71605695102456aaaa8ec54475210779e6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5181,7 +5209,7 @@ dependencies = [
  "tokio",
  "tracing",
  "vlsync-slatedb",
- "zstd",
+ "zstd 0.13.3",
 ]
 
 [[package]]
@@ -5822,7 +5850,16 @@ version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
 dependencies = [
- "zstd-safe",
+ "zstd-safe 7.3.0",
+]
+
+[[package]]
+name = "zstd"
+version = "0.14.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db3ae9bf90af6e40197bef767eeefc46ad6397420fe873830bd85e5fbbfb3c70"
+dependencies = [
+ "zstd-safe 8.2.0",
 ]
 
 [[package]]
@@ -5835,10 +5872,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "zstd-sys"
-version = "2.1.0+zstd.1.5.7"
+name = "zstd-safe"
+version = "8.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ef0a8027ec3ee71300ab3bcbcd0393f434aa72b91ca6d635a39941deae8eea0"
+checksum = "ded520f16b29e1a9b771c722221b2b0a0398c2316d9bb3c42b458a5414d7434b"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.1.2+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3"
 dependencies = [
  "cc",
  "pkg-config",
