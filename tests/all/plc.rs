@@ -245,7 +245,6 @@ async fn sign_and_submit_plc_operations() {
     };
     let cases: Vec<(J, &str)> = vec![
         (json!({"type": "plc_tombstone", "prev": op["prev"], "sig": "x"}), "Invalid operation"),
-        (resign(&|u| u["rotationKeys"] = json!([extra])), "Rotation keys do not include server's rotation key"),
         (resign(&|u| u["services"]["atproto_pds"]["type"] = json!("Other")), "Incorrect type on atproto_pds service"),
         (
             resign(&|u| u["services"]["atproto_pds"]["endpoint"] = json!("https://elsewhere.test")),
@@ -274,6 +273,111 @@ async fn sign_and_submit_plc_operations() {
     submit(op.clone()).await.ok();
     assert_eq!(plc.last_op(&a.did).unwrap(), op);
     sub.until(FH_TIMEOUT, |fs| fs.iter().any(|f| f.kind() == "#identity" && f.did() == Some(a.did.as_str()))).await;
+}
+
+/// A self-custodied account may submit an op that drops the server's own
+/// rotation key entirely: submitPlcOperation only requires the op to be
+/// correctly shaped and signed by a current rotation key, not that the
+/// server keep a seat at the table.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn submit_plc_operation_allows_dropping_server_key() {
+    let plc = MockPlc::start().await;
+    let rot = new_key();
+    let s = pds(&plc, &rot, "did:web:pds.test", None).await;
+    let a = s.create_account("drop").await;
+
+    let genesis = plc.last_op(&a.did).unwrap();
+    let mut u = genesis.clone();
+    u.as_object_mut().unwrap().remove("sig");
+    u["prev"] = json!(vlpds::plc::op_cid(&genesis).unwrap().to_string());
+    let user_key = new_key();
+    u["rotationKeys"] = json!([user_key.did_key()]);
+    let op = vlpds::plc::sign(u, &rot).unwrap();
+
+    s.xrpc.post("com.atproto.identity.submitPlcOperation", &json!({"operation": op}), &a.auth()).await.ok();
+    assert_eq!(plc.data(&a.did).unwrap()["rotationKeys"], json!([user_key.did_key()]));
+
+    // the account keeps working normally: no re-check locks it out later
+    let st = s.xrpc.get("com.atproto.server.checkAccountStatus", &[], &a.auth()).await.ok();
+    assert_eq!(st["validDid"], json!(true), "{st}");
+    s.post(&a, "still posting after giving up the server's rotation key").await;
+}
+
+/// A DID created and self-custodied entirely outside this PDS (the server
+/// never holds a rotation key for it, at any point) can still migrate in and
+/// activate: activateAccount/checkAccountStatus (assert_valid_did_doc) check
+/// the PDS endpoint and signing key, not rotation-key custody.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn activate_account_allows_pure_self_custody() {
+    let plc = MockPlc::start().await;
+    let (old_key, new_key_) = (new_key(), new_key());
+    let old = pds(&plc, &old_key, "did:web:old-pds.test", None).await;
+    let new = pds(&plc, &new_key_, "did:web:new-pds.test", None).await;
+    let alice = old.create_account("selfcustody").await;
+    let did = alice.did.clone();
+
+    // alice takes full self-custody while still hosted on `old` (exercising
+    // the fix above): the server's key is gone, replaced by her own.
+    let user_key = new_key();
+    old.xrpc.post_empty("com.atproto.identity.requestPlcOperationSignature", &alice.auth()).await.ok();
+    let tok = old.mail_token(&alice.email).await.unwrap();
+    let signed = old
+        .xrpc
+        .post(
+            "com.atproto.identity.signPlcOperation",
+            &json!({"token": tok, "rotationKeys": [user_key.did_key()]}),
+            &alice.auth(),
+        )
+        .await
+        .ok()["operation"]
+        .clone();
+    old.xrpc.post("com.atproto.identity.submitPlcOperation", &json!({"operation": signed}), &alice.auth()).await.ok();
+    assert_eq!(plc.data(&did).unwrap()["rotationKeys"], json!([user_key.did_key()]));
+
+    // now she migrates to `new`, which never held a rotation key for this
+    // DID either: only alice's own key ever signs anything from here on.
+    let token = old
+        .xrpc
+        .get(
+            "com.atproto.server.getServiceAuth",
+            &[("aud", "did:web:new-pds.test"), ("lxm", "com.atproto.server.createAccount")],
+            &alice.auth(),
+        )
+        .await
+        .ok()["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let handle = format!("{}.{HANDLE_DOMAIN}", unique_name("selfcustody-moved"));
+    let email = format!("{}@example.com", unique_name("selfcustody-moved"));
+    let created = new
+        .xrpc
+        .post(
+            "com.atproto.server.createAccount",
+            &json!({"handle": handle, "email": email, "password": PASSWORD, "did": did}),
+            &Auth::Bearer(token),
+        )
+        .await
+        .ok();
+    let auth = Auth::Bearer(created["accessJwt"].as_str().unwrap().into());
+    let car = old.xrpc.get("com.atproto.sync.getRepo", &[("did", &did)], &Auth::None).await;
+    new.xrpc.post_bytes("com.atproto.repo.importRepo", car.body.to_vec(), "application/vnd.ipld.car", &auth).await.ok();
+
+    // alice signs the handoff herself; neither PDS ever holds her key
+    let last = plc.last_op(&did).unwrap();
+    let mut u = last.clone();
+    u.as_object_mut().unwrap().remove("sig");
+    u["prev"] = json!(vlpds::plc::op_cid(&last).unwrap().to_string());
+    u["services"] = json!({"atproto_pds": {"type": "AtprotoPersonalDataServer", "endpoint": new.url}});
+    u["alsoKnownAs"] = json!([format!("at://{handle}")]);
+    u["verificationMethods"]["atproto"] = json!(signing_did_key(&new, &did).await);
+    let op = vlpds::plc::sign(u, &user_key).unwrap();
+    new.xrpc.post("com.atproto.identity.submitPlcOperation", &json!({"operation": op}), &auth).await.ok();
+    assert_eq!(plc.data(&did).unwrap()["rotationKeys"], json!([user_key.did_key()]), "still only alice's key");
+
+    let st = new.xrpc.get("com.atproto.server.checkAccountStatus", &[], &auth).await.ok();
+    assert_eq!(st["validDid"], json!(true), "{st}");
+    new.xrpc.post_empty("com.atproto.server.activateAccount", &auth).await.ok();
 }
 
 /// Account migration out (reference flow): the new PDS creates the account
