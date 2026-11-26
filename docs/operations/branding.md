@@ -41,7 +41,7 @@ of them, every page looks the way it always has.
 | `--logo-file` | | a PNG, JPEG or WebP of at most 256 KiB, served at `/brand/logo`. It goes beside the name in the header and is email's logo |
 | `--favicon-file` | | the same kinds of file, served at `/brand/favicon`. Unset, the pages keep vlpds's icon |
 | `--primary-color` | `VLPDS_EMAIL_PRIMARY_COLOR`, `PDS_PRIMARY_COLOR` | the accent, as `#rrggbb`: buttons, links, checkboxes and email's handle color. Also `--email-primary-color` |
-| `--primary-color-dark` | | the accent in dark mode. Unset, dark mode uses `--primary-color` too |
+| `--primary-color-dark` | | the accent in dark mode. Unset, dark mode uses `--primary-color` too. Needs a light color from `--primary-color` or its variables, else startup fails |
 | `--home-url` | `VLPDS_EMAIL_HOME_URL`, `PDS_HOME_URL` | a "Home" link under the pages and email's footer link. Also `--email-home-url` |
 | `--support-url` | `PDS_SUPPORT_URL` | a "Support" link, https or `mailto:` |
 | `--terms-of-service-url` | `PDS_TERMS_OF_SERVICE_URL` | describeServer's `links.termsOfService` and a link under the pages |

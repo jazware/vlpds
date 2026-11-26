@@ -601,8 +601,9 @@ struct Args {
     /// white, whichever contrasts more.
     #[arg(long, env = "VLPDS_PRIMARY_COLOR", alias = "email-primary-color")]
     primary_color: Option<String>,
-    /// Accent color in dark mode, #rrggbb (default --primary-color).
-    #[arg(long, env = "VLPDS_PRIMARY_COLOR_DARK", requires = "primary_color")]
+    /// Accent color in dark mode, #rrggbb (default --primary-color). Needs a
+    /// light color from --primary-color or one of its fallbacks.
+    #[arg(long, env = "VLPDS_PRIMARY_COLOR_DARK")]
     primary_color_dark: Option<String>,
     /// Home link (https) under the branded pages and email's footer link
     /// (falls back to VLPDS_EMAIL_HOME_URL, then PDS_HOME_URL; email's
@@ -1818,6 +1819,10 @@ async fn shutdown_signal() {
 }
 
 fn brand_settings(args: &Args) -> vlpds::brand::Settings {
+    brand_settings_with(args, |k| std::env::var(k).ok())
+}
+
+fn brand_settings_with(args: &Args, env: impl Fn(&str) -> Option<String>) -> vlpds::brand::Settings {
     vlpds::brand::Settings {
         name: args.brand_name.clone(),
         logo_file: args.logo_file.clone(),
@@ -1829,7 +1834,7 @@ fn brand_settings(args: &Args) -> vlpds::brand::Settings {
         terms_of_service_url: args.terms_of_service_url.clone(),
         privacy_policy_url: args.privacy_policy_url.clone(),
     }
-    .with_fallbacks(|k| std::env::var(k).ok())
+    .with_fallbacks(env)
 }
 
 /// Else the reference PDS's environment variable.
@@ -1864,6 +1869,24 @@ mod tests {
         let a = Args::try_parse_from(["vlpds", "--brand-name", "New", "--primary-color", "#abcdef"]).unwrap();
         assert_eq!(a.brand_name.as_deref(), Some("New"));
         assert!(Args::try_parse_from(["vlpds", "--brand-name", "a", "--email-brand-name", "b"]).is_err());
-        assert!(Args::try_parse_from(["vlpds", "--primary-color-dark", "#000000"]).is_err());
+    }
+
+    /// clap can't see the light color's env fallbacks, so the dark color must
+    /// parse alone and the pairing is checked once they've resolved.
+    #[test]
+    fn dark_color_pairs_with_a_fallback_light_color() {
+        let dark = Args::try_parse_from(["vlpds", "--primary-color-dark", "#abcdef"]).unwrap();
+        let settings = |vars: &'static [(&str, &str)]| {
+            brand_settings_with(&dark, move |k| vars.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string()))
+        };
+        for var in ["VLPDS_EMAIL_PRIMARY_COLOR", "PDS_PRIMARY_COLOR"] {
+            let vars: &'static [(&str, &str)] = Box::leak(Box::new([(var, "#123456")]));
+            let s = settings(vars);
+            assert_eq!(s.primary_color.as_deref(), Some("#123456"), "{var}");
+            assert_eq!(s.primary_color_dark.as_deref(), Some("#abcdef"));
+            s.load("https://pds.example").unwrap_or_else(|e| panic!("{var}: {e}"));
+        }
+        let e = settings(&[]).load("https://pds.example").expect_err("dark alone is refused");
+        assert!(e.to_string().contains("--primary-color-dark needs --primary-color"), "{e}");
     }
 }
