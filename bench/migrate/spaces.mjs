@@ -130,7 +130,7 @@ const sha = (b) => createHash('sha256').update(b).digest('hex')
 // ---------------------------------------------------------------- seed
 
 const RUN = randomBytes(2).toString('hex')
-const spaceUri = (authority, skey) => `at://${authority}/space/${TYPE}/${skey}`
+const spaceUri = (authority, skey) => `at:space/${authority}/${TYPE}/${skey}`
 const MEMBERS = { $type: 'com.atproto.memberspace.policy' }
 // what the seed's apps ask of a vlpds: spaces of the test type, managed and written, and blobs
 const SEED_SCOPE = `atproto space:${TYPE}?authority=*&collection=*&action=read&action=read_self&action=create&manage=create&manage=update blob:*/*`

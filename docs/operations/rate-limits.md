@@ -52,8 +52,9 @@ let a stranger use up its password sign-ins. Asking for the password again to ch
 signs in (adding or removing a passkey, turning TOTP off, new recovery codes) does spend
 `sign-in-account`, so a stolen session can't guess the password any faster than a sign-in could.
 
-With `--spaces` on there are nine more. The reference only limits space writes, and those share the
-repo-write buckets here too. Space reads get a budget per credential and per account
+With `--spaces` on there are thirteen more. Space writes count in their own buckets
+(`space-write-*`), apart from public repo writes, as the reference's do, and so does an inbound
+`notifyRepoUpdate` per writer (`space-notify-in-hour`, `-day`). Space reads get a budget per credential and per account
 (`space-read-*`), counted on the repo's owner. Each `authorizeSpaceSync` claims its delegation
 token durably, so it's capped per account and authority (`space-credential`). An inbound
 `notifyRepoUpdate` is a durable entry on the authority's owner and a revocation is a write to a
@@ -114,6 +115,10 @@ the start of the next. The names are what the console, the config and the metric
 | `space-read-account` | DID | 5 min | 3,000 | `com.atproto.space` reads, `listSpaces`, `getSpace` and `memberspace.listMembers` by an account's own OAuth session · with `--spaces` | 429 |
 | `space-credential` | DID + authority | 1 h | 300 | `space.authorizeSpaceSync` per account and space authority, counted on the authority's owner before the delegation token is claimed, keyed by a hash of the pair so the console doesn't show them · with `--spaces` | 429 · the token stays unused |
 | `space-notify-in` | DID | 5 min | 1,000 | `space.notifyRepoUpdate` arriving from another host, per writer (each is a durable entry) · with `--spaces` | 429 · the writer's outbox retries |
+| `space-notify-in-hour` | DID | 1 h | 1,500 | the same, the reference's hourly cap · with `--spaces` | 429 · the writer's outbox retries |
+| `space-notify-in-day` | DID | 1 day | 10,000 | the same, the reference's daily cap · with `--spaces` | 429 · the writer's outbox retries |
+| `space-write-hour` | DID | 1 h | 5,000 | space record writes (`createRecord` 3, `putRecord` 2, `deleteRecord` 1, `applyWrites` the sum, `clearRecords` 1), `memberspace.putMembers` 2 and `removeMembers` 1 per DID, `removeWriter` 1 · with `--spaces` | 429 |
+| `space-write-day` | DID | 1 day | 35,000 | the same · with `--spaces` | 429 |
 | `space-revoke` | DID | 1 h | 1000 | Credentials newly revoked by `space.notifyCredentialsRevoked`, per space authority (one point per jti not already revoked, each a write to the cluster-wide revocations object · a call naming only revoked ones costs nothing) · with `--spaces` | 429 |
 | `space-import` | DID | 1 h | 100 | `space.importRepo` per account, spent before the body is read (an account also runs 2 at once and a node up to 8, as its import budget allows: `InvalidRequest` and 503 `Overloaded` past those) · with `--spaces` | 429 |
 | `space-revoke-aud` | DID | 1 h | 2,000 | Credentials newly revoked by `space.notifyCredentialsRevoked`, per account here whose stake let them in (only those are stored), so one account and many authorities can't fill the revocations object · with `--spaces` | 429 · the space's credentials are refused for 3,610 s (a revocation not stored never fails open) |

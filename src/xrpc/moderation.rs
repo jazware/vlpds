@@ -146,9 +146,12 @@ impl SubjectRef {
         if let Some(id) = &self.id {
             return id.clone();
         }
+        // a space URI in its stored form, so subjects indexed before the
+        // Nov 24 alpha keep their index paths
+        let uri = || crate::state::stored_space_uri(self.uri.as_deref().unwrap_or("")).into_owned();
         match self.kind.as_str() {
-            "record" | "space" => self.uri.clone().unwrap_or_default(),
-            "spaceRepo" => format!("{} {}", self.uri.as_deref().unwrap_or(""), self.did),
+            "record" | "space" => uri(),
+            "spaceRepo" => format!("{} {}", uri(), self.did),
             "blob" => format!("{}/{}", self.did, self.cid.as_deref().unwrap_or("")),
             _ => self.did.clone(),
         }
@@ -303,7 +306,7 @@ fn takedown_name(s: &SubjectRef) -> XResult<String> {
         )),
         "space" => {
             let uri = s.uri.as_deref().ok_or_else(|| XrpcError::bad("InvalidRequest", "a space subject needs uri"))?;
-            let space = super::space::Space::parse(uri)?;
+            let space = super::space::Space::parse_any(uri)?;
             if space.authority != s.did {
                 return Err(XrpcError::bad("InvalidRequest", "a space is taken down at its authority"));
             }
@@ -722,11 +725,11 @@ fn not_here(m: impl Into<String>) -> XrpcError {
 /// any node); the console then reads it with getSubject.
 async fn resolve_subject(State(app): AppState, Auth(creds): Auth, Query(q): Query<ResolveQ>) -> XResult<Json<J>> {
     require_admin(&creds)?;
-    if let Some(u) = vlatproto::syntax::parse_space_uri(q.q.trim()) {
-        let space = format!("at://{}/space/{}/{}", u.authority, u.space_type, u.skey);
+    // pasted input may be in the form before Nov 24; the console gets the current one
+    if let Some(u) = vlatproto::syntax::parse_space_uri_lenient(q.q.trim()) {
         let (did, kind, uri) = match u.record {
-            Some((author, c, r)) => (author, "record", format!("{space}/{author}/{c}/{r}")),
-            None => (u.authority, "space", space),
+            Some((author, ..)) => (author, "record", u.to_string()),
+            None => (u.authority, "space", u.space()),
         };
         let acct = super::internal::account_anywhere(&app, did).await.map_err(|e| {
             if e.error == "AccountNotFound" {
@@ -825,9 +828,9 @@ async fn get_subject(State(app): AppState, Auth(creds): Auth, Query(q): Query<Su
         },
         "quota": super::blob_quota::view(&app, &q.did).await?,
     });
-    if let Some(u) = q.uri.as_deref().and_then(vlatproto::syntax::parse_space_uri) {
+    if let Some(u) = q.uri.as_deref().and_then(vlatproto::syntax::parse_space_uri_lenient) {
         let uri = q.uri.as_deref().unwrap_or_default();
-        let space = super::space::Space::parse(&format!("at://{}/space/{}/{}", u.authority, u.space_type, u.skey))?;
+        let space = super::space::Space::parse(&u.space())?;
         let p = app.partition(&q.did)?;
         match u.record {
             // what a space record is, never what it says (nor its CID, which
@@ -939,7 +942,7 @@ async fn moderate(
         ),
         "space" => {
             let uri = inp.uri.ok_or_else(|| XrpcError::bad("InvalidRequest", "uri required"))?;
-            let s = SubjectRef::space(&super::space::Space::parse(&uri)?.uri, &inp.did);
+            let s = SubjectRef::space(&super::space::Space::parse_any(&uri)?.uri, &inp.did);
             takedown_name(&s)?;
             s
         }
@@ -1003,9 +1006,8 @@ struct AuditQ {
 /// The space an entry is about, if any: its subject's, or the space a read
 /// or a registration removal names.
 fn entry_space(e: &AuditEntry) -> Option<String> {
-    let of = |u: &str| {
-        vlatproto::syntax::parse_space_uri(u).map(|s| format!("at://{}/space/{}/{}", s.authority, s.space_type, s.skey))
-    };
+    // entries from before the Nov 24 alpha name spaces in the old form
+    let of = |u: &str| vlatproto::syntax::parse_space_uri_lenient(u).map(|s| s.space());
     e.subject
         .as_ref()
         .and_then(|s| s.uri.as_deref())
@@ -1030,7 +1032,12 @@ async fn get_audit_log(State(app): AppState, Auth(creds): Auth, Query(q): Query<
             }
             match q.space.as_deref().filter(|s| !s.is_empty()) {
                 Some("*") if entry_space(&e).is_none() => continue,
-                Some(u) if u != "*" && entry_space(&e).as_deref() != Some(u) => continue,
+                Some(u)
+                    if u != "*"
+                        && entry_space(&e) != vlatproto::syntax::parse_space_uri_lenient(u).map(|s| s.space()) =>
+                {
+                    continue
+                }
                 _ => {}
             }
             out.push(e);

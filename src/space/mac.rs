@@ -458,7 +458,7 @@ mod tests {
         Commit {
             ver: 1,
             repo: "did:example:alice".into(),
-            space: "at://did:example:forum/space/com.atmoboards.forum/general".into(),
+            space: "at:space/did:example:forum/com.atmoboards.forum/general".into(),
             rev: "3mwcj3b6uak2f".into(),
             data: [7; 32],
         }
@@ -555,8 +555,7 @@ mod tests {
     fn record_macs() {
         let author = <p256::SecretKey as p256::elliptic_curve::Generate>::generate();
         let (share, secret) = encapsulate(&did_key(&author.public_key())).unwrap();
-        let uri =
-            "at://did:example:forum/space/com.atmoboards.forum/general/did:example:alice/com.atmoboards.thread/3m";
+        let uri = "at:space/did:example:forum/com.atmoboards.forum/general/did:example:alice/com.atmoboards.thread/3m";
         let cid = "bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm";
         let r = parse_request(Some(&format_request(Profile::Record, &share)), Profile::Record).unwrap().unwrap();
         let h: HashMap<String, String> = response_headers(Profile::Record, record_header(uri, cid), &r, &secret)

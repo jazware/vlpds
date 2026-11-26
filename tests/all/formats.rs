@@ -248,7 +248,9 @@ fn keys() -> Vec<u8> {
     pretty(&k)
 }
 
-const SPACE: &str = "at://did:plc:fixture0000000000000000/space/com.example.group/main";
+/// In the wire form: the fixtures, written before the Nov 24 alpha, hold the
+/// stored form, and these values must encode to them unchanged.
+const SPACE: &str = "at:space/did:plc:fixture0000000000000000/com.example.group/main";
 
 /// Spaces (`--spaces`): the `s*` key layout and row values.
 fn space_keys() -> Vec<u8> {
@@ -579,7 +581,7 @@ fn signin_providers() -> Vec<u8> {
 
 fn space_revocations() -> vlpds::space::revocations::Doc {
     use vlpds::space::revocations::{Doc, Entry};
-    let space = "at://did:plc:fixture0000000000000000/space/com.example.group/main".to_string();
+    let space = "at:space/did:plc:fixture0000000000000000/com.example.group/main".to_string();
     Doc {
         revoked: vec![
             Entry { space: space.clone(), jti: "3k2a7bq5zzc2a".into(), until: 1_790_003_610, aud: String::new() },
@@ -1196,7 +1198,10 @@ async fn check(level: u32, name: &str, b: &[u8]) {
                 let key = hex::decode(&k[name]).unwrap();
                 assert_eq!(vlsync_store::keys::key_slot(&key), Some(vlsync_store::slots::slot_of(DID)));
                 assert!(vlpds::state::is_space_key(&key));
-                assert_eq!(vlpds::state::space_list_uri(&key, &base), Some(SPACE));
+                // the key holds the stored form, the one before the Nov 24 alpha
+                let stored = vlpds::state::stored_space_uri(SPACE);
+                assert!(stored.starts_with("at://"));
+                assert_eq!(vlpds::state::space_list_uri(&key, &base), Some(&*stored));
                 assert!(vlpds::state::space_list_key(DID, SPACE, why) == key);
             }
         }

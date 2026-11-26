@@ -532,7 +532,7 @@ impl SpaceNeed {
 }
 
 fn authority(uri: &str) -> Option<&str> {
-    uri.strip_prefix("at://")?.split('/').next()
+    uri.strip_prefix(vlatproto::syntax::SPACE_URI_PREFIX)?.split('/').next()
 }
 
 #[derive(Default)]
@@ -1544,7 +1544,7 @@ pub fn delete_space(
 mod tests {
     use super::*;
 
-    const URI: &str = "at://did:plc:auth/space/com.example.group/x";
+    const URI: &str = "at:space/did:plc:auth/com.example.group/x";
 
     /// createSpace, the authority's repo there unwritten unless held.
     fn cs(st: &mut SpaceStates, auth: &str, sid: SpaceId, row: SpaceRow) -> Result<HostBuilt, SpaceError> {

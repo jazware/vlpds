@@ -215,7 +215,7 @@ mod tests {
     fn sample() -> Archive {
         let map = |kv: &[(&str, Value)]| Value::Map(kv.iter().map(|(k, v)| (k.to_string(), v.clone())).collect());
         Archive {
-            space: "at://did:plc:x/space/com.example.group/self".into(),
+            space: "at:space/did:plc:x/com.example.group/self".into(),
             policy: map(&[("$type", Value::Text("com.atproto.personalspace.policy".into()))]),
             policy_state: vec![(
                 "com.atproto.memberspace.member/did:plc:b".into(),

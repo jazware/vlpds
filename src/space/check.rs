@@ -239,7 +239,7 @@ fn sample<T: ToString>(v: impl IntoIterator<Item = T>) -> Vec<String> {
 
 /// The authority DID of a space URI (`at://{authority}/space/...`).
 pub fn authority(uri: &str) -> Option<&str> {
-    uri.strip_prefix("at://")?.split('/').next().filter(|a| !a.is_empty())
+    vlatproto::syntax::parse_space_uri(uri).map(|u| u.authority)
 }
 
 fn count(problems: &mut Vec<String>, n: usize, what: &str) {
@@ -502,7 +502,7 @@ mod tests {
     const RET: Option<std::time::Duration> = Some(crate::space::retention::DEFAULT_RETENTION);
 
     const DID: &str = "did:plc:writer";
-    const URI: &str = "at://did:plc:auth/space/com.example.group/x";
+    const URI: &str = "at:space/did:plc:auth/com.example.group/x";
     const NOW: u64 = 1_800_000_000_000_000;
 
     /// Rows as a correct writer leaves them after `batches`, each one rev of
@@ -595,7 +595,7 @@ mod tests {
         assert_problem(&rows, NOW, "written at a rev after the head's");
 
         let mut rows = healthy();
-        rows.head.as_mut().unwrap().uri = "at://did:plc:other/space/com.example.group/y".into();
+        rows.head.as_mut().unwrap().uri = "at:space/did:plc:other/com.example.group/y".into();
         assert_problem(&rows, NOW, "space id collision");
 
         let mut rows = healthy();
@@ -673,7 +673,7 @@ mod tests {
         assert_eq!(check(DID, URI, &rows, NOW, RET)["ok"], json!(true), "an older rev still owed");
         rows.outbox.as_mut().unwrap().repo_rev = Tid(h.rev.0 + 1);
         assert_problem(&rows, NOW, "the outbox row is at rev");
-        let own = "at://did:plc:writer/space/com.example.group/x";
+        let own = "at:space/did:plc:writer/com.example.group/x";
         let mut self_rows = rows.clone();
         self_rows.head.as_mut().unwrap().uri = own.into();
         self_rows.outbox = Some(Outbox { uri: own.into(), repo_rev: h.rev, hash: h.hash.digest() });

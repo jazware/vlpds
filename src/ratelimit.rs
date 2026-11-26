@@ -346,8 +346,8 @@ limit!(
     100
 );
 
-// Spaces (vlpds additions; the reference limits only space writes, which
-// share the repo-write buckets). Space reads are counted on the repo's
+// Spaces (vlpds additions; the reference limits only space writes, in
+// space-write-*, and inbound notifyRepoUpdate per writer). Space reads are counted on the repo's
 // owner, authorizeSpaceSync (a durable jti claim each) and inbound
 // notifyRepoUpdate (a durable entry each) on the authority's, and
 // notifyCredentialsRevoked (a cluster-wide CAS write each) where it lands.
@@ -420,9 +420,30 @@ limit!(
     10
 );
 
+limit!(
+    SPACE_WRITE_HOUR,
+    47,
+    "space-write-hour",
+    Did,
+    "every space write: records (create 3, update 2, delete 1 points), clearRecords 1, putMembers 2 and removeMembers 1 per DID, removeWriter 1",
+    HOUR,
+    5000
+);
+limit!(SPACE_WRITE_DAY, 48, "space-write-day", Did, "every space write (as space-write-hour)", DAY, 35000);
+limit!(
+    SPACE_NOTIFY_IN_HOUR,
+    49,
+    "space-notify-in-hour",
+    Did,
+    "space.notifyRepoUpdate received, per writer",
+    HOUR,
+    1500
+);
+limit!(SPACE_NOTIFY_IN_DAY, 50, "space-notify-in-day", Did, "space.notifyRepoUpdate received, per writer", DAY, 10000);
+
 pub const DEFAULT_MAIL_DAILY_BUDGET: u32 = 900;
 
-pub const BUILTIN: [&Limit; 47] = [
+pub const BUILTIN: [&Limit; 51] = [
     &GLOBAL_IP,
     &GET_REPO,
     &CREATE_SESSION_DAY,
@@ -470,6 +491,10 @@ pub const BUILTIN: [&Limit; 47] = [
     &SPACE_CREATE,
     &SPACE_REGISTER,
     &FEDERATED_LINK_ACCOUNT,
+    &SPACE_WRITE_HOUR,
+    &SPACE_WRITE_DAY,
+    &SPACE_NOTIFY_IN_HOUR,
+    &SPACE_NOTIFY_IN_DAY,
 ];
 
 /// A confidential client's backend calls these for all of its users from
@@ -1426,6 +1451,14 @@ pub fn refund_global_ip() {
 pub fn check_repo_write(did: Option<&str>, points: u32) -> Result<(), XrpcError> {
     match did {
         Some(d) => check(&[&REPO_WRITE_HOUR, &REPO_WRITE_DAY], d, points),
+        None => Ok(()),
+    }
+}
+
+/// Space writes count apart from public repo writes, as the reference's do.
+pub fn check_space_write(did: Option<&str>, points: u32) -> Result<(), XrpcError> {
+    match did {
+        Some(d) => check(&[&SPACE_WRITE_HOUR, &SPACE_WRITE_DAY], d, points),
         None => Ok(()),
     }
 }

@@ -15,10 +15,10 @@ export class BoardsClient extends BaseClient {
   }
 }
 
-/** The UI's page for a board's at:// URI: <ui>/b/<owner DID>/<skey>. */
+/** The UI's page for a board's at:space/ URI: <ui>/b/<owner DID>/<skey>. */
 export const boardLink = (ui, uri) => {
   const p = uri.split('/')
-  return `${ui}/b/${p[2]}/${encodeURIComponent(p[5])}`
+  return `${ui}/b/${p[1]}/${encodeURIComponent(p[3])}`
 }
 
 /** The appview with `account` (a read-only member) as its credential source and `svc` as its notify target. */
@@ -28,6 +28,6 @@ export function harnessAppview({ account, svc, ...opts }) {
     account,
     svc,
     keyOf: (did) => signingKey(did),
-    syncerFor: (board, snapshot) => new Syncer(`appview/${board.split('/')[5]}`, board, account, { snapshot, notify: svc.registration(board) }),
+    syncerFor: (board, snapshot) => new Syncer(`appview/${board.split('/')[3]}`, board, account, { snapshot, notify: svc.registration(board) }),
   })
 }

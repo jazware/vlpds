@@ -47,7 +47,7 @@ fn del(key: Bytes) -> Mutation {
 async fn clear(app: &App, creds: &Credentials, inp: ClearIn) -> XResult<()> {
     let sp = spaces(app)?;
     let space = Space::parse(&inp.space)?;
-    crate::ratelimit::check_repo_write(creds.did(), crate::ratelimit::DELETE_POINTS)?;
+    crate::ratelimit::check_space_write(creds.did(), crate::ratelimit::DELETE_POINTS)?;
     let did = writer(creds, &inp.repo)?;
     let keep = |collection: &str| space.authority == did && crate::space::publish::is_published(collection);
     let nonce = rand::random::<u64>();

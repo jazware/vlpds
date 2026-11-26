@@ -1,9 +1,10 @@
-// Stored data across the upgrade to this build: an older vlpds (OLD_VLPDS_BIN)
-// writes spaces on the old wire, stops, and this build starts on the same
-// bucket prefix and serves them on the new one. The old phase talks raw XRPC
-// for the methods the alpha renamed or reshaped (createSpace's output,
-// putMember, removeMember, removeWriter) and reads only as the repos' owners;
-// the new phase reads and writes with the reference library.
+// Stored data across the upgrade to this build: an older vlpds (OLD_VLPDS_BIN,
+// a Nov 17 alpha build such as v1.4.0) writes spaces on the old wire, stops,
+// and this build starts on the same bucket prefix and serves them on the new
+// one. The old phase talks raw XRPC with space URIs in the form before the Nov
+// 24 alpha (`at://{did}/space/...`) and reads only as the repos' owners; the
+// new phase names the same spaces in the current form (`at:space/{did}/...`)
+// and reads and writes with the reference library.
 //
 //   OLD_VLPDS_BIN=<binary> bench/spaces/run.sh migrate     (just spaces-migrate)
 import { verifyRecord, verifyRepoStarFull, RECORD_MAC_PROFILE, COMMIT_MAC_PROFILE } from '@atproto/space'
@@ -17,6 +18,8 @@ import { Vlpds } from './lib/vlpds.mjs'
 
 const OLD = process.env.OLD_VLPDS_BIN
 const WRITE = 'com.atproto.space.defs#repoWrite'
+/** `at://{did}/space/{rest}` as `at:space/{did}/{rest}`. */
+const current = (uri) => uri.replace(/^at:\/\/([^/]+)\/space\//, 'at:space/$1/')
 const record = (text, extra = {}) => ({ $type: COLL, text, createdAt: new Date().toISOString(), ...extra })
 
 /** An OAuth (DPoP) call as `actor`, whatever the lexicons say: `{status, ok, json, error}`. */
@@ -64,11 +67,12 @@ async function oldPhase(prefix) {
   try {
     const [alice, bob, dave] = [await Actor.create('vlpds', 'alice'), await Actor.create('vlpds', 'bob'), await Actor.create('vlpds', 'dave')]
     const mk = async (skey) =>
-      (await must(alice, 'com.atproto.space.createSpace', { body: { spaceType: 'com.example.group', skey, policy: { $type: 'com.atproto.memberspace.policy' } } })).uri
+      (await must(alice, 'com.atproto.space.createSpace', { body: { spaceType: 'com.example.group', skey, policy: { $type: 'com.atproto.memberspace.policy' } } })).space
     const kept = await mk(`kept${RUN}`)
     const gone = await mk(`gone${RUN}`)
+    if (!kept.startsWith('at://')) throw new Error(`the old build should name spaces in the old form: ${kept}`)
     for (const [space, who] of [[kept, bob], [kept, dave], [gone, bob]]) {
-      await must(alice, 'com.atproto.memberspace.putMember', { body: { space, did: who.did, read: true, write: true } })
+      await must(alice, 'com.atproto.memberspace.putMembers', { body: { space, members: [{ did: who.did, read: true, write: true }] } })
     }
     const write = (who, space, rkey, rec) => must(who, 'com.atproto.space.createRecord', { body: { space, repo: who.did, collection: COLL, rkey, record: rec } })
     const blobBytes = Buffer.from(`migrated space blob ${RUN}`)
@@ -82,13 +86,13 @@ async function oldPhase(prefix) {
     await write(bob, gone, 'g2', record('bob in gone'))
     // dave's notify reaching the authority first, so his removal has a writer to remove
     await new Promise((r) => setTimeout(r, 1500))
-    await must(alice, 'com.atproto.memberspace.removeMember', { body: { space: kept, did: dave.did } })
-    await must(alice, 'com.atproto.space.removeWriter', { body: { space: kept, did: dave.did } })
+    await must(alice, 'com.atproto.memberspace.removeMembers', { body: { space: kept, dids: [dave.did] } })
+    await must(alice, 'com.atproto.space.removeWriter', { body: { space: kept, repo: dave.did } })
     await must(alice, 'com.atproto.space.deleteSpace', { body: { space: gone } })
     // the last writes may still be in the outbox at the stop: this build delivers them
     const before = { alice: await ownerView(alice, kept), bob: await ownerView(bob, kept) }
     log(`old build wrote ${kept} (alice ${before.alice.rev}, bob ${before.bob.rev}) and deleted ${gone}`)
-    return { alice, bob, dave, kept, gone, before, blob: { cid: up.data.blob.ref.toString(), bytes: blobBytes } }
+    return { alice, bob, dave, kept: current(kept), gone: current(gone), oldKept: kept, before, blob: { cid: up.data.blob.ref.toString(), bytes: blobBytes } }
   } finally {
     await vl.stop()
   }
@@ -108,6 +112,11 @@ async function main() {
   try {
     const step = (name, fn) => rep.step(cfg, name, fn, { needs: ['old build writes'] })
     const { alice, bob, dave, kept, gone, before } = S ?? {}
+
+    await step('old form refused', async (check) => {
+      const r = await call(alice, 'com.atproto.space.getSpace', { method: 'GET', params: { space: S.oldKept } })
+      check(r.status === 400 && r.error === 'InvalidRequest', 'getSpace refuses the space in the old form', `${r.status} ${r.error}`)
+    })
 
     await step('owner reads', async (check) => {
       for (const [name, who] of [['alice', alice], ['bob', bob]]) {

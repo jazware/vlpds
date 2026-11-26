@@ -391,7 +391,7 @@ mod tests {
         let c = crate::space::commit::Commit {
             ver: 1,
             repo: "did:plc:x".into(),
-            space: "at://did:plc:x/space/com.example.group/self".into(),
+            space: "at:space/did:plc:x/com.example.group/self".into(),
             rev: "3kbcq3p7ad401".into(),
             data: [0; 32],
         };

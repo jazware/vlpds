@@ -501,26 +501,28 @@ async fn check_space(
 ) -> XResult<Json<J>> {
     use crate::space::check;
     require_admin(&creds)?;
-    if check::authority(&q.space).is_none() {
-        return Err(invalid(format!("not a space URI: {}", q.space)));
-    }
+    // an operator may paste the form before Nov 24
+    let space = vlatproto::syntax::parse_space_uri_lenient(&q.space)
+        .filter(|u| u.record.is_none())
+        .map(|u| u.space())
+        .ok_or_else(|| invalid(format!("not a space URI: {}", q.space)))?;
     let who = super::moderation::Who::of(&creds, q.actor.as_deref(), ip);
-    let subject = super::moderation::SubjectRef::space_repo(&q.space, &q.did);
+    let subject = super::moderation::SubjectRef::space_repo(&space, &q.did);
     let reason = q.reason.as_deref().map(str::trim).filter(|r| !r.is_empty());
-    let detail = json!({"space": q.space, "repo": q.did, "method": "checkSpace"});
+    let detail = json!({"space": space, "repo": q.did, "method": "checkSpace"});
     super::moderation::audit(&app, &who, "space.read", Some(&subject), reason, None, Some(detail)).await?;
     let p = app.partition(&q.did)?;
     let snap = {
         let _g = p.apply_lock.read().await;
         p.db.snapshot().map_err(XrpcError::from_err)?
     };
-    let rows = check::load(snap.as_ref(), &q.did, &q.space).await.map_err(XrpcError::from_err)?;
+    let rows = check::load(snap.as_ref(), &q.did, &space).await.map_err(XrpcError::from_err)?;
     if rows.is_empty() {
-        return Err(XrpcError::bad("RepoNotFound", format!("{} has no rows in {}", q.did, q.space)));
+        return Err(XrpcError::bad("RepoNotFound", format!("{} has no rows in {}", q.did, space)));
     }
-    let report = check::check(&q.did, &q.space, &rows, vlatproto::tid::now_micros(), app.config.space_oplog_retention);
+    let report = check::check(&q.did, &space, &rows, vlatproto::tid::now_micros(), app.config.space_oplog_retention);
     if report.pointer("/records/matchesHead") == Some(&J::Bool(false)) {
-        tracing::warn!(did = %q.did, space = %crate::state::space_log_id(&q.space), "check-space: records don't hash to the space head");
+        tracing::warn!(did = %q.did, space = %crate::state::space_log_id(&space), "check-space: records don't hash to the space head");
         crate::metrics::space_digest_mismatch();
     }
     Ok(Json(report))

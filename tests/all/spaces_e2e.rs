@@ -85,7 +85,7 @@ async fn spaces_e2e_single_node() {
     let s = spawn().await;
     let a = SpaceClient::new(&s, "spe", SCOPE).await;
     let space = a.create_space(TYPE, "main").await;
-    assert_eq!(space, format!("at://{}/space/{TYPE}/main", a.did));
+    assert_eq!(space, format!("at:space/{}/{TYPE}/main", a.did));
     let mut sub = s.subscribe_from_now().await;
     let (pub_cid, pub_rev) = s.latest_commit(&a.did).await;
 
@@ -294,14 +294,14 @@ async fn legacy_auth_and_missing_scopes() {
     }
     // OAuth without the space scope
     let g = SpaceClient::new(&s, "spg", "transition:generic").await;
-    let mine = format!("at://{}/space/{TYPE}/main", g.did);
+    let mine = format!("at:space/{}/{TYPE}/main", g.did);
     let r = g.create_record(&mine, COLL, None, rec("z")).await;
     r.err(403, "ScopeMissingError");
     let want = format!("space:{TYPE}?authority={}&skey=main&collection={COLL}&action=create", g.did);
     assert_eq!(r.json["message"], json!(format!("Missing required scope \"{want}\"")));
     // read_self is no delegation: only a whole-space read mints a token
     let rs = SpaceClient::new(&s, "sps", "space:com.example.group?action=read_self").await;
-    let theirs = format!("at://{}/space/{TYPE}/main", rs.did);
+    let theirs = format!("at:space/{}/{TYPE}/main", rs.did);
     rs.delegation_token(&theirs).await.err(403, "ScopeMissingError");
     // and nobody reads another account's repo as themselves
     let q = [("space", space.as_str()), ("repo", a.did.as_str()), ("collection", COLL), ("rkey", "r")];
@@ -421,7 +421,7 @@ async fn outbound_notify_through_durable_outbox() {
     let auth = authority(Mode::StallFirst).await;
     let s = spawn().await;
     let a = SpaceClient::new(&s, "spn", ANY_SCOPE).await;
-    let space = format!("at://{}/space/{TYPE}/x", auth.did);
+    let space = format!("at:space/{}/{TYPE}/x", auth.did);
     a.create_record(&space, COLL, Some("1"), rec("one")).await.ok();
     assert!(eventually(Duration::from_secs(10), || (auth.seen.lock().sends.len() == 1).then_some(())).await.is_some());
     // acked while the first send is stalled: they coalesce into one more
@@ -457,7 +457,7 @@ async fn outbox_survives_a_restart() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let first = cluster_node("spo", store.clone(), 8, |c| c.spaces = true).await;
     let a = SpaceClient::new(&first, "spo", ANY_SCOPE).await;
-    let space = format!("at://{}/space/{TYPE}/x", auth.did);
+    let space = format!("at:space/{}/{TYPE}/x", auth.did);
     a.create_record(&space, COLL, Some("1"), rec("one")).await.ok();
     a.create_record(&space, COLL, Some("2"), rec("two")).await.ok();
     let (rev, _) = head(&a, &space).await;

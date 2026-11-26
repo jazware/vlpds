@@ -5493,9 +5493,10 @@ active level and is restored only by a build whose window contains it).
 
 AT Protocol Spaces (permissioned data) tracks the reference's alpha, which
 changes often. Pinned: bluesky-social/atproto PR #5187 (branch
-`permissioned-data`) at `67476105`, the Nov 17 2026 alpha (its wire is the
-Nov 13 alpha's, with app passwords refused and importRepo taking full access
-to the space): commits with no
+`permissioned-data-alpha`) at `1f510f8e`, the Nov 24 2026 alpha (the Nov 13
+wire with app passwords refused, importRepo taking full access to the space,
+and space URIs as `at:space/{did}/{type}/{skey}`; keys and rows keep the old
+`at://{did}/space/...` form): commits with no
 signature, MACed per response as an RFC 9421 signature under a key HPKE
 exports to the author's `#atproto_kem` key (proposals #141, #142), getRepo
 as a STAR archive, the `Atproto-Space-Credential` scheme, tokens addressed

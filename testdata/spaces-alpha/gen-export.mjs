@@ -30,7 +30,7 @@ const tid = (micros, clock) => {
 
 // A did:plc in syntax only: the tests serve its document from a stub directory.
 const did = 'did:plc:vlpdsspacesrefexport2345'
-const space = `at://${did}/space/com.example.group/refexport`
+const space = `at:space/${did}/com.example.group/refexport`
 const rev = tid(1790000000000000, 7)
 
 const blobBytes = new TextEncoder().encode('\x89PNG\r\n\x1a\n vlpds spaces reference export blob')

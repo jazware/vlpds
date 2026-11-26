@@ -1,5 +1,5 @@
 //! Ported from the reference's `tests/client-attestation.test.ts`
-//! (67476105), a unit test of `ClientAttestationVerifier` against an
+//! (1f510f8e), a unit test of `ClientAttestationVerifier` against an
 //! injected fetch, plus the "client attestation" cases of
 //! `space/policy.test.ts`. vlpds verifies an attestation inside
 //! authorizeSpaceSync, so each case is a credential mint for a space whose

@@ -154,7 +154,7 @@
  ],
  "commitMacs": [
   {
-   "space": "at://did:example:space/space/app.bsky.group/test",
+   "space": "at:space/did:example:space/app.bsky.group/test",
    "repo": "did:example:alice",
    "rev": "3kbcq3p7ad400",
    "ver": 1,
@@ -171,13 +171,13 @@
    "sharedSecret": "1a7f3bfcbadf1499ed9c47c10971ca13ffd75865e690ba705744e086ba738942",
    "request": "mac=(\"atproto-space-commit\";sf);keyid=\"did:key:zDnaenU9WJVLQHVWnmxWupoJ2CiwxNGT6w2JiieRpUdxh9nhY\";tag=\"atproto-space-commit\"",
    "headers": {
-    "atproto-space-commit": "ver=1, repo=\"did:example:alice\", space=\"at://did:example:space/space/app.bsky.group/test\", rev=\"3kbcq3p7ad400\", data=:Ez3S5myhKw99fuxv81GpQYtGC9OIh173+aA/0evl+q4=:",
+    "atproto-space-commit": "ver=1, repo=\"did:example:alice\", space=\"at:space/did:example:space/app.bsky.group/test\", rev=\"3kbcq3p7ad400\", data=:Ez3S5myhKw99fuxv81GpQYtGC9OIh173+aA/0evl+q4=:",
     "signature-input": "mac=(\"atproto-space-commit\";sf);keyid=\"did:key:zDnaenU9WJVLQHVWnmxWupoJ2CiwxNGT6w2JiieRpUdxh9nhY\";tag=\"atproto-space-commit\"",
-    "signature": "mac=:rGxKS+c3cdJvSnfuEe7VVx+KQlYow6iUmVsJUiwz318=:"
+    "signature": "mac=:MJKjhDZesS9PU1GAv17iPUKGTVCB6kez0CDCD1g9UzU=:"
    }
   },
   {
-   "space": "at://did:plc:asdf123/space/com.example.group/default",
+   "space": "at:space/did:plc:asdf123/com.example.group/default",
    "repo": "did:plc:user1",
    "rev": "3lzzzzzzzzz22",
    "ver": 1,
@@ -200,13 +200,13 @@
    "sharedSecret": "63ffd521d24a30426fae5b38c72ca4b495b2313eff0e2642eb09d9fdf054c695",
    "request": "mac=(\"atproto-space-commit\";sf);keyid=\"did:key:zDnaegBzestYHxwVHbkUtxaw9pnPAidtUhGqCdGNyjRcQULa3\";tag=\"atproto-space-commit\"",
    "headers": {
-    "atproto-space-commit": "ver=1, repo=\"did:plc:user1\", space=\"at://did:plc:asdf123/space/com.example.group/default\", rev=\"3lzzzzzzzzz22\", data=:Ju7A4MB11ZCzEr7dKftbeBrCUgU93elNNsG+Z8Vqe7M=:",
+    "atproto-space-commit": "ver=1, repo=\"did:plc:user1\", space=\"at:space/did:plc:asdf123/com.example.group/default\", rev=\"3lzzzzzzzzz22\", data=:Ju7A4MB11ZCzEr7dKftbeBrCUgU93elNNsG+Z8Vqe7M=:",
     "signature-input": "mac=(\"atproto-space-commit\";sf);keyid=\"did:key:zDnaegBzestYHxwVHbkUtxaw9pnPAidtUhGqCdGNyjRcQULa3\";tag=\"atproto-space-commit\"",
-    "signature": "mac=:igpMTKMkAkomgjcFO3guRNAALAe4wgBh17VHNXvK5BQ=:"
+    "signature": "mac=:Uuv0yllEJ42ufbwHTH+JN9tIc9zPB0Sm1MTtCihp0kw=:"
    }
   },
   {
-   "space": "at://did:plc:x/space/com.example.group/self",
+   "space": "at:space/did:plc:x/com.example.group/self",
    "repo": "did:plc:x",
    "rev": "3kbcq3p7ad401",
    "ver": 1,
@@ -216,35 +216,35 @@
    "sharedSecret": "1387d67c874dac752b22706344fcd188e0fecf4ec14074d97b4ba52b92a2959e",
    "request": "mac=(\"atproto-space-commit\";sf);keyid=\"did:key:zDnaeifYuXRKiSDmBtJpWdS2Da4a1udooPCuQNyaNJmXzGMeC\";tag=\"atproto-space-commit\"",
    "headers": {
-    "atproto-space-commit": "ver=1, repo=\"did:plc:x\", space=\"at://did:plc:x/space/com.example.group/self\", rev=\"3kbcq3p7ad401\", data=:5aAKqZkayKXuMQmETYSlVYO9IFcq0//NQnkvPDaxg60=:",
+    "atproto-space-commit": "ver=1, repo=\"did:plc:x\", space=\"at:space/did:plc:x/com.example.group/self\", rev=\"3kbcq3p7ad401\", data=:5aAKqZkayKXuMQmETYSlVYO9IFcq0//NQnkvPDaxg60=:",
     "signature-input": "mac=(\"atproto-space-commit\";sf);keyid=\"did:key:zDnaeifYuXRKiSDmBtJpWdS2Da4a1udooPCuQNyaNJmXzGMeC\";tag=\"atproto-space-commit\"",
-    "signature": "mac=:/i6L8BOWByNtkuNVmYOkjGWkH47+Nxz4ttDNR27e2IM=:"
+    "signature": "mac=:wSKhGxl79WYn4IF7BkyJ8KA7V6N+CQCmL/M50izJO6s=:"
    }
   }
  ],
  "recordMacs": [
   {
-   "uri": "at://did:example:space/space/app.bsky.group/test/did:example:alice/app.bsky.feed.post/1",
+   "uri": "at:space/did:example:space/app.bsky.group/test/did:example:alice/app.bsky.feed.post/1",
    "cid": "bafyreidefdycgbfy3oglcb6ism3eqhyp5llsrpzxjsuac2gsy4mtrtx244",
    "keyShare": "did:key:zDnaedX3Kig8SdReK8ps5UZGbfVcEVMv2iGPgbkXkMh1pJsG1",
    "sharedSecret": "b0d223e0dcc274842510f397ff4383a31e5f5b8e59ca40195005e45206fb72f7",
    "request": "mac=(\"atproto-space-record\";sf);keyid=\"did:key:zDnaedX3Kig8SdReK8ps5UZGbfVcEVMv2iGPgbkXkMh1pJsG1\";tag=\"atproto-space-record\"",
    "headers": {
-    "atproto-space-record": "uri=\"at://did:example:space/space/app.bsky.group/test/did:example:alice/app.bsky.feed.post/1\", cid=\"bafyreidefdycgbfy3oglcb6ism3eqhyp5llsrpzxjsuac2gsy4mtrtx244\"",
+    "atproto-space-record": "uri=\"at:space/did:example:space/app.bsky.group/test/did:example:alice/app.bsky.feed.post/1\", cid=\"bafyreidefdycgbfy3oglcb6ism3eqhyp5llsrpzxjsuac2gsy4mtrtx244\"",
     "signature-input": "mac=(\"atproto-space-record\";sf);keyid=\"did:key:zDnaedX3Kig8SdReK8ps5UZGbfVcEVMv2iGPgbkXkMh1pJsG1\";tag=\"atproto-space-record\"",
-    "signature": "mac=:kbtVvHy/xgv9Yorw1NTDWjjMWRQ9OdVdE2dqCenbdBo=:"
+    "signature": "mac=:ctQ+pcQ7XxaGYQ5CHQiDJBQHkAT8r5PUosnT4w8tj4U=:"
    }
   },
   {
-   "uri": "at://did:plc:asdf123/space/com.example.group/default/did:plc:user1/n.c.b/2",
+   "uri": "at:space/did:plc:asdf123/com.example.group/default/did:plc:user1/n.c.b/2",
    "cid": "bafyreidpw4cbv6gr4ukh33z23pvvrpr3wi4gnpmi4doamlsl3sa4rgri2a",
    "keyShare": "did:key:zDnaenYhywEyGGjZvK81jjTnRmeJuU1p7qk1NYMuMDc7BbwKR",
    "sharedSecret": "80aba5c7de03d8df129d69ae4ac32179af9cc9af8af288692965fad37fd9ddcb",
    "request": "mac=(\"atproto-space-record\";sf);keyid=\"did:key:zDnaenYhywEyGGjZvK81jjTnRmeJuU1p7qk1NYMuMDc7BbwKR\";tag=\"atproto-space-record\"",
    "headers": {
-    "atproto-space-record": "uri=\"at://did:plc:asdf123/space/com.example.group/default/did:plc:user1/n.c.b/2\", cid=\"bafyreidpw4cbv6gr4ukh33z23pvvrpr3wi4gnpmi4doamlsl3sa4rgri2a\"",
+    "atproto-space-record": "uri=\"at:space/did:plc:asdf123/com.example.group/default/did:plc:user1/n.c.b/2\", cid=\"bafyreidpw4cbv6gr4ukh33z23pvvrpr3wi4gnpmi4doamlsl3sa4rgri2a\"",
     "signature-input": "mac=(\"atproto-space-record\";sf);keyid=\"did:key:zDnaenYhywEyGGjZvK81jjTnRmeJuU1p7qk1NYMuMDc7BbwKR\";tag=\"atproto-space-record\"",
-    "signature": "mac=:Z39xGTTxoOMm8uMWKyrORw3FZjt4u5fRmU6935vNBYw=:"
+    "signature": "mac=:8Uuvy+BY247d/f/i7S54//Zzg5doqGRo5qHOnc/iUR4=:"
    }
   }
  ],
@@ -252,18 +252,18 @@
   {
    "profile": "atproto-space-repo",
    "ctx": {
-    "space": "at://did:plc:x/space/com.example.group/self",
+    "space": "at:space/did:plc:x/com.example.group/self",
     "repo": "did:plc:x",
     "rev": "3kbcq3p7ad401"
    },
    "data": "e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad",
    "records": [],
-   "star": "2a6c01009a01a6637265766d336b6263713370376164343031637665720164646174615820e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad647265706f696469643a706c633a7865247479706572617470726f746f2d73706163652d7265706f657370616365782b61743a2f2f6469643a706c633a782f73706163652f636f6d2e6578616d706c652e67726f75702f73656c6600"
+   "star": "2a6c01009801a6637265766d336b6263713370376164343031637665720164646174615820e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad647265706f696469643a706c633a7865247479706572617470726f746f2d73706163652d7265706f657370616365782961743a73706163652f6469643a706c633a782f636f6d2e6578616d706c652e67726f75702f73656c6600"
   },
   {
    "profile": "atproto-space-repo",
    "ctx": {
-    "space": "at://did:example:space/space/app.bsky.group/test",
+    "space": "at:space/did:example:space/app.bsky.group/test",
     "repo": "did:example:alice",
     "rev": "3kbcq3p7ad400"
    },
@@ -285,12 +285,12 @@
      "bytes": "a264626f647966c3a920e2988365247479706570636f6d2e6578616d706c652e6e6f7465"
     }
    ],
-   "star": "2a6c0100a701a6637265766d336b6263713370376164343030637665720164646174615820a78909512274964daebb7036f897ec98f340c8e454414663859b6a7fe1cbbfff647265706f716469643a6578616d706c653a616c69636565247479706572617470726f746f2d73706163652d7265706f657370616365783061743a2f2f6469643a6578616d706c653a73706163652f73706163652f6170702e62736b792e67726f75702f7465737401146170702e62736b792e666565642e706f73742f3147a36474657874636f6e65652474797065726170702e62736b792e666565642e706f7374696372656174656441747818323032362d31312d30375430303a30303a30302e3030305a01146170702e62736b792e666565642e706f73742f3247a364746578746374776f652474797065726170702e62736b792e666565642e706f7374696372656174656441747818323032362d31312d30375430303a30303a30312e3030305a0112636f6d2e6578616d706c652e6e6f74652f6124a264626f647966c3a920e2988365247479706570636f6d2e6578616d706c652e6e6f746500"
+   "star": "2a6c0100a501a6637265766d336b6263713370376164343030637665720164646174615820a78909512274964daebb7036f897ec98f340c8e454414663859b6a7fe1cbbfff647265706f716469643a6578616d706c653a616c69636565247479706572617470726f746f2d73706163652d7265706f657370616365782e61743a73706163652f6469643a6578616d706c653a73706163652f6170702e62736b792e67726f75702f7465737401146170702e62736b792e666565642e706f73742f3147a36474657874636f6e65652474797065726170702e62736b792e666565642e706f7374696372656174656441747818323032362d31312d30375430303a30303a30302e3030305a01146170702e62736b792e666565642e706f73742f3247a364746578746374776f652474797065726170702e62736b792e666565642e706f7374696372656174656441747818323032362d31312d30375430303a30303a30312e3030305a0112636f6d2e6578616d706c652e6e6f74652f6124a264626f647966c3a920e2988365247479706570636f6d2e6578616d706c652e6e6f746500"
   },
   {
    "profile": "atproto-space-meta",
-   "space": "at://did:plc:x/space/com.example.group/self",
-   "star": "2a6c010052a3637665720165247479706572617470726f746f2d73706163652d6d657461657370616365782b61743a2f2f6469643a706c633a782f73706163652f636f6d2e6578616d706c652e67726f75702f73656c660106706f6c6963795fa5652474797065781e636f6d2e617470726f746f2e6d656d62657273706163652e706f6c6963796a7075626c696352656164f46b7075626c69635772697465f46d7075626c697368506f6c696379f46e7075626c6973684d656d62657273f40128636f6d2e617470726f746f2e6d656d62657273706163652e6d656d6265722f6469643a706c633a6134a36472656164f5652474797065781e636f6d2e617470726f746f2e6d656d62657273706163652e6d656d626572657772697465f50128636f6d2e617470726f746f2e6d656d62657273706163652e6d656d6265722f6469643a706c633a6234a36472656164f5652474797065781e636f6d2e617470726f746f2e6d656d62657273706163652e6d656d626572657772697465f401107772697465722f6469643a706c633a6155a3646461746158203eec5d86f6a29b3971f33a81adac25dd00ead287d1dad54e3c9a12f73be929a8677265706f5265766d336b62637133703761643432326873706163655265766d336b626371337037616434333200"
+   "space": "at:space/did:plc:x/com.example.group/self",
+   "star": "2a6c010050a3637665720165247479706572617470726f746f2d73706163652d6d657461657370616365782961743a73706163652f6469643a706c633a782f636f6d2e6578616d706c652e67726f75702f73656c660106706f6c6963795fa5652474797065781e636f6d2e617470726f746f2e6d656d62657273706163652e706f6c6963796a7075626c696352656164f46b7075626c69635772697465f46d7075626c697368506f6c696379f46e7075626c6973684d656d62657273f40128636f6d2e617470726f746f2e6d656d62657273706163652e6d656d6265722f6469643a706c633a6134a36472656164f5652474797065781e636f6d2e617470726f746f2e6d656d62657273706163652e6d656d626572657772697465f50128636f6d2e617470726f746f2e6d656d62657273706163652e6d656d6265722f6469643a706c633a6234a36472656164f5652474797065781e636f6d2e617470726f746f2e6d656d62657273706163652e6d656d626572657772697465f401107772697465722f6469643a706c633a6155a3646461746158203eec5d86f6a29b3971f33a81adac25dd00ead287d1dad54e3c9a12f73be929a8677265706f5265766d336b62637133703761643432326873706163655265766d336b626371337037616434333200"
   }
  ],
  "httpsig": [
@@ -325,42 +325,42 @@
  "tokens": [
   {
    "type": "delegation",
-   "jwt": "eyJhbGciOiJFUzI1NksiLCJ0eXAiOiJhdHByb3RvLXNwYWNlLWRlbGVnYXRpb24rand0Iiwia2lkIjoiI2F0cHJvdG8ifQ.eyJpc3MiOiJkaWQ6ZXhhbXBsZTphbGljZSIsInN1YiI6ImF0Oi8vZGlkOmV4YW1wbGU6c3BhY2Uvc3BhY2UvYXBwLmJza3kuZ3JvdXAvdGVzdCIsImF1ZCI6ImRpZDpleGFtcGxlOnNwYWNlI2F0cHJvdG9fcGRzIiwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDAwNjAsImp0aSI6IjZiMGY2MGYwMmE4NzJlOWM1NzliOWQwOWVlMWYyMGU2In0.3WCZ-c5H4x6I9YM27geTTJVoI8T0nMN2U93tN-69bGk2s5xOt4IIgBWKtCQ04lm3-LaaqRR9K6dJxqbn4ooGnQ",
+   "jwt": "eyJhbGciOiJFUzI1NksiLCJ0eXAiOiJhdHByb3RvLXNwYWNlLWRlbGVnYXRpb24rand0Iiwia2lkIjoiI2F0cHJvdG8ifQ.eyJpc3MiOiJkaWQ6ZXhhbXBsZTphbGljZSIsInN1YiI6ImF0OnNwYWNlL2RpZDpleGFtcGxlOnNwYWNlL2FwcC5ic2t5Lmdyb3VwL3Rlc3QiLCJhdWQiOiJkaWQ6ZXhhbXBsZTpzcGFjZSNhdHByb3RvX3BkcyIsImlhdCI6MTc5MDAwMDAwMCwiZXhwIjoxNzkwMDAwMDYwLCJqdGkiOiIzMTMwNGUxNDNkY2Q1ZDIyOWIyYzkyNTIwZDlhZmIyOSJ9.Kj73OHqUtWSV6FiZ2xqOrqmQriVllu7K2f9x20PZFNJpqSA-vZKMqqofwUGHEUf7p2SeTnvwh0RIfED4_biNaQ",
    "signingKey": "did:key:zQ3shprik2VuFTZyZYwro9J1fBezmVecCXBwNV2XN1a1PVemR",
    "opts": {
     "iss": "did:example:alice",
-    "sub": "at://did:example:space/space/app.bsky.group/test",
+    "sub": "at:space/did:example:space/app.bsky.group/test",
     "aud": "did:example:space#atproto_pds"
    }
   },
   {
    "type": "credential",
-   "jwt": "eyJhbGciOiJFUzI1NksiLCJ0eXAiOiJhdHByb3RvLXNwYWNlLWNyZWRlbnRpYWwrand0Iiwia2lkIjoiI2F0cHJvdG8ifQ.eyJpc3MiOiJkaWQ6ZXhhbXBsZTpzcGFjZSIsInN1YiI6ImF0Oi8vZGlkOmV4YW1wbGU6c3BhY2Uvc3BhY2UvYXBwLmJza3kuZ3JvdXAvdGVzdCIsImNuZiI6eyJraWQiOiJkaWQ6a2V5OnpEbmFlYWMxZDVGZUxNMzdXdzZ0RXdicnF5emZvTmRKWHluWlhFelZoallRR0RZczkifSwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDA2MDAsImp0aSI6IjZiYTJkZWM0MzE3MmFjMWI1NGU1N2UyOTkyZmZjNmIxIn0.aoMjYnFvY8bfUdPksnE_RK6JQxQtYtqJLLOmbH0fbeRBLfAGguGtZUSZUSu0HQJrNl5jt7tx7uAVAnfMWwwhsw",
+   "jwt": "eyJhbGciOiJFUzI1NksiLCJ0eXAiOiJhdHByb3RvLXNwYWNlLWNyZWRlbnRpYWwrand0Iiwia2lkIjoiI2F0cHJvdG8ifQ.eyJpc3MiOiJkaWQ6ZXhhbXBsZTpzcGFjZSIsInN1YiI6ImF0OnNwYWNlL2RpZDpleGFtcGxlOnNwYWNlL2FwcC5ic2t5Lmdyb3VwL3Rlc3QiLCJjbmYiOnsia2lkIjoiZGlkOmtleTp6RG5hZWFjMWQ1RmVMTTM3V3c2dEV3YnJxeXpmb05kSlh5blpYRXpWaGpZUUdEWXM5In0sImlhdCI6MTc5MDAwMDAwMCwiZXhwIjoxNzkwMDAwNjAwLCJqdGkiOiJhYjg5ZTZlYWI0M2Y4MDI3ODBlMmU4ZTY1YjIwMWRkZCJ9.OZt5E4tCaQQlq8gMBw_vMjbH7TWBTxrCJv65AhefEep4Jhh8fJuUjirNo3qdOLeD2fO2iqojtxV2sVaHms5hFA",
    "signingKey": "did:key:zQ3shgAsMzn37G5McCE3NenQGidUhrBRKFTWegp9uXuYUdXdP",
    "opts": {
     "iss": "did:example:space",
-    "sub": "at://did:example:space/space/app.bsky.group/test",
+    "sub": "at:space/did:example:space/app.bsky.group/test",
     "keyId": "did:key:zDnaeac1d5FeLM37Ww6tEwbrqyzfoNdJXynZXEzVhjYQGDYs9"
    }
   },
   {
    "type": "credential",
-   "jwt": "eyJhbGciOiJFUzI1NksiLCJ0eXAiOiJhdHByb3RvLXNwYWNlLWNyZWRlbnRpYWwrand0Iiwia2lkIjoiI2F0cHJvdG8ifQ.eyJpc3MiOiJkaWQ6ZXhhbXBsZTpzcGFjZSIsInN1YiI6ImF0Oi8vZGlkOmV4YW1wbGU6c3BhY2Uvc3BhY2UvYXBwLmJza3kuZ3JvdXAvdGVzdCIsImNuZiI6eyJraWQiOiJkaWQ6a2V5OnpEbmFlYWMxZDVGZUxNMzdXdzZ0RXdicnF5emZvTmRKWHluWlhFelZoallRR0RZczkifSwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDM2MDAsImp0aSI6ImI1YWExMDFjYjY2MDFmMTg2MjhhZjU3MjM3NzhmZDQxIn0.G0UfWG2NKzxe5K_zwT9ABRqxXHnlTIpKFg8v9MzvGX44JK6-8XHv4DnA0mltOzpmNx8tWS7RWOaPWgMwBj2_0A",
+   "jwt": "eyJhbGciOiJFUzI1NksiLCJ0eXAiOiJhdHByb3RvLXNwYWNlLWNyZWRlbnRpYWwrand0Iiwia2lkIjoiI2F0cHJvdG8ifQ.eyJpc3MiOiJkaWQ6ZXhhbXBsZTpzcGFjZSIsInN1YiI6ImF0OnNwYWNlL2RpZDpleGFtcGxlOnNwYWNlL2FwcC5ic2t5Lmdyb3VwL3Rlc3QiLCJjbmYiOnsia2lkIjoiZGlkOmtleTp6RG5hZWFjMWQ1RmVMTTM3V3c2dEV3YnJxeXpmb05kSlh5blpYRXpWaGpZUUdEWXM5In0sImlhdCI6MTc5MDAwMDAwMCwiZXhwIjoxNzkwMDAzNjAwLCJqdGkiOiJlNjQ2MDAxZTAzMjdjNmUxYTgxMGM3Nzc2OWI0MTEzNSJ9.YJR0vFqlxtXs-ojGnnTn0mBWOAwmVgqtycIrqTABpt8cE8TyBetypposZeFir2nr4kH-yQ3K1AdZioU5U7Ticw",
    "signingKey": "did:key:zQ3shgAsMzn37G5McCE3NenQGidUhrBRKFTWegp9uXuYUdXdP",
    "opts": {
     "iss": "did:example:space",
-    "sub": "at://did:example:space/space/app.bsky.group/test",
+    "sub": "at:space/did:example:space/app.bsky.group/test",
     "keyId": "did:key:zDnaeac1d5FeLM37Ww6tEwbrqyzfoNdJXynZXEzVhjYQGDYs9",
     "expiresInSec": 3600
    }
   },
   {
    "type": "credential",
-   "jwt": "eyJhbGciOiJFUzI1NiIsInR5cCI6ImF0cHJvdG8tc3BhY2UtY3JlZGVudGlhbCtqd3QiLCJraWQiOiIjYXRwcm90byJ9.eyJpc3MiOiJkaWQ6ZXhhbXBsZTpzcGFjZSIsInN1YiI6ImF0Oi8vZGlkOmV4YW1wbGU6c3BhY2Uvc3BhY2UvYXBwLmJza3kuZ3JvdXAvdGVzdCIsImNuZiI6eyJraWQiOiJkaWQ6a2V5OnpEbmFlYWMxZDVGZUxNMzdXdzZ0RXdicnF5emZvTmRKWHluWlhFelZoallRR0RZczkifSwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDA2MDAsImp0aSI6ImQ0NjMzZDlmZWY0NDIxZTNjZTZjMWUxM2UxM2U4MmY4In0.zz5TNQmjZQ27sdDOP2c1c9EHTrGqJahRNtmbup7qaypsRgHfa578WMgNBG1LT_41pZlJR6SKAV5xf_zTQy2bFg",
+   "jwt": "eyJhbGciOiJFUzI1NiIsInR5cCI6ImF0cHJvdG8tc3BhY2UtY3JlZGVudGlhbCtqd3QiLCJraWQiOiIjYXRwcm90byJ9.eyJpc3MiOiJkaWQ6ZXhhbXBsZTpzcGFjZSIsInN1YiI6ImF0OnNwYWNlL2RpZDpleGFtcGxlOnNwYWNlL2FwcC5ic2t5Lmdyb3VwL3Rlc3QiLCJjbmYiOnsia2lkIjoiZGlkOmtleTp6RG5hZWFjMWQ1RmVMTTM3V3c2dEV3YnJxeXpmb05kSlh5blpYRXpWaGpZUUdEWXM5In0sImlhdCI6MTc5MDAwMDAwMCwiZXhwIjoxNzkwMDAwNjAwLCJqdGkiOiJhNzkyY2Q4OTlkMzE5NDZjZWFjNGM2ZjU2M2M4MjgwOSJ9.1vRXX3s65pDRjOwmZleYHNkvZzTjZcWFiL4HTr1k1mA5xsDdnRWyfSVBc6TIhB4h1JXj9QyW7k0oGUNRL1s4xA",
    "signingKey": "did:key:zDnaeTmum8XknmkHfKg5m5ts2nJAGXhed1gtdCiicN35rAcH1",
    "opts": {
     "iss": "did:example:space",
-    "sub": "at://did:example:space/space/app.bsky.group/test",
+    "sub": "at:space/did:example:space/app.bsky.group/test",
     "keyId": "did:key:zDnaeac1d5FeLM37Ww6tEwbrqyzfoNdJXynZXEzVhjYQGDYs9"
    }
   }

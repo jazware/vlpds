@@ -69,7 +69,7 @@ pub fn record(collection: &str, text: &str) -> J {
 
 /// The authority DID of a space URI.
 pub fn authority_of(space: &str) -> &str {
-    space.trim_start_matches("at://").split('/').next().unwrap()
+    space.trim_start_matches("at:space/").split('/').next().unwrap()
 }
 
 pub fn last_segment(uri: &str) -> &str {
@@ -175,7 +175,7 @@ impl Net {
     pub async fn create_space(&self, owner: &SpaceClient, o: SpaceOpts<'_>) -> String {
         let space_type = o.space_type.unwrap_or(TEST_SPACE_TYPE);
         let skey = o.skey.map(String::from).unwrap_or_else(|| format!("s{}", unique_name("")));
-        let uri = format!("at://{}/space/{space_type}/{skey}", owner.did);
+        let uri = format!("at:space/{}/{space_type}/{skey}", owner.did);
         if !o.ungoverned {
             let r = owner
                 .post(
@@ -924,7 +924,7 @@ async fn ref_harness_self_check() {
     let r = http
         .post(format!("{}/xrpc/com.atproto.space.notifySpaceUpdate", svc.url))
         .header("authorization", "Bearer x")
-        .json(&json!({"space": "at://did:plc:a/space/a.b.c/k"}))
+        .json(&json!({"space": "at:space/did:plc:a/a.b.c/k"}))
         .send()
         .await
         .unwrap();
@@ -932,7 +932,7 @@ async fn ref_harness_self_check() {
     // confirmRegistration echoes its challenge whatever `respond` says
     let echo: J = http
         .post(format!("{}/xrpc/com.atproto.space.confirmRegistration", svc.url))
-        .json(&json!({"space": "at://did:plc:a/space/a.b.c/k", "token": "t", "challenge": "c1"}))
+        .json(&json!({"space": "at:space/did:plc:a/a.b.c/k", "token": "t", "challenge": "c1"}))
         .send()
         .await
         .unwrap()
@@ -942,7 +942,7 @@ async fn ref_harness_self_check() {
     assert_eq!(echo, json!({"challenge": "c1"}));
     let calls = svc.calls_to("com.atproto.space.notifySpaceUpdate");
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].body["space"], json!("at://did:plc:a/space/a.b.c/k"));
+    assert_eq!(calls[0].body["space"], json!("at:space/did:plc:a/a.b.c/k"));
     assert_eq!(calls[0].auth.as_deref(), Some("Bearer x"));
     svc.serve_doc(false);
     assert_eq!(http.get(format!("{}/.well-known/did.json", svc.url)).send().await.unwrap().status().as_u16(), 500);
@@ -974,7 +974,7 @@ async fn ref_harness_self_check() {
 
     let tok = svc.token(
         TokenType::Delegation,
-        Mint { iss: &svc.did, sub: "at://x/space/a.b.c/k", aud: Some("y"), ..Default::default() },
+        Mint { iss: &svc.did, sub: "at:space/x/a.b.c/k", aud: Some("y"), ..Default::default() },
     );
     let parsed = token::parse(TokenType::Delegation, &tok).unwrap();
     parsed.verify_signature(&svc.key.did_key()).expect("a hand-minted token verifies under its signer's key");

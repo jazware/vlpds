@@ -1,3 +1,4 @@
+import { spaceUriParts } from '../spaces'
 import { admin, XrpcError } from '../xrpc'
 import { K } from './keys'
 import { mutate, patchAccountRow } from './mutate'
@@ -105,10 +106,10 @@ export const subjectQuery = (s: SubjectRef) =>
 /** at://did/collection/rkey → collection/rkey. */
 export const shortUri = (uri: string) => uri.replace(/^at:\/\/[^/]+\//, '')
 
-/** at://{authority}/space/{type}/{skey}/{author}/{collection}/{rkey} */
+/** A record in a space, in either URI form. */
 export function spaceRecordParts(uri: string) {
-  const p = uri.replace(/^at:\/\//, '').split('/')
-  return { space: `at://${p.slice(0, 4).join('/')}`, collection: p[5], rkey: p[6] }
+  const p = spaceUriParts(uri)
+  return { space: p?.space ?? '', collection: p?.record?.collection, rkey: p?.record?.rkey }
 }
 
 /** Decimal units, as --blob-quota-gb. */
@@ -238,7 +239,7 @@ export function moderate(s: SubjectRef, restore: boolean, reason: string, caseId
       { kind: 'takedown', id: subjectQuery(s) },
       ...(caseId ? [{ kind: 'case', id: caseId }] : []),
       // a space, or a record in one: the space's page lists its taken-down records
-      ...(s.uri?.includes('/space/') ? [{ kind: 'space', id: s.kind === 'space' ? s.uri : spaceRecordParts(s.uri).space }] : []),
+      ...(s.uri && spaceUriParts(s.uri) ? [{ kind: 'space', id: s.kind === 'space' ? s.uri : spaceRecordParts(s.uri).space }] : []),
     ],
   })
 }

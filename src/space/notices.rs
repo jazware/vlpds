@@ -67,6 +67,7 @@ impl Notice {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NoticeRow {
+    #[serde(with = "crate::state::stored_uri")]
     pub uri: String,
     pub endpoint: String,
     pub token: String,
@@ -368,7 +369,7 @@ mod tests {
     fn rows_round_trip() {
         for notice in [Notice::SpaceDeleted, expired(Tid(77))] {
             let r = NoticeRow {
-                uri: "at://did:plc:a/space/t.t/k".into(),
+                uri: "at:space/did:plc:a/t.t/k".into(),
                 endpoint: "https://s".into(),
                 token: "tok".into(),
                 notice,
@@ -376,7 +377,10 @@ mod tests {
                 retry_at: 5,
                 expires: 9,
             };
-            assert_eq!(serde_json::from_slice::<NoticeRow>(&serde_json::to_vec(&r).unwrap()).unwrap(), r);
+            let stored = serde_json::to_vec(&r).unwrap();
+            assert_eq!(serde_json::from_slice::<NoticeRow>(&stored).unwrap(), r);
+            // stored in the form before Nov 24, which an older build reads
+            assert!(String::from_utf8(stored).unwrap().contains(r#""uri":"at://did:plc:a/space/t.t/k""#));
         }
         // a row as notifySpaceDeleted's retries wrote it
         let old =

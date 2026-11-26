@@ -19,7 +19,10 @@ fn space_key(fam: &[u8], did: &str, space: &str, rest: &[u8]) -> Vec<u8> {
     let mut k = vlsync_store::keys::slot_family(vlsync_store::slots::slot_of(did), fam);
     k.extend_from_slice(did.as_bytes());
     k.push(0);
-    k.extend_from_slice(&sha2::Sha256::digest(space.as_bytes())[..16]);
+    // a sid hashes the form before the Nov 24 alpha, so stored keys didn't move
+    let (authority, path) = space.strip_prefix("at:space/").unwrap().split_once('/').unwrap();
+    let stored = format!("at://{authority}/space/{path}");
+    k.extend_from_slice(&sha2::Sha256::digest(stored.as_bytes())[..16]);
     k.extend_from_slice(rest);
     k
 }
@@ -28,7 +31,7 @@ fn space_key(fam: &[u8], did: &str, space: &str, rest: &[u8]) -> Vec<u8> {
 async fn check_space_takes_a_space_uri() {
     let (r, _) = admin_cli("http://127.0.0.1:9", &["check-space", "did:plc:abc", "com.example.x"]).await;
     assert!(r.unwrap_err().to_string().contains("space URI"));
-    let (r, _) = admin_cli("http://127.0.0.1:9", &["check-space", "abc", "at://did:plc:abc/space/a.b.c/x"]).await;
+    let (r, _) = admin_cli("http://127.0.0.1:9", &["check-space", "abc", "at:space/did:plc:abc/a.b.c/x"]).await;
     assert!(r.unwrap_err().to_string().contains("must start with \"did:\""));
 }
 
@@ -36,7 +39,7 @@ async fn check_space_takes_a_space_uri() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn check_space_is_unknown_with_spaces_off() {
     let s = TestServer::spawn().await;
-    let q = [("did", "did:plc:abc"), ("space", "at://did:plc:abc/space/a.b.c/x")];
+    let q = [("did", "did:plc:abc"), ("space", "at:space/did:plc:abc/a.b.c/x")];
     let got = s.xrpc.get("vlpds.admin.checkSpace", &q, &Auth::Admin).await;
     let unknown = s.xrpc.get("vlpds.admin.checkSpaceZz", &q, &Auth::Admin).await;
     assert_eq!((got.status, &got.json), (unknown.status, &unknown.json), "{}", got.text());
@@ -54,7 +57,7 @@ async fn check_space_finds_damaged_rows() {
     let did = sc.did.clone();
 
     // never written: no repo here
-    let (r, _) = admin_cli(u, &["check-space", &did, "at://did:plc:nobody/space/a.b.c/x"]).await;
+    let (r, _) = admin_cli(u, &["check-space", &did, "at:space/did:plc:nobody/a.b.c/x"]).await;
     assert!(r.is_err(), "a space with no rows");
 
     for i in 0..6 {

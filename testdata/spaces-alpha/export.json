@@ -1,7 +1,7 @@
 {
   "generatedBy": "gen-export.mjs: @atproto/space writeRepoStar + RepoCommit.toCommit at the commit in SOURCE",
   "did": "did:plc:vlpdsspacesrefexport2345",
-  "space": "at://did:plc:vlpdsspacesrefexport2345/space/com.example.group/refexport",
+  "space": "at:space/did:plc:vlpdsspacesrefexport2345/com.example.group/refexport",
   "rev": "3mvzvh4fs222b",
   "data": "2874a10b98cca4199efab5ad26f953a45b9c05649d0b8a73c7833b4f8d2944aa",
   "blob": {

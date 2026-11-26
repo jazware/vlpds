@@ -607,7 +607,7 @@ mod tests {
     fn fwd(reg: &str, writer: &str, rev: u64, prev: Option<u64>) -> Forward {
         Forward {
             authority: "did:plc:auth".into(),
-            uri: "at://did:plc:auth/space/t/k".into(),
+            uri: "at:space/did:plc:auth/t/k".into(),
             reg: crate::state::registration_id("https://syncer.example", reg),
             endpoint: "https://syncer.example".into(),
             token: reg.into(),

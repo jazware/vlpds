@@ -73,14 +73,14 @@ async fn admin_only_and_off_without_the_flag() {
 
     let off = TestServer::spawn_with(|c| c.spaces = false).await;
     let b = off.create_account("scoff").await;
-    let q = [("did", b.did.as_str()), ("uri", "at://did:plc:x/space/com.example.group/main")];
+    let q = [("did", b.did.as_str()), ("uri", "at:space/did:plc:x/com.example.group/main")];
     for m in READS {
         off.xrpc.get(m, &q, &Auth::None).await.err_status(401);
         let r = off.xrpc.get(m, &q, &Auth::Admin).await;
         r.err(501, "MethodNotImplemented");
         assert!(r.text().contains("--spaces"), "{m}: {}", r.text());
     }
-    let body = json!({"did": b.did, "space": "at://did:plc:x/space/com.example.group/main", "registration": "00".repeat(32), "reason": "r"});
+    let body = json!({"did": b.did, "space": "at:space/did:plc:x/com.example.group/main", "registration": "00".repeat(32), "reason": "r"});
     off.xrpc.post("vlpds.admin.removeSpaceRegistration", &body, &Auth::Admin).await.err(501, "MethodNotImplemented");
 }
 
@@ -146,7 +146,7 @@ async fn views_are_metadata_only() {
     // a space is looked up at its authority
     let q = [("did", m.did.as_str()), ("uri", big.as_str())];
     s.xrpc.get("vlpds.admin.getSpaceInfo", &q, &Auth::Admin).await.err(400, "InvalidRequest");
-    let gone = format!("at://{}/space/{TYPE}/nope", owner.did);
+    let gone = format!("at:space/{}/{TYPE}/nope", owner.did);
     let q = [("did", owner.did.as_str()), ("uri", gone.as_str())];
     s.xrpc.get("vlpds.admin.getSpaceInfo", &q, &Auth::Admin).await.err(400, "SpaceNotFound");
 

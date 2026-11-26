@@ -1,4 +1,4 @@
-//! Ported from the reference's `tests/space/records.test.ts` (67476105):
+//! Ported from the reference's `tests/space/records.test.ts` (1f510f8e):
 //! reading and writing records in a space. Each test names its reference
 //! case.
 //!
@@ -345,6 +345,19 @@ async fn refuses_a_record_over_the_size_limit() {
     let r = write(&alice, &space, W::new().text(&"x".repeat(1_000_000))).await;
     assert!(r.status == 413 || r.text().contains("record too large"), "{}", r.text());
     write(&alice, &space, W::new().text(&"x".repeat(990_000))).await.ok();
+}
+
+/// validation: "refuses a space param in its alpha form" (the form before
+/// the Nov 24 alpha, `at://{spaceDid}/space/...`: params are strict).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn refuses_a_space_param_in_its_alpha_form() {
+    let net = Net::new(0).await;
+    let alice = net.actor("alice", 0).await;
+    let space = net.create_space(&alice, SpaceOpts::default()).await;
+    let (authority, rest) = space.strip_prefix("at:space/").unwrap().split_once('/').unwrap();
+    let legacy = format!("at://{authority}/space/{rest}");
+    write(&alice, &legacy, W::new().text("old")).await.err(400, "InvalidRequest");
+    write(&alice, &space, W::new().text("new")).await.ok();
 }
 
 /// listRecords: "paginates across collections"

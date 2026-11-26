@@ -108,7 +108,7 @@ pub fn one_did(v: &J) -> J {
 
 /// A space URI.
 pub fn space_uri(authority: &str, space_type: &str, skey: &str) -> String {
-    format!("at://{authority}/space/{space_type}/{skey}")
+    format!("at:space/{authority}/{space_type}/{skey}")
 }
 
 impl SpaceClient {

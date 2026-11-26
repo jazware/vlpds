@@ -73,7 +73,7 @@ let space
 try {
   const cs = await me.com.atproto.space.createSpace({ spaceType: TYPE, skey, policy: { $type: 'com.atproto.memberspace.policy' } })
   space = cs.data.space
-  check(space === `at://${did}/space/${TYPE}/${skey}`, 'createSpace', space)
+  check(space === `at:space/${did}/${TYPE}/${skey}`, 'createSpace', space)
 
   const t0 = performance.now()
   const w = await me.com.atproto.space.createRecord({

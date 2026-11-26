@@ -96,6 +96,7 @@ pub struct Doc {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
+    #[serde(with = "crate::state::stored_uri")]
     pub space: String,
     pub jti: String,
     /// Unix seconds.
@@ -107,6 +108,7 @@ pub struct Entry {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Block {
+    #[serde(with = "crate::state::stored_uri")]
     pub space: String,
     /// Unix seconds.
     pub until: i64,
@@ -261,7 +263,7 @@ fn is_zero<T: Default + PartialEq>(n: &T) -> bool {
 
 /// A space URI's authority.
 pub fn authority_of(space: &str) -> Option<&str> {
-    space.strip_prefix("at://")?.split('/').next()
+    space.strip_prefix(vlatproto::syntax::SPACE_URI_PREFIX)?.split('/').next().filter(|a| !a.is_empty())
 }
 
 /// A jti a revocation may name: 1 to [`MAX_JTI_LEN`] printable ASCII
@@ -718,7 +720,7 @@ mod tests {
     }
 
     fn space(a: usize, k: usize) -> String {
-        format!("at://did:web:a{a}.example/space/t.t/k{k}")
+        format!("at:space/did:web:a{a}.example/t.t/k{k}")
     }
 
     /// The object stays small whoever notifies: caps per authority, space
@@ -768,7 +770,7 @@ mod tests {
     }
 
     fn auth_space(a: &str, k: usize) -> String {
-        format!("at://{a}/space/t.t/k{k}")
+        format!("at:space/{a}/t.t/k{k}")
     }
 
     /// A refused revocation blocks its space; past the per-authority cap the

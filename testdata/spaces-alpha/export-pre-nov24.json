@@ -1,0 +1,39 @@
+{
+  "generatedBy": "gen-export.mjs: @atproto/space writeRepoStar + RepoCommit.toCommit at the commit in SOURCE",
+  "did": "did:plc:vlpdsspacesrefexport2345",
+  "space": "at://did:plc:vlpdsspacesrefexport2345/space/com.example.group/refexport",
+  "rev": "3mvzvh4fs222b",
+  "data": "2874a10b98cca4199efab5ad26f953a45b9c05649d0b8a73c7833b4f8d2944aa",
+  "blob": {
+    "cid": "bafkreicolnfocmtylgp4dpek4lw32lxwckiaaaglzedqqgrixrdax7cp6m",
+    "bytesHex": "c289504e470d0a1a0a20766c70647320737061636573207265666572656e6365206578706f727420626c6f62",
+    "mimeType": "image/png"
+  },
+  "records": [
+    {
+      "collection": "com.example.spaceNote",
+      "rkey": "3lzzzzzzzzz23",
+      "cid": "bafyreicmm2fya2fotr6xkm6su66ijcyntmap7j6avopgcu2inemjnv5pba"
+    },
+    {
+      "collection": "com.example.spaceNote",
+      "rkey": "longer-record-key-than-the-others",
+      "cid": "bafyreiaq5uo6nvixndwvnm5golwc62yqh642fpnma2mnendousk5khntpq"
+    },
+    {
+      "collection": "com.example.spaceRecord",
+      "rkey": "3lzzzzzzzzz22",
+      "cid": "bafyreidyb5endvknt7zzamrb3yut6e4u5bxaklpnbgxgdxfydigcuvgccu"
+    },
+    {
+      "collection": "com.example.spaceRecord",
+      "rkey": "a",
+      "cid": "bafyreihpcfvlwmqths67nr4d7up7m5grcynjknfazomc36lo3yjnrvijru"
+    },
+    {
+      "collection": "com.example.spaceRecord",
+      "rkey": "self",
+      "cid": "bafyreidlc3xrdsmdz74qlt5qm4trfdveosgfkcfffa5a5ftkqu7zpsb2s4"
+    }
+  ]
+}

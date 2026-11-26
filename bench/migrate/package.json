@@ -4,17 +4,7 @@
   "type": "module",
   "dependencies": {
     "playwright": "1.63.0",
-    "@atproto/space": "0.0.0-spaces-alpha-20261113224550",
-    "@atproto/crypto": "0.0.0-spaces-alpha-20261113224550"
-  },
-  "//overrides": "the alpha packages depend on ^0.0.0-spaces-alpha-*, which npm resolves to a broken prerelease (0.0.0-stage, or a 0.0.0 with workspace: deps) where one was published; pin those to the release",
-  "overrides": {
-    "@atproto/lex-json": "0.0.0-spaces-alpha-20261113224550",
-    "@atproto/lex-cbor": "0.0.0-spaces-alpha-20261113224550",
-    "@atproto/lex-data": "0.0.0-spaces-alpha-20261113224550",
-    "@atproto/common-web": "0.0.0-spaces-alpha-20261113224550",
-    "@atproto/syntax": "0.0.0-spaces-alpha-20261113224550",
-    "@atproto/car": "0.0.0-spaces-alpha-20261113224550",
-    "@atproto/star": "0.0.0-spaces-alpha-20261113224550"
+    "@atproto/space": "0.0.0-spaces-alpha-20261124235736",
+    "@atproto/crypto": "0.0.0-spaces-alpha-20261124235736"
   }
 }

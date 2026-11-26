@@ -213,7 +213,7 @@ async fn space_lifecycle_and_config() {
     let other = SpaceClient::new(&s, "shl2", MANAGER).await;
     let r = create(&owner, "main", ms(json!({}))).await;
     let space = r.ok()["space"].as_str().unwrap().to_string();
-    assert_eq!(space, format!("at://{}/space/{TYPE}/main", owner.did));
+    assert_eq!(space, format!("at:space/{}/{TYPE}/main", owner.did));
     create(&owner, "main", ms(json!({}))).await.err(400, "SpaceAlreadyExists");
     // an auto-generated skey is a TID
     let auto = owner
@@ -237,7 +237,17 @@ async fn space_lifecycle_and_config() {
     // an unknown policy is refused, not stored
     create(&owner, "x1", json!({"$type": "com.example.otherPolicy"})).await.err(400, "UnsupportedPolicy");
     create(&owner, "x2", managing("not-a-did")).await.err(400, "InvalidRequest");
-    get_space(&owner, &format!("at://{}/space/{TYPE}/x1", owner.did)).await.err(400, "SpaceNotFound");
+    get_space(&owner, &format!("at:space/{}/{TYPE}/x1", owner.did)).await.err(400, "SpaceNotFound");
+    // the form before the Nov 24 alpha is refused in params, as the reference refuses it
+    let old = format!("at://{}/space/{TYPE}/main", owner.did);
+    get_space(&owner, &old).await.err(400, "InvalidRequest");
+    owner
+        .post(
+            "com.atproto.space.createRecord",
+            json!({"space": old, "repo": owner.did, "collection": "com.example.post", "record": rec("x")}),
+        )
+        .await
+        .err(400, "InvalidRequest");
 
     // stored normalized: defaults filled in, unknown fields dropped
     let got = get_space(&owner, &space).await.ok();
@@ -263,7 +273,7 @@ async fn space_lifecycle_and_config() {
     );
     update(json!({"space": space})).await.err(400, "InvalidRequest");
     update(json!({"space": space, "policy": {"$type": "nope.nope.nope"}})).await.err(400, "UnsupportedPolicy");
-    update(json!({"space": format!("at://{}/space/{TYPE}/none", owner.did), "policy": ms(json!({}))}))
+    update(json!({"space": format!("at:space/{}/{TYPE}/none", owner.did), "policy": ms(json!({}))}))
         .await
         .err(400, "SpaceNotFound");
     let r = other.post("com.atproto.space.updateSpace", json!({"space": space, "policy": ms(json!({}))})).await;
@@ -273,7 +283,7 @@ async fn space_lifecycle_and_config() {
     let r = reader
         .post(
             "com.atproto.space.updateSpace",
-            json!({"space": format!("at://{}/space/{TYPE}/main", reader.did), "policy": ms(json!({}))}),
+            json!({"space": format!("at:space/{}/{TYPE}/main", reader.did), "policy": ms(json!({}))}),
         )
         .await;
     assert_eq!(r.status, 403, "{r:?}");
@@ -319,7 +329,7 @@ async fn member_list() {
         )
         .await;
     r.err(400, "InvalidRequest");
-    let none = format!("at://{}/space/{TYPE}/none", owner.did);
+    let none = format!("at:space/{}/{TYPE}/none", owner.did);
     put_member(&owner, &none, &member.did, true, true).await.err(400, "SpaceNotFound");
     members(&owner, &none, &[]).await.err(400, "SpaceNotFound");
 
@@ -377,10 +387,10 @@ async fn credential_gates() {
         create(&owner, "public", ms(json!({"publicRead": true}))).await.ok()["space"].as_str().unwrap().to_string();
     stranger.try_credential_at(&s.url, &public, None).await.ok();
     // a space this host doesn't govern, or that was never created
-    let elsewhere = format!("at://{}/space/{TYPE}/x", dead_did().await);
+    let elsewhere = format!("at:space/{}/{TYPE}/x", dead_did().await);
     let r = stranger.try_credential_at(&s.url, &elsewhere, None).await;
     r.err(400, "SpaceNotFound");
-    let uncreated = format!("at://{}/space/{TYPE}/never", owner.did);
+    let uncreated = format!("at:space/{}/{TYPE}/never", owner.did);
     stranger.try_credential_at(&s.url, &uncreated, None).await.err(400, "SpaceNotFound");
 }
 
@@ -564,7 +574,7 @@ async fn delete_space_tombstones_and_recreates_fresh() {
     // deleting again is fine
     owner.post("com.atproto.space.deleteSpace", json!({"space": space})).await.ok();
     owner
-        .post("com.atproto.space.deleteSpace", json!({"space": format!("at://{}/space/{TYPE}/never", owner.did)}))
+        .post("com.atproto.space.deleteSpace", json!({"space": format!("at:space/{}/{TYPE}/never", owner.did)}))
         .await
         .err(400, "SpaceNotFound");
 
@@ -590,7 +600,7 @@ async fn delete_space_tombstones_and_recreates_fresh() {
 async fn owner_writes_need_the_space() {
     let s = spawn().await;
     let owner = SpaceClient::new(&s, "shw1", OWNER).await;
-    let space = format!("at://{}/space/{TYPE}/early", owner.did);
+    let space = format!("at:space/{}/{TYPE}/early", owner.did);
     owner.create_record(&space, COLL, Some("1"), rec("early")).await.err(400, "SpaceNotFound");
     create(&owner, "early", ms(json!({}))).await.ok();
     owner.create_record(&space, COLL, Some("1"), rec("on time")).await.ok();
@@ -735,7 +745,7 @@ async fn notify_write_from_another_vlpds() {
     notify(&b, &a, &stranger.did, &aud, body(&stranger.did, &now)).await.err_status(403);
     notify(&b, &a, &reader.did, &aud, body(&reader.did, &now)).await.err_status(403);
     // a space B doesn't govern
-    let foreign = format!("at://{}/space/{TYPE}/x", member.did);
+    let foreign = format!("at:space/{}/{TYPE}/x", member.did);
     let r = notify(
         &b,
         &a,
@@ -877,7 +887,7 @@ async fn get_repo_star() {
     let r = owner
         .get(
             "com.atproto.space.getRepo",
-            &[("space", &format!("at://{}/space/{TYPE}/none", owner.did)), ("repo", &owner.did)],
+            &[("space", &format!("at:space/{}/{TYPE}/none", owner.did)), ("repo", &owner.did)],
         )
         .await;
     r.err(400, "RepoNotFound");

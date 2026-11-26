@@ -3,18 +3,13 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@atproto/api": "0.0.0-spaces-alpha-20261113224550",
-    "@atproto/car": "0.0.0-spaces-alpha-20261113224550",
-    "@atproto/crypto": "0.0.0-spaces-alpha-20261113224550",
-    "@atproto/lex-cbor": "0.0.0-spaces-alpha-20261113224550",
-    "@atproto/lex-data": "0.0.0-spaces-alpha-20261113224550",
-    "@atproto/space": "0.0.0-spaces-alpha-20261113224550",
-    "@atproto/syntax": "0.0.0-spaces-alpha-20261113224550",
+    "@atproto/api": "0.0.0-spaces-alpha-20261124235736",
+    "@atproto/car": "0.0.0-spaces-alpha-20261124235736",
+    "@atproto/crypto": "0.0.0-spaces-alpha-20261124235736",
+    "@atproto/lex-cbor": "0.1.11",
+    "@atproto/lex-data": "0.1.11",
+    "@atproto/space": "0.0.0-spaces-alpha-20261124235736",
+    "@atproto/syntax": "0.0.0-spaces-alpha-20261124235736",
     "@did-plc/lib": "0.0.4"
-  },
-  "//overrides": "the alpha packages depend on ^0.0.0-spaces-alpha-*, which npm resolves to a broken prerelease (0.0.0-stage, or a 0.0.0 with workspace: deps) where one was published; pin those to the release",
-  "overrides": {
-    "@atproto/lex-json": "0.0.0-spaces-alpha-20261113224550",
-    "@atproto/star": "0.0.0-spaces-alpha-20261113224550"
   }
 }

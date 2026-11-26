@@ -1,4 +1,4 @@
-//! Ported from the reference's `tests/space/policy.test.ts` (67476105):
+//! Ported from the reference's `tests/space/policy.test.ts` (1f510f8e):
 //! the `com.atproto.space` lifecycle methods and the baseline policies
 //! (`personalspace`, `memberspace`, `managedspace`), with the records a
 //! policy publishes. Each test names its reference case. The
@@ -70,7 +70,7 @@ async fn creates_a_space_anchored_on_the_caller() {
         .await
         .ok();
     let space = r["space"].as_str().unwrap().to_string();
-    assert!(space.starts_with(&format!("at://{}/space/{TEST_SPACE_TYPE}/", alice.did)), "{space}");
+    assert!(space.starts_with(&format!("at:space/{}/{TEST_SPACE_TYPE}/", alice.did)), "{space}");
     assert!(vlatproto::tid::Tid::parse(last_segment(&space)).is_some(), "the key is a TID: {space}");
     let listed = alice.get("com.atproto.space.listSpaces", &[]).await.ok();
     assert!(uris(&listed).contains(&space), "{listed}");
@@ -143,7 +143,7 @@ async fn listed_view(actor: &SpaceClient, authority: &str, target: &str) -> Opti
 async fn refuses_an_owner_write_until_create_space() {
     let net = Net::new(0).await;
     let alice = net.actor("alice", 0).await;
-    let space = format!("at://{}/space/{TEST_SPACE_TYPE}/lazy", alice.did);
+    let space = format!("at:space/{}/{TEST_SPACE_TYPE}/lazy", alice.did);
     write(&alice, &space, W::new().text("too early")).await.err(400, "SpaceNotFound");
     net.create_space(&alice, SpaceOpts { skey: Some("lazy"), ..Default::default() }).await;
     write(&alice, &space, W::new().text("lazy space")).await.ok();

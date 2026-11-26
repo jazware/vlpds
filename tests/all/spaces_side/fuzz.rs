@@ -295,10 +295,11 @@ impl Account {
 }
 
 fn uri_path(uri: &str) -> String {
-    // at://{authority}/space/{type}/{skey}/{author}/{collection}/{rkey}
-    let parts: Vec<&str> = uri.trim_start_matches("at://").split('/').collect();
-    assert!(parts.len() == 7 && parts[1] == "space", "not a space record URI: {uri}");
-    format!("{}/{}", parts[5], parts[6])
+    // at:space/{authority}/{type}/{skey}/{author}/{collection}/{rkey}
+    let parts: Vec<&str> =
+        uri.strip_prefix("at:space/").unwrap_or_else(|| panic!("not a space URI: {uri}")).split('/').collect();
+    assert!(parts.len() == 6, "not a space record URI: {uri}");
+    format!("{}/{}", parts[4], parts[5])
 }
 
 pub(super) fn bytes_field(v: &J) -> Vec<u8> {

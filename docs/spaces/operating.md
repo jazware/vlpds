@@ -33,7 +33,7 @@ it. With no space traffic, a node with it on makes one conditional GET of the re
 
 ## What you get with `--spaces`
 
-A node with the flag serves every Spaces method a PDS serves at the `67476105` pin, in both roles.
+A node with the flag serves every Spaces method a PDS serves at the `1f510f8e` pin, in both roles.
 As a repo host it holds your accounts' space repos. As a space host it runs the spaces your
 accounts govern, under the baseline policies (`personalspace`, `memberspace`, `managedspace`).
 Nothing is proxied to another host.

@@ -13,6 +13,7 @@ import { useAdminQuery } from '../../lib/console/query'
 import { subjectTone } from '../../lib/console/status'
 import { spacesStatusQ, type SpacesStatus } from '../../lib/console/sys'
 import { Link, navigate, useSearch } from '../../lib/router'
+import { spaceUriParts } from '../../lib/spaces'
 import { admin, call } from '../../lib/xrpc'
 
 type HealthRow = { node: string; status?: SpacesStatus; error?: unknown }
@@ -64,15 +65,10 @@ export const spaceUrl = (uri: string) => `/admin/spaces?open=${encodeURIComponen
 const accountUrl = (did: string) => `/admin/accounts/${encodeURIComponent(did)}`
 const lookupUrl = (q: string) => `/admin/moderation?q=${encodeURIComponent(q)}`
 
-/** at://{authority}/space/{type}/{skey}[/{author}/{collection}/{rkey}] */
-export function parseSpaceUri(s: string) {
-  const m = /^at:\/\/([^/]+)\/space\/([^/]+)\/([^/]+)(?:\/([^/]+)\/([^/]+)\/([^/]+))?\/?$/.exec(s.trim())
-  if (!m) return null
-  return { space: `at://${m[1]}/space/${m[2]}/${m[3]}`, authority: m[1], record: m[4] ? { author: m[4], collection: m[5], rkey: m[6] } : undefined }
-}
+export const parseSpaceUri = spaceUriParts
 const spaceLabel = (uri: string) => {
-  const p = uri.replace(/^at:\/\//, '').split('/')
-  return `${p[2]} / ${p[3]}`
+  const p = spaceUriParts(uri)
+  return `${p?.type} / ${p?.skey}`
 }
 
 /** Whether this server runs Spaces (describeServer's `vlpds.spaces`). */
@@ -594,7 +590,7 @@ registerDetail('space', {
       l.reload()
       audit.reload()
     }
-    if (!p || p.record) return { title: <span className="mono sm">{uri}</span>, body: null, missing: 'Not a space URI (at://authority/space/type/key).' }
+    if (!p || p.record) return { title: <span className="mono sm">{uri}</span>, body: null, missing: 'Not a space URI (at:space/authority/type/key).' }
     if (l.error) return { title: spaceLabel(uri), body: <ErrorState error={l.error} retry={l.reload} /> }
     const d = l.data
     if (!d) return { title: spaceLabel(uri), body: null, loading: true }
@@ -766,7 +762,7 @@ registerDetail('space', {
       <Sec title="Space" digest={`${s.readPolicy} read · ${s.writePolicy} write`} open>
         <KV
           rows={[
-            ['URI', <Copy text={s.uri}>{`at://${shortDid(s.authority)}/space/${s.spaceType}/${s.skey}`}</Copy>],
+            ['URI', <Copy text={s.uri}>{`at:space/${shortDid(s.authority)}/${s.spaceType}/${s.skey}`}</Copy>],
             ['Authority', <Who did={s.authority} handle={s.handle} />],
             ['Policy', <span className="mono">{s.policy}</span>],
             ['Read / write', `${s.readPolicy} / ${s.writePolicy}`],

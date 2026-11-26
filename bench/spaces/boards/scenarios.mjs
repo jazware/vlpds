@@ -341,7 +341,7 @@ export async function runConfig(rep, cfg, env) {
 
   await step('1.create-board', async (check) => {
     S.board = await S.aliceC.createBoard(`${SENTINEL}rust`, { name: 'rustaceans', description: `crabs only ${SENTINEL}`, flairs: ['question', 'show-and-tell'] })
-    check(S.board === `at://${S.alice.did}/space/${C.post.replace('.post', '.board')}/${SENTINEL}rust`, 'the board is a space anchored on alice', S.board)
+    check(S.board === `at:space/${S.alice.did}/${C.post.replace('.post', '.board')}/${SENTINEL}rust`, 'the board is a space anchored on alice', S.board)
     await S.aliceC.addMember(S.board, S.bob.did)
     await S.aliceC.addMember(S.board, S.carol.did)
     await S.aliceC.addMember(S.board, S.dave.did, { write: false })

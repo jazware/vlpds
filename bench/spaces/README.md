@@ -24,9 +24,9 @@ passwords and keys are generated per run (or are fixed test values in this direc
 
 - A PLC directory on `127.0.0.1:2860` (the `did-method-plc` image bench/migrate builds).
 - Two reference PDSes, `ref-a` on `localhost:2861` and `ref-b` on `localhost:2862`. They're built by
-  `refpds.sh` from bluesky-social/atproto at the pin `67476105` (branch `permissioned-data`, the
-  Nov 17 alpha; its lexicons and `@atproto/space` are those of the `0.0.0-spaces-alpha-20261113224550`
-  npm release the driver uses), cloned blobless into
+  `refpds.sh` from bluesky-social/atproto at the pin `1f510f8e` (branch `permissioned-data-alpha`,
+  the Nov 24 alpha, published on npm as `0.0.0-spaces-alpha-20261124235736`, the release the
+  driver uses), cloned blobless into
   `.scratch/atproto`. The published `pds-spaces-alpha` image has the same packages but is amd64
   only, so it doesn't run here. Set `REF_PDS_IMAGE` to use it on a host that can.
 - MinIO on `127.0.0.1:2868` (the repo's `vlpds-minio:local` image). vlpds keeps its state there, so a
@@ -100,7 +100,7 @@ bench/spaces/r2-clean.sh bench/<run-id>          # afterwards, with the prefix r
 ## How the driver acts like an app
 
 The wire is what a real app sends. Calls go through `@atproto/api` at the Spaces alpha
-(`0.0.0-spaces-alpha-20261113224550`), which also validates every response against the lexicons.
+(`0.0.0-spaces-alpha-20261124235736`), which also validates every response against the lexicons.
 Credentials, HTTP message signatures, KEM encapsulation, MACs, LtHash and STAR verification come
 from `@atproto/space` at the same version.
 

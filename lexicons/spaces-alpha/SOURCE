@@ -2,9 +2,11 @@ AT Protocol Spaces lexicons (the permissioned-data alpha), copied unmodified
 from the reference implementation:
 
   repo:   https://github.com/bluesky-social/atproto
-  branch: permissioned-data (PR #5187)
-  commit: 6747610566eee1b6d743617bd8eb1136adccb362
-          (the four directories are unchanged since 16bfeba7, the Nov 13 alpha)
+  branch: permissioned-data-alpha (PR #5187; the published Nov 24 alpha)
+  commit: 1f510f8e36a973f6fd055da349b586918805ae66
+          (the four directories are unchanged since 16bfeba7, the Nov 13 alpha:
+          the Nov 24 alpha changes no space lexicon's shape, only the URI form
+          their `space-ref` and `at-uri` values carry)
   paths:  lexicons/com/atproto/space/*.json          (methods, defs, the policy record)
           lexicons/com/atproto/memberspace/*.json    (policy, member record, member methods, defs)
           lexicons/com/atproto/managedspace/*.json   (policy, checkAccess)

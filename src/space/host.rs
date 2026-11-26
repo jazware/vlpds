@@ -261,10 +261,47 @@ async fn post_endpoint(app: &App, endpoint: &str, lxm: &str, body: &J) -> Result
 fn outcome(r: Result<(u16, J), String>) -> Sent {
     match r {
         Ok((s, _)) if (200..300).contains(&s) => Sent::Delivered,
-        Ok((s, _)) if crate::xrpc::space::retryable_status(s) => Sent::Retry(format!("status {s}")),
-        Ok((s, _)) => Sent::Refused(format!("status {s}")),
+        Ok((s, b)) if crate::xrpc::space::retryable_status(s) => Sent::Retry(describe(s, &b)),
+        Ok((s, b)) => Sent::Refused(describe(s, &b)),
         Err(e) => Sent::Retry(e),
     }
+}
+
+/// A failed XRPC answer for the logs: `status {s}: {error}: {message}`. The
+/// logs name spaces by id only, so a word of the message naming a DID or
+/// an AT URI is left out, and the message is cut at 200 chars.
+pub fn describe(status: u16, body: &J) -> String {
+    let mut out = format!("status {status}");
+    if let Some(e) = body["error"].as_str() {
+        out += &format!(": {}", scrub(e));
+    }
+    if let Some(m) = body["message"].as_str() {
+        out += &format!(": {}", scrub(m));
+    }
+    out
+}
+
+fn scrub(s: &str) -> String {
+    let words: Vec<&str> =
+        s.split_whitespace().map(|w| if w.contains("did:") || w.contains("at:") { "…" } else { w }).collect();
+    let s: String = words.join(" ").chars().filter(|c| !c.is_control()).collect();
+    match s.char_indices().nth(200) {
+        Some((i, _)) => format!("{}…", &s[..i]),
+        None => s,
+    }
+}
+
+/// [`describe`] of a response, reading at most 4 KiB of its body.
+pub async fn describe_response(mut r: reqwest::Response) -> String {
+    let status = r.status().as_u16();
+    let mut buf = Vec::new();
+    while let Ok(Some(c)) = r.chunk().await {
+        buf.extend_from_slice(&c);
+        if buf.len() > 4 << 10 {
+            break;
+        }
+    }
+    describe(status, &serde_json::from_slice(&buf).unwrap_or(J::Null))
 }
 
 /// Reference `confirmRegistration`: before a registration is made, its
@@ -439,7 +476,7 @@ mod tests {
     /// member its query carried.
     #[tokio::test]
     async fn send_errors_leave_the_url_out() {
-        let space = "at://did:plc:secretauthority0000000000/space/com.example.group/skey";
+        let space = "at:space/did:plc:secretauthority0000000000/com.example.group/skey";
         let e = reqwest::Client::new()
             .get("http://127.0.0.1:1/xrpc/com.atproto.space.getLatestCommit")
             .query(&[("space", space), ("repo", "did:plc:secretmember")])
@@ -449,5 +486,20 @@ mod tests {
         assert!(e.to_string().contains("secret"), "reqwest names the URL: {e}");
         let logged = super::http_error("getLatestCommit", e);
         assert!(!logged.contains("secret") && !logged.contains("did:plc"), "{logged}");
+    }
+
+    /// A refusal's error and message reach the logs, without the space or
+    /// member they may echo.
+    #[test]
+    fn refusals_name_the_error() {
+        let body = serde_json::json!({
+            "error": "InvalidRequest",
+            "message": "Invalid space-ref: at:space/did:plc:secretauthority/com.example.group/skey (from did:plc:secretmember)",
+        });
+        let d = super::describe(400, &body);
+        assert_eq!(d, "status 400: InvalidRequest: Invalid space-ref: … (from …");
+        assert_eq!(super::describe(502, &serde_json::Value::Null), "status 502");
+        let long = super::describe(400, &serde_json::json!({"message": "x".repeat(300)}));
+        assert_eq!(long.chars().count(), "status 400: ".len() + 201);
     }
 }

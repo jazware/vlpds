@@ -41,6 +41,13 @@ other rows.
 repeat in every key. The full URI is kept in `sH`, `sS` and `sP`, and every reader checks it, so a
 hash collision fails loudly with `space id collision` instead of mixing two spaces.
 
+Keys and rows hold a space URI in its stored form, the one the wire used before the Nov 24 alpha:
+`at://{authority}/space/{type}/{skey}`. The wire form is `at:space/{authority}/{type}/{skey}`.
+`{sid}` hashes the stored form and `sL` keys sort by it, which sorts as the wire form does. The
+row codecs write it and read either form back as the wire form, and the cluster's own calls send
+it, so rows written before the move stayed where they were and an older node reads every row,
+key and call a newer one writes.
+
 | Key | In the slot of | Holds |
 |---|---|---|
 | `sH/{did}\0{sid}` | the author | the space repo head: URI, rev, LtHash state, record count, created |

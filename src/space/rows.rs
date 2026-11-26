@@ -9,6 +9,8 @@ use bytes::{BufMut, Bytes};
 use vlatproto::cid::{Cid, CID_BYTES_LEN};
 use vlatproto::tid::Tid;
 
+use crate::state::{current_space_uri, stored_space_uri};
+
 struct Reader<'a> {
     b: &'a [u8],
     at: usize,
@@ -62,8 +64,9 @@ pub struct HeadRow {
 
 impl HeadRow {
     pub fn encode(&self) -> Bytes {
-        let mut b = Vec::with_capacity(2 + self.uri.len() + 24 + STATE_BYTES);
-        put_str(&mut b, &self.uri);
+        let uri = stored_space_uri(&self.uri);
+        let mut b = Vec::with_capacity(2 + uri.len() + 24 + STATE_BYTES);
+        put_str(&mut b, &uri);
         b.put_u64(self.rev.0);
         b.put_u64(self.records);
         b.put_u64(self.created);
@@ -73,7 +76,7 @@ impl HeadRow {
 
     pub fn decode(v: &[u8]) -> anyhow::Result<HeadRow> {
         let mut r = Reader::new(v);
-        let uri = r.str()?.to_string();
+        let uri = current_space_uri(r.str()?).into_owned();
         let (rev, records, created) = (Tid(r.u64()?), r.u64()?, r.u64()?);
         let hash = LtHash::from_state(r.take(STATE_BYTES)?).context("bad LtHash state")?;
         r.end()?;
@@ -204,8 +207,9 @@ pub struct OutboxRow {
 
 impl OutboxRow {
     pub fn encode(&self) -> Bytes {
-        let mut b = Vec::with_capacity(2 + self.uri.len() + 40);
-        put_str(&mut b, &self.uri);
+        let uri = stored_space_uri(&self.uri);
+        let mut b = Vec::with_capacity(2 + uri.len() + 40);
+        put_str(&mut b, &uri);
         b.put_u64(self.repo_rev.0);
         b.put_slice(&self.hash);
         b.into()
@@ -213,7 +217,7 @@ impl OutboxRow {
 
     pub fn decode(v: &[u8]) -> anyhow::Result<OutboxRow> {
         let mut r = Reader::new(v);
-        let uri = r.str()?.to_string();
+        let uri = current_space_uri(r.str()?).into_owned();
         let repo_rev = Tid(r.u64()?);
         let hash = r.take(32)?.try_into()?;
         r.end()?;
@@ -599,6 +603,7 @@ pub struct SpaceRow {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawSpaceRow {
+    #[serde(with = "crate::state::stored_uri")]
     uri: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     policy: Option<Policy>,
@@ -665,13 +670,8 @@ mod tests {
     fn rows_roundtrip() {
         let mut hash = LtHash::default();
         hash.add("com.example.post/a/bafy");
-        let h = HeadRow {
-            uri: "at://did:plc:a/space/com.example.group/x".into(),
-            rev: Tid(7),
-            hash,
-            records: 3,
-            created: 9,
-        };
+        let h =
+            HeadRow { uri: "at:space/did:plc:a/com.example.group/x".into(), rev: Tid(7), hash, records: 3, created: 9 };
         assert_eq!(HeadRow::decode(&h.encode()).unwrap(), h);
         assert!(HeadRow::decode(&h.encode()[..100]).is_err());
         let c = Cid::dag_cbor(b"\xa0");
@@ -709,8 +709,9 @@ mod tests {
         for m in [MemberRow { read: true, write: false }, MemberRow { read: true, write: true }] {
             assert_eq!(MemberRow::decode(&m.encode()).unwrap(), m);
         }
-        let s = SpaceRow::defaults("at://did:plc:a/space/com.example.group/x", "2026-10-01T00:00:00.000Z");
+        let s = SpaceRow::defaults("at:space/did:plc:a/com.example.group/x", "2026-10-01T00:00:00.000Z");
         assert_eq!(SpaceRow::decode(&s.encode()).unwrap(), s);
+        // stored in the form before Nov 24, which an older build reads
         assert_eq!(
             String::from_utf8(s.encode().to_vec()).unwrap(),
             r#"{"uri":"at://did:plc:a/space/com.example.group/x","policy":{"$type":"com.atproto.memberspace.policy","publicRead":false,"publicWrite":false,"publishPolicy":false,"publishMembers":false},"readPolicy":{"type":"member-list"},"writePolicy":{"type":"member-list"},"appAccess":{"type":"open"},"createdAt":"2026-10-01T00:00:00.000Z"}"#
@@ -723,7 +724,7 @@ mod tests {
     fn simplespace_rows_convert() {
         let row = |read: &str, write: &str, apps: &str, deleted: &str| {
             format!(
-                r#"{{"uri":"at://did:plc:a/space/com.example.group/x","readPolicy":{read},"writePolicy":{write},"appAccess":{apps},"createdAt":"2026-10-01T00:00:00.000Z"{deleted}}}"#
+                r#"{{"uri":"at:space/did:plc:a/com.example.group/x","readPolicy":{read},"writePolicy":{write},"appAccess":{apps},"createdAt":"2026-10-01T00:00:00.000Z"{deleted}}}"#
             )
         };
         let (member, public) = (r#"{"type":"member-list"}"#, r#"{"type":"public"}"#);
@@ -750,7 +751,7 @@ mod tests {
         ] {
             let got = SpaceRow::decode(row(read, write, apps, "").as_bytes()).unwrap();
             assert_eq!(got.policy, want, "{read} {write} {apps}");
-            assert_eq!(got.uri, "at://did:plc:a/space/com.example.group/x");
+            assert_eq!(got.uri, "at:space/did:plc:a/com.example.group/x");
             assert!(got.live());
             // written back in the new form, which decodes the same
             assert_eq!(SpaceRow::decode(&got.encode()).unwrap(), got);
@@ -831,7 +832,7 @@ mod tests {
             ),
         ];
         for (policy, read, write, apps) in cases {
-            let mut row = SpaceRow::defaults("at://did:plc:a/space/com.example.group/x", "t");
+            let mut row = SpaceRow::defaults("at:space/did:plc:a/com.example.group/x", "t");
             row.policy = policy.clone();
             row.deleted_at = Some("d".into());
             let bytes = row.encode();
@@ -870,7 +871,7 @@ mod tests {
 
     #[test]
     fn key_parts() {
-        let sid = crate::state::space_id("at://did:plc:a/space/com.example.group/x");
+        let sid = crate::state::space_id("at:space/did:plc:a/com.example.group/x");
         let k = crate::state::space_outbox_key("did:plc:abc", &sid);
         assert_eq!(did_sid(&k), Some(("did:plc:abc", sid)));
         let k = crate::state::space_oplog_key("did:plc:abc", &sid, 42, 7);
@@ -886,5 +887,54 @@ mod tests {
         assert!(crate::state::is_space_key(&k) && crate::state::is_space_key(&c));
         assert!(crate::state::is_space_key(&k));
         assert!(!crate::state::is_space_key(&crate::state::repo_stats_key("did:plc:abc")));
+    }
+
+    /// Rows a build before the Nov 24 alpha wrote hold `at://{authority}/space/...`:
+    /// they read back in the current form, and new rows are written in that
+    /// stored form, so a rollback reads them too.
+    #[test]
+    fn rows_from_before_nov24_read_in_the_current_form() {
+        const OLD: &str = "at://did:plc:a/space/com.example.group/x";
+        const NEW: &str = "at:space/did:plc:a/com.example.group/x";
+        let mut hash = LtHash::default();
+        hash.add("com.example.post/a/bafy");
+        // v1.4.0's HeadRow::encode: the URI, then rev, records, created and the state
+        let mut old = Vec::new();
+        put_str(&mut old, OLD);
+        old.put_u64(7);
+        old.put_u64(3);
+        old.put_u64(9);
+        old.put_slice(&hash.state());
+        let h = HeadRow::decode(&old).unwrap();
+        assert_eq!(h.uri, NEW);
+        assert_eq!(h.encode().to_vec(), old, "written back as v1.4.0 wrote it");
+        let mut old = Vec::new();
+        put_str(&mut old, OLD);
+        old.put_u64(5);
+        old.put_slice(&[3; 32]);
+        let o = OutboxRow::decode(&old).unwrap();
+        assert_eq!((o.uri.as_str(), o.repo_rev), (NEW, Tid(5)));
+        assert_eq!(o.encode().to_vec(), old);
+        let old = format!(
+            r#"{{"uri":"{OLD}","policy":{{"$type":"com.atproto.memberspace.policy","publicRead":false,"publicWrite":false,"publishPolicy":false,"publishMembers":false}},"readPolicy":{{"type":"member-list"}},"writePolicy":{{"type":"member-list"}},"appAccess":{{"type":"open"}},"createdAt":"2026-10-01T00:00:00.000Z"}}"#
+        );
+        let r = SpaceRow::decode(old.as_bytes()).unwrap();
+        assert_eq!(r, SpaceRow::defaults(NEW, "2026-10-01T00:00:00.000Z"));
+        assert_eq!(String::from_utf8(r.encode().to_vec()).unwrap(), old);
+        // ids and listSpaces keys of either form are the stored ones
+        assert_eq!(crate::state::space_id(NEW), crate::state::space_id(OLD));
+        let digest = <sha2::Sha256 as sha2::Digest>::digest(OLD.as_bytes());
+        assert_eq!(crate::state::space_id(NEW)[..], digest[..16]);
+        let listed = crate::state::SpaceListed::Repo;
+        assert_eq!(
+            crate::state::space_list_key("did:plc:b", NEW, listed),
+            crate::state::space_list_key("did:plc:b", OLD, listed)
+        );
+        assert_eq!(crate::state::current_space_uri(&crate::state::stored_space_uri(NEW)), NEW);
+        let public = "at://did:plc:a/com.example.post/x";
+        assert_eq!(
+            (crate::state::stored_space_uri(public), crate::state::current_space_uri(public)),
+            (public.into(), public.into())
+        );
     }
 }

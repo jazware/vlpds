@@ -285,9 +285,12 @@ async fn list_spaces(State(app): AppState, Auth(creds): Auth, Query(q): Query<Li
         let Ok(l) = serde_json::from_value::<LocalSpaces>(r.body) else { continue };
         covered.extend(l.owned);
         truncated |= l.truncated;
-        spaces.extend(l.spaces);
+        // a peer of an older build in a rolling upgrade answers in the stored form
+        spaces.extend(
+            l.spaces.into_iter().map(|s| SpaceSummary { uri: state::current_space_uri(&s.uri).into_owned(), ..s }),
+        );
         for (uri, a) in l.repos {
-            let t = repos.entry(uri).or_default();
+            let t = repos.entry(state::current_space_uri(&uri).into_owned()).or_default();
             t.repos += a.repos;
             t.records += a.records;
         }
@@ -346,7 +349,7 @@ struct InfoQ {
 async fn get_space_info(State(app): AppState, Auth(creds): Auth, Query(q): Query<InfoQ>) -> XResult<Json<J>> {
     require_admin(&creds)?;
     spaces_on(&app)?;
-    let space = Space::parse(&q.uri)?;
+    let space = Space::parse_any(&q.uri)?;
     if space.authority != q.did {
         return Err(XrpcError::bad("InvalidRequest", "a space is looked up at its authority"));
     }
@@ -477,7 +480,7 @@ async fn get_account_spaces(State(app): AppState, Auth(creds): Auth, Query(q): Q
             break;
         }
         let Some(uri) = state::space_list_uri(&kv.key, &prefix) else { continue };
-        let Ok(space) = Space::parse(uri) else { continue };
+        let Ok(space) = Space::parse_any(uri) else { continue };
         match kv.key.last() {
             Some(b'h') => {
                 let Some(v) = snap.get(state::space_head_key(&q.did, &space.sid)).await.map_err(err)? else { continue };
@@ -539,7 +542,7 @@ async fn remove_registration(
 ) -> XResult<Json<J>> {
     require_admin(&creds)?;
     spaces_on(&app)?;
-    let space = Space::parse(&inp.space)?;
+    let space = Space::parse_any(&inp.space)?;
     if space.authority != inp.did {
         return Err(XrpcError::bad("InvalidRequest", "a registration is removed at the space's authority"));
     }

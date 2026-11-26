@@ -610,8 +610,8 @@ pub async fn run(cmd: Cmd, opts: &Opts, out: &mut dyn Write) -> Result<()> {
         }
         Cmd::CheckSpace { did, space } => {
             check_did(&did)?;
-            if !space.starts_with("at://") {
-                bail!("space must be a space URI (at://{{authority}}/space/{{type}}/{{skey}}): {space}");
+            if vlatproto::syntax::parse_space_uri_lenient(&space).is_none() {
+                bail!("space must be a space URI (at:space/{{authority}}/{{type}}/{{skey}}): {space}");
             }
             let r = c.get("vlpds.admin.checkSpace", &[("did", &did), ("space", &space)]).await?;
             if opts.json {

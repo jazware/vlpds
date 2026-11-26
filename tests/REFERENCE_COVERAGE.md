@@ -205,6 +205,7 @@ None.
 
 | case | status | vlpds |
 |---|---|---|
+| does not activate an account until its DID document has its KEM key | ported | `spaces_side::import_repo::activation_needs_the_kem_key` (a did:plc pointed here without `#atproto_kem`: activateAccount 400 "…does not match expected KEM key", checkAccountStatus `validDid: false`; activates once the key is published) |
 | migrates an account | covered | `migration::migrate_account_with_records_and_blobs` (service-auth createAccount with DID, checkAccountStatus counters, importRepo, listMissingBlobs, blob upload, activation, old PDS deactivation, writes on new PDS) + `plc::migration_out_to_another_pds` (requestPlcOperationSignature → signPlcOperation → submitPlcOperation against a PLC directory). Ported remainder: preferences copy to the not-yet-active account (`ref_account::ref_preferences_on_deactivated_account`) and the PLC mail (`ref_account::ref_plc_operation_signature_mail`) |
 
 ### recovery.test.ts
@@ -863,8 +864,10 @@ All 20 cases snapshot AppView views fetched through the PDS (`app.bsky.*` GETs).
 
 ## Spaces (permissioned data)
 
-The reference's space suites at `bluesky-social/atproto` 67476105 (PR #5187, permissioned-data, the November 17 alpha), mapped case by case to
-`tests/all/spaces_side/ref_*.rs` and the other Spaces tests. At this pin upstream regrouped its suites: the credential-mint gates moved from
+The reference's space suites at `bluesky-social/atproto` 1f510f8e (PR #5187, permissioned-data-alpha, the November 24 alpha), mapped case by case to
+`tests/all/spaces_side/ref_*.rs` and the other Spaces tests. The Nov 24 alpha moved space URIs to `at:space/` (every case here uses that
+form) and added one case, the alpha form refused in params; its new `space/queries.test.ts` and `space/uri-range.test.ts` test the
+reference's SQLite indexes and query plans, N/A to vlpds's key layout, and aren't counted. At the Nov 17 pin (67476105) upstream regrouped its suites: the credential-mint gates moved from
 `policy.test.ts` to a new `access.test.ts`, registrations to a new `registration.test.ts`, `space-scope.test.ts` folded into
 `auth.test.ts`, and `client-attestation.test.ts` became the unit suite `src/client-attestation-verifier.test.ts`. The harness is
 `spaces_side::ref_net`, the reference's `tests/_space.ts` over XRPC: a `Net` of `--spaces` PDSes on one in-process PLC directory, OAuth
@@ -935,16 +938,16 @@ retries) are `spaces_side::stored_legacy`, and `just spaces-migrate` runs an old
 
 | | Cases |
 |---|---:|
-| ported | 229 |
+| ported | 230 |
 | ported + divergent | 8 |
 | divergent | 5 |
 | covered | 4 |
 | N/A | 5 |
 | GAP | 2 |
-| **total** | **254** |
+| **total** | **255** |
 
 Counted per `it()` case, with each `it.each` row counted once per value. Rows marked "(vlpds)" are vlpds-only tests (the 300 s
-cap, the old credential scheme, the credential key binding) and aren't counted. Every row follows the reference at 67476105.
+cap, the old credential scheme, the credential key binding) and aren't counted. Every row follows the reference at 1f510f8e.
 
 ### space/records.test.ts
 
@@ -971,6 +974,7 @@ cap, the old credential scheme, the credential key binding) and aren't counted. 
 | validation: refuses a record whose $type disagrees with its collection | ported | `..::rejects_a_record_whose_type_disagrees_with_its_collection` (C1) |
 | validation: reports unknown for a collection with no resolvable schema | ported | `..::reports_unknown_for_a_collection_with_no_resolvable_schema` (C1) |
 | validation: refuses an unvalidatable record when validation is demanded | ported | `..::refuses_an_unvalidatable_record_when_validation_is_demanded` (C1) |
+| validation: refuses a space param in its alpha form | ported | `..::refuses_a_space_param_in_its_alpha_form` (C1), plus `spaces_host::space_lifecycle_and_config` (getSpace, createRecord) and `just spaces-migrate` (getSpace on a space a v1.4.0 build made) |
 | listRecords: paginates across collections | ported | `..::list_records_paginates_across_collections` (C2) |
 | listRecords: filters to one collection | ported | `..::list_records_filters_to_one_collection` (C2) |
 | listRecords: scopes a listing to one space | ported | `..::list_records_scopes_a_listing_to_one_space` (C1) |

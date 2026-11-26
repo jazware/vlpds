@@ -209,7 +209,7 @@ impl Remote {
         let scope = format!("space:{st}?authority=*&collection={collection}&action=read&action=create");
         let stub = StubDid::spawn().await;
         let member = SpaceClient::new(owner, &unique_name("rrm"), &scope).await;
-        let space = format!("at://{}/space/{st}/main", stub.did);
+        let space = format!("at:space/{}/{st}/main", stub.did);
         let rec = json!({"$type": collection, "text": "revocation target", "createdAt": now_iso()});
         member.create_record(&space, &collection, Some("r"), rec).await.ok();
         Remote { stub, member, space, collection, holder: Holder::new(), http: reqwest::Client::new() }

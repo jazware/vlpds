@@ -31,6 +31,8 @@ use std::time::Duration;
 
 const EXPORT_STAR: &[u8] = include_bytes!("../../../testdata/spaces-alpha/export.star");
 const EXPORT_JSON: &str = include_str!("../../../testdata/spaces-alpha/export.json");
+/// export.star as the Nov 17 reference wrote it, `space` in the old form.
+const OLD_EXPORT_STAR: &[u8] = include_bytes!("../../../testdata/spaces-alpha/export-pre-nov24.star");
 
 pub(crate) type Docs = Arc<Mutex<DocMap>>;
 
@@ -284,6 +286,47 @@ async fn reference_arrival(f: &Fixture, docs: &Docs, new: &TestServer) -> Arrive
     a
 }
 
+/// The reference's account-migration "does not activate an account until
+/// its DID document has its KEM key": a document pointed here without the
+/// KEM key this host holds for the account (as a client submitting its own
+/// op could) is refused until it publishes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn activation_needs_the_kem_key() {
+    let f = fixture();
+    let (plc, docs) = stub_plc().await;
+    let new = stub_host(&plc, 1).await;
+    let key = vlatproto::crypto::Keypair::generate();
+    docs.lock().unwrap().insert(f.did.clone(), reference_doc(&f, &key));
+    let new_did = new.pds_did().await;
+    let sa =
+        vlpds::auth::service_auth_jwt(&key, &f.did, &new_did, Some("com.atproto.server.createAccount"), 60).unwrap();
+    let a = arrive(&new, &f.did, sa).await;
+    let rec = new.xrpc.get("com.atproto.identity.getRecommendedDidCredentials", &[], &a.session).await.ok();
+    assert!(rec["verificationMethods"]["atproto_kem"].is_string(), "{rec}");
+    let doc = |methods: J| {
+        json!({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": a.did,
+            "alsoKnownAs": rec["alsoKnownAs"],
+            "verificationMethod": methods,
+            "service": [{"id": "#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": new.url}],
+        })
+    };
+    let all = verification_methods(&a.did, &rec);
+    let signing_only = J::Array(
+        all.as_array().unwrap().iter().filter(|m| m["id"].as_str().unwrap().ends_with("#atproto")).cloned().collect(),
+    );
+    docs.lock().unwrap().insert(a.did.clone(), doc(signing_only));
+    let r = new.xrpc.post_empty("com.atproto.server.activateAccount", &a.session).await;
+    assert!(r.status == 400 && r.text().contains("does not match expected KEM key"), "{}", r.text());
+    let st = new.xrpc.get("com.atproto.server.checkAccountStatus", &[], &a.session).await.ok();
+    assert_eq!((st["activated"].clone(), st["validDid"].clone()), (json!(false), json!(false)), "{st}");
+    docs.lock().unwrap().insert(a.did.clone(), doc(all));
+    new.xrpc.post_empty("com.atproto.server.activateAccount", &a.session).await.ok();
+    let st = new.xrpc.get("com.atproto.server.checkAccountStatus", &[], &a.session).await.ok();
+    assert_eq!((st["activated"].clone(), st["validDid"].clone()), (json!(true), json!(true)), "{st}");
+}
+
 /// The fixture's space, made again by its authority (the fixture account)
 /// on the host it moved to.
 async fn make_fixture_space(f: &Fixture, sc: &SpaceClient) {
@@ -305,6 +348,10 @@ async fn reference_export_imports_mid_migration() {
     // the account governs the space: its own repo comes after the space
     import_repo(&oauth, EXPORT_STAR).await.err(400, "SpaceNotFound");
     make_fixture_space(&f, &oauth).await;
+    // an archive exported before the Nov 24 alpha names its space in the old
+    // form: the reference refuses it, and it must be exported again
+    import_repo(&oauth, OLD_EXPORT_STAR).await.err(400, "InvalidRepoFile");
+    assert!(head(&oauth, &f.space).await.is_none(), "nothing of it was stored");
 
     let out = import_repo(&oauth, EXPORT_STAR).await;
     assert_eq!(out.status, 200, "{}", out.text());
@@ -415,7 +462,7 @@ pub(super) async fn two_hosts() -> TwoHosts {
     let carol = who.pop().unwrap();
     let bob = who.pop().unwrap();
     let alice = who.pop().unwrap();
-    let space = format!("at://{}/space/{TEST_SPACE_TYPE}/{}", alice.did, unique_name("mv"));
+    let space = format!("at:space/{}/{TEST_SPACE_TYPE}/{}", alice.did, unique_name("mv"));
     let skey = last_segment(&space).to_string();
     let r = alice
         .post(
@@ -719,14 +766,14 @@ async fn the_authoritys_own_repo_needs_its_space() {
     let o = one().await;
     let rev = rev_ago(Duration::from_secs(60));
     let skey = unique_name("later");
-    let space = format!("at://{}/space/{TEST_SPACE_TYPE}/{skey}", o.alice.did);
+    let space = format!("at:space/{}/{TEST_SPACE_TYPE}/{skey}", o.alice.did);
     let built = records(RepoBuilder::new(&space, &o.alice.did, &rev), 2).build();
     import_repo(&o.alice, &built.star()).await.err(400, "SpaceNotFound");
     nothing_written(&o.alice, &space, "no space").await;
     assert_eq!(o.alice.create_space(TEST_SPACE_TYPE, &skey).await, space);
     import_repo(&o.alice, &built.star()).await.ok();
 
-    let nowhere = format!("at://did:plc:nosuchauthority2345abcd/space/{TEST_SPACE_TYPE}/x");
+    let nowhere = format!("at:space/did:plc:nosuchauthority2345abcd/{TEST_SPACE_TYPE}/x");
     let theirs = records(RepoBuilder::new(&nowhere, &o.bob.did, &rev), 1).build();
     import_repo(&o.bob, &theirs.star()).await.ok();
 }

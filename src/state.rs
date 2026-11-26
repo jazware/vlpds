@@ -263,13 +263,16 @@ impl SpaceListed {
     }
 }
 
-/// `sL/{did}\0{uri}\0{h|s}`: listSpaces's index, in URI order. URIs hold
-/// no NUL, so a key's URI ends at the first one and the order is the URIs'.
+/// `sL/{did}\0{uri}\0{h|s}`: listSpaces's index, in URI order, the URI in
+/// its [stored form](stored_space_uri) (which sorts as the wire form does).
+/// URIs hold no NUL, so a key's URI ends at the first one and the order is
+/// the URIs'.
 pub fn space_list_key(did: &str, uri: &str, why: SpaceListed) -> Vec<u8> {
+    let uri = stored_space_uri(uri);
     keyed(did, SPACE_LIST_FAMILY, &[did.as_bytes(), b"\0", uri.as_bytes(), b"\0", &[why.byte()]])
 }
 
-/// The URI of an `sL/` key under `prefix` ([`space_did_prefix`]).
+/// The stored-form URI of an `sL/` key under `prefix` ([`space_did_prefix`]).
 pub fn space_list_uri<'a>(key: &'a [u8], prefix: &[u8]) -> Option<&'a str> {
     let rest = key.strip_prefix(prefix)?;
     let end = rest.iter().position(|b| *b == 0)?;
@@ -285,8 +288,49 @@ pub fn space_log_id(uri: &str) -> String {
     hex::encode(space_id(uri))
 }
 
+/// Of either URI form: it hashes the stored one, so the ids of spaces made
+/// before the Nov 24 alpha didn't move.
 pub fn space_id(uri: &str) -> SpaceId {
-    Sha256::digest(uri.as_bytes())[..SPACE_ID_LEN].try_into().unwrap()
+    Sha256::digest(stored_space_uri(uri).as_bytes())[..SPACE_ID_LEN].try_into().unwrap()
+}
+
+/// A space URI as keys and rows store it: the alpha's form before Nov 24,
+/// `at://{authority}/space/{type}/{skey}...`. The wire form is
+/// `at:space/{authority}/{type}/{skey}...`. Rows and keys written before it
+/// hold this form, `{sid}`s hash it, and an older build reads every row a
+/// newer one writes, so nothing stored changed form. Codecs write it with
+/// this and read it back with [`current_space_uri`]. Any other string passes
+/// through.
+pub fn stored_space_uri(uri: &str) -> std::borrow::Cow<'_, str> {
+    match uri.strip_prefix(vlatproto::syntax::SPACE_URI_PREFIX).and_then(|r| r.split_once('/')) {
+        Some((authority, rest)) => format!("at://{authority}/space/{rest}").into(),
+        None => uri.into(),
+    }
+}
+
+/// A space URI in the wire form, from either form. Any other string passes
+/// through.
+pub fn current_space_uri(uri: &str) -> std::borrow::Cow<'_, str> {
+    let legacy = uri
+        .strip_prefix("at://")
+        .and_then(|r| r.split_once('/'))
+        .and_then(|(a, r)| Some((a, r.strip_prefix("space/")?)));
+    match legacy {
+        Some((authority, rest)) => format!("{}{authority}/{rest}", vlatproto::syntax::SPACE_URI_PREFIX).into(),
+        None => uri.into(),
+    }
+}
+
+/// serde `with` for a space URI field of a stored row.
+pub mod stored_uri {
+    pub fn serialize<S: serde::Serializer>(uri: &str, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&super::stored_space_uri(uri))
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+        let uri = <String as serde::Deserialize>::deserialize(d)?;
+        Ok(super::current_space_uri(&uri).into_owned())
+    }
 }
 
 pub fn is_space_key(key: &[u8]) -> bool {

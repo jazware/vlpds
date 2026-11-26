@@ -598,10 +598,10 @@ mod tests {
         let bad = object_store::PutPayload::from(b"not json".to_vec());
         store.raw.put_opts(&revocations::path(&store), bad, Default::default()).await.unwrap();
         let sp = Spaces::new(Limits::default());
-        let space = "at://did:web:a.example/space/t.t/k";
+        let space = "at:space/did:web:a.example/t.t/k";
         assert!(sp.revoke(&store, space, "did:aud", &["j".into()], false).await.is_err());
         assert!(sp.revocations.is_blocked(space, now_secs()));
-        assert!(!sp.revocations.is_blocked("at://did:web:a.example/space/t.t/other", now_secs()));
+        assert!(!sp.revocations.is_blocked("at:space/did:web:a.example/t.t/other", now_secs()));
     }
 
     /// Two importRepo slots per account and eight per node, given back on

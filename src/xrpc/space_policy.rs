@@ -191,7 +191,7 @@ async fn create_space(State(app): AppState, Auth(creds): Auth, Json(inp): Json<J
         Some(J::String(s)) if vlatproto::syntax::valid_rkey(s) => s.clone(),
         Some(_) => return Err(XrpcError::bad("InvalidRequest", "skey must be a valid record key")),
     };
-    let space = Space::parse(&format!("at://{did}/space/{space_type}/{skey}"))?;
+    let space = Space::parse(&format!("{}{did}/{space_type}/{skey}", vlatproto::syntax::SPACE_URI_PREFIX))?;
     creds.need_space(&space.target(), SpaceAccess::Manage("create"))?;
     let policy = req_policy(&inp)?;
     let row =
@@ -255,6 +255,7 @@ async fn remove_writer(State(app): AppState, Auth(creds): Auth, Json(inp): Json<
     let space = req_space(&inp)?;
     let writer = req_did(&inp, "repo")?.to_string();
     let did = assert_owner(&creds, &space, SpaceAccess::Manage("update"))?;
+    crate::ratelimit::check_space_write(Some(&did), crate::ratelimit::DELETE_POINTS)?;
     assert_space_host(&app, &space).await?;
     submit_space(&app, &did, &space, SpaceOp::RemoveWriter { writer }).await?;
     Ok(StatusCode::OK)
@@ -387,6 +388,10 @@ async fn put_members(State(app): AppState, Auth(creds): Auth, Json(inp): Json<J>
         members.push((did, MemberRow { read: req_bool(m, "read")?, write: req_bool(m, "write")? }));
     }
     let did = assert_owner(&creds, &space, SpaceAccess::Manage("update"))?;
+    crate::ratelimit::check_space_write(
+        Some(&did),
+        crate::ratelimit::UPDATE_POINTS.saturating_mul(members.len() as u32),
+    )?;
     assert_space_host(&app, &space).await?;
     submit_space(&app, &did, &space, SpaceOp::PutMembers { members }).await?;
     Ok(StatusCode::OK)
@@ -406,6 +411,10 @@ async fn remove_members(State(app): AppState, Auth(creds): Auth, Json(inp): Json
         }
     }
     let did = assert_owner(&creds, &space, SpaceAccess::Manage("update"))?;
+    crate::ratelimit::check_space_write(
+        Some(&did),
+        crate::ratelimit::DELETE_POINTS.saturating_mul(members.len() as u32),
+    )?;
     assert_space_host(&app, &space).await?;
     submit_space(&app, &did, &space, SpaceOp::RemoveMembers { members }).await?;
     Ok(StatusCode::OK)

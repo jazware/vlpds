@@ -12,8 +12,8 @@ import { SPACE_TYPE } from './env.mjs'
 import { makeClient } from './http.mjs'
 import { kemKey, pdsEndpoint } from './identity.mjs'
 
-export const spaceUri = (authorityDid, skey, type = SPACE_TYPE) => `at://${authorityDid}/space/${type}/${skey}`
-export const spaceDidOf = (uri) => uri.split('/')[2]
+export const spaceUri = (authorityDid, skey, type = SPACE_TYPE) => `at:space/${authorityDid}/${type}/${skey}`
+export const spaceDidOf = (uri) => uri.split('/')[1]
 
 export const POLICY = {
   members: (opts = {}) => ({ $type: 'com.atproto.memberspace.policy', ...opts }),

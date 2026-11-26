@@ -118,7 +118,7 @@ impl Stub {
     }
 
     fn space(&self, skey: &str) -> String {
-        format!("at://{}/space/{TYPE}/{skey}", self.did)
+        format!("at:space/{}/{TYPE}/{skey}", self.did)
     }
 
     /// A credential for `space` bound to `holder`, issued `age` seconds
@@ -603,7 +603,7 @@ async fn list_spaces_index_pages() {
         want.insert(a.create_space(TYPE, &format!("g{i:02}")).await);
         want.insert(a.create_space(OTHER, &format!("b{i:02}")).await);
     }
-    let own = |t: &str, k: &str| format!("at://{}/space/{t}/{k}", a.did);
+    let own = |t: &str, k: &str| format!("at:space/{}/{t}/{k}", a.did);
     for i in 0..4 {
         a.create_record(&own(TYPE, &format!("g{i:02}")), COLL, Some("r"), rec("x")).await.ok();
     }
@@ -636,8 +636,8 @@ async fn list_spaces_index_pages() {
         let expect: Vec<String> = want
             .iter()
             .filter(|u| {
-                let p: Vec<&str> = u.trim_start_matches("at://").split('/').collect();
-                t.is_none_or(|t| p[2] == t) && d.is_none_or(|d| p[0] == d)
+                let p: Vec<&str> = u.trim_start_matches("at:space/").split('/').collect();
+                t.is_none_or(|t| p[1] == t) && d.is_none_or(|d| p[0] == d)
             })
             .cloned()
             .collect();
@@ -667,6 +667,10 @@ async fn list_spaces_index_pages() {
     // a cursor that isn't a listed URI pages from where it sorts
     let mid = own(OTHER, "b05x");
     let r = a.get("com.atproto.space.listSpaces", &[("cursor", mid.as_str())]).await.ok();
+    // a page's cursor from before the Nov 24 alpha, in the old form, pages the same
+    let old_mid = format!("at://{}/space/{OTHER}/b05x", a.did);
+    let old = a.get("com.atproto.space.listSpaces", &[("cursor", old_mid.as_str())]).await.ok();
+    assert_eq!(old["spaces"], r["spaces"]);
     let after: Vec<&String> = want.iter().filter(|u| **u > mid).take(50).collect();
     let got: Vec<&str> = r["spaces"].as_array().unwrap().iter().map(|s| s["space"].as_str().unwrap()).collect();
     assert_eq!(got, after);

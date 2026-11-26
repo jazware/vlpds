@@ -113,13 +113,13 @@ const macFor = (label) => async (profile) => {
 }
 const commitMacs = []
 for (const [ctx, records, label] of [
-  [{ space: 'at://did:example:space/space/app.bsky.group/test', repo: 'did:example:alice', rev: '3kbcq3p7ad400' }, [['app.bsky.feed.post', '1', CID_A]], 'a'],
+  [{ space: 'at:space/did:example:space/app.bsky.group/test', repo: 'did:example:alice', rev: '3kbcq3p7ad400' }, [['app.bsky.feed.post', '1', CID_A]], 'a'],
   [
-    { space: 'at://did:plc:asdf123/space/com.example.group/default', repo: 'did:plc:user1', rev: '3lzzzzzzzzz22' },
+    { space: 'at:space/did:plc:asdf123/com.example.group/default', repo: 'did:plc:user1', rev: '3lzzzzzzzzz22' },
     [['n.c.a', '1', CID_A], ['n.c.b', '2', CID_B]],
     'b',
   ],
-  [{ space: 'at://did:plc:x/space/com.example.group/self', repo: 'did:plc:x', rev: '3kbcq3p7ad401' }, [], 'c'],
+  [{ space: 'at:space/did:plc:x/com.example.group/self', repo: 'did:plc:x', rev: '3kbcq3p7ad401' }, [], 'c'],
 ]) {
   const repo = new RepoCommit()
   for (const [c, r, cid] of records) repo.add(c, r, cid)
@@ -142,8 +142,8 @@ out.commitMacs = commitMacs
 
 const recordMacs = []
 for (const [uri, cid, label] of [
-  ['at://did:example:space/space/app.bsky.group/test/did:example:alice/app.bsky.feed.post/1', CID_A, 'd'],
-  ['at://did:plc:asdf123/space/com.example.group/default/did:plc:user1/n.c.b/2', CID_B, 'e'],
+  ['at:space/did:example:space/app.bsky.group/test/did:example:alice/app.bsky.feed.post/1', CID_A, 'd'],
+  ['at:space/did:plc:asdf123/com.example.group/default/did:plc:user1/n.c.b/2', CID_B, 'e'],
 ]) {
   const { keyShare, request, req, sharedSecret } = await macFor(label)(RECORD_MAC_PROFILE)
   const { headers } = createRecordMacHeaders(uri, cid, { ...req, sharedSecret })
@@ -155,9 +155,9 @@ out.recordMacs = recordMacs
 // STAR: a repo archive (getRepo) and a space meta archive (exportSpaceMeta)
 const star = []
 for (const [ctx, recs] of [
-  [{ space: 'at://did:plc:x/space/com.example.group/self', repo: 'did:plc:x', rev: '3kbcq3p7ad401' }, []],
+  [{ space: 'at:space/did:plc:x/com.example.group/self', repo: 'did:plc:x', rev: '3kbcq3p7ad401' }, []],
   [
-    { space: 'at://did:example:space/space/app.bsky.group/test', repo: 'did:example:alice', rev: '3kbcq3p7ad400' },
+    { space: 'at:space/did:example:space/app.bsky.group/test', repo: 'did:example:alice', rev: '3kbcq3p7ad400' },
     [
       ['app.bsky.feed.post', '1', { $type: 'app.bsky.feed.post', text: 'one', createdAt: '2026-11-07T00:00:00.000Z' }],
       ['app.bsky.feed.post', '2', { $type: 'app.bsky.feed.post', text: 'two', createdAt: '2026-11-07T00:00:01.000Z' }],
@@ -182,7 +182,7 @@ for (const [ctx, recs] of [
     star: hex(bytes),
   })
 }
-const metaSpace = 'at://did:plc:x/space/com.example.group/self'
+const metaSpace = 'at:space/did:plc:x/com.example.group/self'
 const metaBytes = await concat(
   writeSpaceMetaStar({
     space: metaSpace,
@@ -217,7 +217,7 @@ out.httpsig = httpsig
 const user = await Secp256k1Keypair.import(await seed('vlpds spaces alpha user k256'))
 const authority = await Secp256k1Keypair.import(await seed('vlpds spaces alpha authority k256'))
 const authorityP256 = await P256Keypair.import(await seed('vlpds spaces alpha authority p256'))
-const SPACE = 'at://did:example:space/space/app.bsky.group/test'
+const SPACE = 'at:space/did:example:space/app.bsky.group/test'
 const tokens = []
 const mk = async (type, opts, kp, verifyOpts) => {
   const jwt =

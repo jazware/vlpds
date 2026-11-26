@@ -1491,56 +1491,61 @@ mod tests {
     }
 
     /// The "space URIs" cases of @atproto/syntax tests/aturi-string.test.ts
-    /// (atproto 5b95b2f2). Its lenient-only cases (`testLoose`) are invalid
-    /// here: lexicon formats are strict.
+    /// (atproto 1f510f8e). Its lenient-only cases (`testLoose`) are invalid
+    /// here: lexicon formats are strict, so the form before Nov 24 is too.
     #[test]
     fn space_at_uris() {
-        let long_skey = format!("at://did:plc:asdf123/space/com.example.group/{}", "x".repeat(513));
+        let long_skey = format!("at:space/did:plc:asdf123/com.example.group/{}", "x".repeat(513));
         for ok in [
-            "at://did:plc:asdf123/space/com.example.group/default",
-            "at://did:plc:asdf123/space/com.example.group/default/did:plc:user1/com.atproto.feed.post/abc123",
-            "at://did:plc:asdf123/space/com.example.group/self",
-            "at://did:plc:asdf123/space/com.example.group/3jui7kd54zh2y",
-            "at://did:plc:asdf123/space/com.example.group/a.b-c_d~e:f",
-            "at://did:plc:asdf123/space/com.example.group/default#/frag",
-            "at://did:plc:asdf123/space/com.example.group/default/did:plc:user1/com.atproto.feed.post/abc#/frag",
-            "at://did:web:example.com/space/com.example.group/default",
+            "at:space/did:plc:asdf123/com.example.group/default",
+            "at:space/did:plc:asdf123/com.example.group/default/did:plc:user1/com.atproto.feed.post/abc123",
+            "at:space/did:plc:asdf123/com.example.group/self",
+            "at:space/did:plc:asdf123/com.example.group/3jui7kd54zh2y",
+            "at:space/did:plc:asdf123/com.example.group/a.b-c_d~e:f",
+            "at:space/did:plc:asdf123/com.example.group/default#/frag",
+            "at:space/did:plc:asdf123/com.example.group/default/did:plc:user1/com.atproto.feed.post/abc#/frag",
+            "at:space/did:web:example.com/com.example.group/default",
+            "at:space/did:web:a_b.example.com/com.example.group/default",
         ] {
             assert!(space_at_uri(ok).is_some(), "{ok}");
             assert!(!valid_at_uri(ok), "{ok}");
         }
         for bad in [
-            "at://did:plc:asdf123/space/short/default",
-            "at://not a did/space/com.example.group/default",
-            "at://user.bsky.social/space/com.example.group/default",
-            "at://did:plc:asdf123/space/com.example.group/default/user.bsky.social/com.atproto.feed.post/abc123",
-            "at://did:plc:asdf123/space/com.example.group/.",
-            "at://did:plc:asdf123/space/com.example.group/..",
+            "at:space",
+            "at:space/did:plc:asdf123",
+            "at:space/did:plc:asdf123/com.example.group",
+            "at:space/did:plc:asdf123/short/default",
+            "at:space/not a did/com.example.group/default",
+            "at:space/user.bsky.social/com.example.group/default",
+            "at:space//did:plc:asdf123/com.example.group/default",
+            "at:space/did:plc:asdf123/com.example.group/default/user.bsky.social/com.atproto.feed.post/abc123",
+            "at:space/did:plc:asdf123/com.example.group/.",
+            "at:space/did:plc:asdf123/com.example.group/..",
             &long_skey,
-            "at://did:plc:asdf123/space/com.example.group",
-            "at://did:plc:asdf123/space",
-            "at://did:plc:asdf123/space/com.example.group/default/did:plc:user1",
-            "at://did:plc:asdf123/space/com.example.group/default/did:plc:user1/short/abc123",
-            "at://did:plc:asdf123/space/com.example.group/default#",
-            "at://did:plc:asdf123/space/com.example.group/default#/a#/b",
+            "at:space/did:plc:asdf123/com.example.group/default/did:plc:user1",
+            "at:space/did:plc:asdf123/com.example.group/default/did:plc:user1/com.atproto.feed.post",
+            "at:space/did:plc:asdf123/com.example.group/default/did:plc:user1/com.atproto.feed.post/abc123/extra",
+            "at:space/did:plc:asdf123/com.example.group/default/did:plc:user1/short/abc123",
+            "at:space/did:plc:asdf123/com.example.group/default#",
+            "at:space/did:plc:asdf123/com.example.group/default#/a#/b",
             // testLoose: strict rejects these
-            "at://did:plc:asdf123/space/com.example.group/default/did:plc:user1/com.atproto.feed.post/%%%",
-            "at://did:plc:asdf123/space/com.example.group/default?foo=bar",
-            "at://did:plc:asdf123/space/com.example.group/default/",
-            // the marker is case-sensitive, and the tail is all or nothing
-            "at://did:plc:asdf123/SPACE/com.example.group/default",
-            "at://did:plc:asdf123/space/com.example.group/default/did:plc:user1/com.atproto.feed.post",
-            "at://did:plc:asdf123/space/com.example.group/default/did:plc:user1/com.atproto.feed.post/abc/x",
-            "at://did:plc:asdf123/spacey/com.example.group/default",
-            "at://did:plc:asdf123/space//default",
-            "AT://did:plc:asdf123/space/com.example.group/default",
-            "at://did:plc:asdf123/space/com.example.group/défault",
+            "at://did:plc:asdf123/space/com.example.group/default",
+            "at://did:plc:asdf123/space/com.example.group/default/did:plc:user1/com.atproto.feed.post/abc123",
+            "at:space/did:plc:asdf123/com.example.group/default/did:plc:user1/com.atproto.feed.post/%%%",
+            "at:space/did:plc:asdf123/com.example.group/default?foo=bar",
+            "at:space/did:plc:asdf123/com.example.group/default/",
+            // invalid in any mode
+            "at://user.bsky.social/space/com.example.group/default",
+            "at://did:plc:asdf123/space/com.example.group",
+            "AT:space/did:plc:asdf123/com.example.group/default",
+            "at:SPACE/did:plc:asdf123/com.example.group/default",
+            "at:space/did:plc:asdf123/com.example.group/défault",
         ] {
             assert!(space_at_uri(bad).is_none(), "{bad}");
             assert!(!valid_at_uri(bad), "{bad}");
         }
         let u = space_at_uri(
-            "at://did:plc:asdf123/space/com.example.group/default/did:plc:user1/com.atproto.feed.post/abc123#/x",
+            "at:space/did:plc:asdf123/com.example.group/default/did:plc:user1/com.atproto.feed.post/abc123#/x",
         )
         .unwrap();
         assert_eq!(
@@ -1572,14 +1577,15 @@ mod tests {
             let rec = Value::from_json(&serde_json::json!({"$type": "com.example.spaceRef", field: v})).unwrap();
             validate_record("com.example.spaceRef", "self", &rec, None, Some(&doc))
         };
-        let space = "at://did:plc:12345678abcdefghijklmnop/space/com.example.group/default";
-        let in_space = "at://did:plc:12345678abcdefghijklmnop/space/com.example.group/default/did:plc:12345678abcdefghijklmnoq/com.example.test/self";
+        let space = "at:space/did:plc:12345678abcdefghijklmnop/com.example.group/default";
+        let in_space = "at:space/did:plc:12345678abcdefghijklmnop/com.example.group/default/did:plc:12345678abcdefghijklmnoq/com.example.test/self";
         assert_eq!(check("space", space), Ok(Some("valid")));
         assert_eq!(check("space", &format!("{space}#/frag")), Ok(Some("valid")));
         for bad in [
             in_space,
             "at://did:plc:12345678abcdefghijklmnop/com.example.test/self",
-            "at://test.bsky.social/space/com.example.group/default",
+            "at:space/test.bsky.social/com.example.group/default",
+            "at://did:plc:12345678abcdefghijklmnop/space/com.example.group/default",
             "not a space ref",
         ] {
             assert_eq!(
@@ -1591,7 +1597,9 @@ mod tests {
         for ok in [space, in_space, "at://did:plc:12345678abcdefghijklmnop/com.example.test/self"] {
             assert_eq!(check("uri", ok), Ok(Some("valid")), "{ok}");
         }
-        assert!(check("uri", "at://did:plc:x/space/com.example.group").is_err());
+        assert!(check("uri", "at:space/did:plc:x/com.example.group").is_err());
+        // the form before Nov 24 is only read leniently, and lexicon formats are strict
+        assert!(check("uri", "at://did:plc:12345678abcdefghijklmnop/space/com.example.group/default").is_err());
     }
 
     /// A public record pointing into a space validates (a like's strongRef
@@ -1599,7 +1607,7 @@ mod tests {
     /// verdicts are frozen (segment.rs).
     #[test]
     fn public_record_referencing_a_space() {
-        let uri = "at://did:plc:asdf123/space/com.example.group/default/did:plc:user1/app.bsky.feed.post/3jui7kd54zh2y";
+        let uri = "at:space/did:plc:asdf123/com.example.group/default/did:plc:user1/app.bsky.feed.post/3jui7kd54zh2y";
         let like = serde_json::json!({
             "$type": "app.bsky.feed.like", "createdAt": "2026-10-01T00:00:00Z",
             "subject": {"uri": uri, "cid": "bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm"}

@@ -9,6 +9,7 @@
 import { OAuthSession } from '../../lib/oauth'
 import { XrpcError } from '../../lib/xrpc'
 import { retry } from '../../lib/backoff'
+import { spaceUriParts } from '../../lib/spaces'
 
 export const OLD_SCOPE = 'atproto space:*?authority=*&action=read_self'
 export const NEW_SCOPE = 'atproto space:*?authority=*&collection=*'
@@ -179,8 +180,8 @@ export function starPairs(b: Uint8Array): number | undefined {
   return undefined
 }
 
-/** "com.example.forum" in "at://did:plc:…/space/com.example.forum/main", and its key. */
+/** "com.example.forum" in "at:space/did:plc:…/com.example.forum/main", and its key (an old host may answer in the form before Nov 24). */
 export function spaceLabel(uri: string): { type: string; skey: string; authority: string } {
-  const [, , authority = '', , type = '', skey = ''] = uri.split('/')
-  return { type, skey, authority }
+  const p = spaceUriParts(uri)
+  return { type: p?.type ?? '', skey: p?.skey ?? '', authority: p?.authority ?? '' }
 }

@@ -469,15 +469,16 @@ pub(super) async fn set_subject_takedown(app: &App, did: &str, name: &str, val: 
 /// `{collection}/{rkey}` of an at:// URI naming a record of `did`.
 /// A record takedown's name below `sec/td/`, in `did`'s account: a repo
 /// record's `rec/{collection}/{rkey}`, or a space record's
-/// (`at://{authority}/space/{type}/{skey}/{did}/{collection}/{rkey}`)
+/// (`at:space/{authority}/{type}/{skey}/{did}/{collection}/{rkey}`, or the
+/// form before Nov 24 a moderation service may still send)
 /// `space/{sid}/{collection}/{rkey}`.
 pub(super) fn record_takedown_name(uri: &str, did: &str) -> XResult<String> {
-    if let Some(u) = vlatproto::syntax::parse_space_uri(uri) {
+    if let Some(u) = vlatproto::syntax::parse_space_uri_lenient(uri) {
         let (author, collection, rkey) = u.record.ok_or_else(|| invalid_request("not a space record uri"))?;
         if author != did {
             return Err(invalid_request("invalid at-uri"));
         }
-        let sid = state::space_id(&format!("at://{}/space/{}/{}", u.authority, u.space_type, u.skey));
+        let sid = state::space_id(&u.space());
         return Ok(super::space::takedown_name(&sid, &format!("{collection}/{rkey}")));
     }
     Ok(format!("rec/{}", record_path(uri, did)?))
@@ -485,7 +486,7 @@ pub(super) fn record_takedown_name(uri: &str, did: &str) -> XResult<String> {
 
 /// The account a record subject's URI names: a space record's author.
 fn record_uri_did(uri: &str) -> Option<&str> {
-    if let Some(u) = vlatproto::syntax::parse_space_uri(uri) {
+    if let Some(u) = vlatproto::syntax::parse_space_uri_lenient(uri) {
         return u.record.map(|(author, _, _)| author);
     }
     uri.strip_prefix("at://").and_then(|r| r.split('/').next()).filter(|d| d.starts_with("did:"))
@@ -870,9 +871,8 @@ fn parse_subject(s: &J) -> XResult<Subject> {
         "com.atproto.admin.defs#repoRef" => Ok(Subject::Repo(field("did")?)),
         "com.atproto.repo.strongRef" => {
             let uri = field("uri")?;
-            if let Some(u) = vlatproto::syntax::parse_space_uri(&uri).filter(|u| u.record.is_none()) {
-                let did = u.authority.to_string();
-                return Ok(Subject::Space { uri: format!("at://{did}/space/{}/{}", u.space_type, u.skey), did });
+            if let Some(u) = vlatproto::syntax::parse_space_uri_lenient(&uri).filter(|u| u.record.is_none()) {
+                return Ok(Subject::Space { uri: u.space(), did: u.authority.to_string() });
             }
             let did = record_uri_did(&uri).ok_or_else(|| invalid_request("invalid at-uri"))?.to_string();
             Ok(Subject::Record { uri, did, cid: s["cid"].as_str().map(str::to_string) })
@@ -965,7 +965,7 @@ async fn get_subject_status(
         })
     } else if let Some(uri) = &q.uri {
         // a space record: its CID and whether a takedown (a vlpds extension) hides it
-        let space = vlatproto::syntax::parse_space_uri(uri);
+        let space = vlatproto::syntax::parse_space_uri_lenient(uri);
         let did = match &space {
             Some(u) => u.record.map(|(author, _, _)| author),
             None => uri.strip_prefix("at://").and_then(|r| r.split('/').next()),

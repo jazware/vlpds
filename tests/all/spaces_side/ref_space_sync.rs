@@ -1,5 +1,5 @@
 //! Ported from the reference's `tests/space/sync.test.ts` and
-//! `tests/space/notifications.test.ts` (67476105): how a syncer follows a
+//! `tests/space/notifications.test.ts` (1f510f8e): how a syncer follows a
 //! space, and how a writer's PDS tells the authority. Each test names its
 //! reference case.
 //!
@@ -742,7 +742,7 @@ async fn notify_resolves_the_space_host_through_atproto_pds() {
     let writer = net.actor("writer", 0).await;
     let pds = MockService::spawn(&[("atproto_pds", "AtprotoPersonalDataServer")]).await;
     let retired = MockService::spawn(&[("atproto_space_host", "AtprotoSpaceHost")]).await;
-    let space = format!("at://{}/space/{TEST_SPACE_TYPE}/resolve", pds.did);
+    let space = format!("at:space/{}/{TEST_SPACE_TYPE}/resolve", pds.did);
     write(&writer, &space, W::new()).await.ok();
     let (rev, _) = repo_state(&writer, &space).await.unwrap();
     let got = pds.await_calls(NOTIFY_WRITE, 1, Duration::from_secs(10)).await.expect("notified");
@@ -751,7 +751,7 @@ async fn notify_resolves_the_space_host_through_atproto_pds() {
     assert_eq!(claims["aud"], json!(format!("{}#atproto_pds", pds.did)));
     assert_eq!(space_host_aud(&pds.did), format!("{}#atproto_pds", pds.did));
 
-    let space = format!("at://{}/space/{TEST_SPACE_TYPE}/resolve", retired.did);
+    let space = format!("at:space/{}/{TEST_SPACE_TYPE}/resolve", retired.did);
     write(&writer, &space, W::new()).await.ok();
     assert!(
         retired.await_calls(NOTIFY_WRITE, 1, Duration::from_secs(2)).await.is_none(),
@@ -769,7 +769,7 @@ async fn retries_the_latest_state_after_failure_and_restart() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let first = cluster_node("rr", store.clone(), 8, |c| c.spaces = true).await;
     let w = SpaceClient::new(&first, "rrw", FULL_SCOPE).await;
-    let space = format!("at://{}/space/{TEST_SPACE_TYPE}/retry", host.did);
+    let space = format!("at:space/{}/{TEST_SPACE_TYPE}/retry", host.did);
     write(&w, &space, W::new()).await.ok();
     write(&w, &space, W::new()).await.ok();
     let (rev, hash) = repo_state(&w, &space).await.unwrap();
@@ -996,7 +996,7 @@ impl Outbox {
     }
 
     fn space(&self, skey: &str) -> String {
-        format!("at://{}/space/{TEST_SPACE_TYPE}/{skey}", self.host.did)
+        format!("at:space/{}/{TEST_SPACE_TYPE}/{skey}", self.host.did)
     }
 
     /// One write; its head rev.
@@ -1071,7 +1071,7 @@ async fn outbox_keeps_retryable_refusals_and_drops_permanent_ones() {
         .chain(permanent)
         .chain(named)
         .enumerate()
-        .map(|(i, (code, name, again))| (format!("at://{}/space/{TEST_SPACE_TYPE}/s{i}", host.did), code, name, again))
+        .map(|(i, (code, name, again))| (format!("at:space/{}/{TEST_SPACE_TYPE}/s{i}", host.did), code, name, again))
         .collect();
     for (space, code, name, _) in &cases {
         host.respond(*code, json!({"error": name}));
@@ -1085,7 +1085,7 @@ async fn outbox_keeps_retryable_refusals_and_drops_permanent_ones() {
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
     host.respond(200, json!({}));
-    let last = format!("at://{}/space/{TEST_SPACE_TYPE}/last", host.did);
+    let last = format!("at:space/{}/{TEST_SPACE_TYPE}/last", host.did);
     write(&w, &last, W::new()).await.ok();
     vlpds::server::shutdown(&first.app).await;
     let _second = cluster_node("ob", store, 8, |c| c.spaces = true).await;
@@ -1106,7 +1106,7 @@ async fn outbox_persists_a_send_that_never_reached_the_host() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let first = cluster_node("op", store.clone(), 8, |c| c.spaces = true).await;
     let w = SpaceClient::new(&first, "opw", FULL_SCOPE).await;
-    let space = format!("at://{}/space/{TEST_SPACE_TYPE}/unresolved", host.did);
+    let space = format!("at:space/{}/{TEST_SPACE_TYPE}/unresolved", host.did);
     write(&w, &space, W::new()).await.ok();
     let (rev, _) = repo_state(&w, &space).await.unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1243,7 +1243,7 @@ async fn outbox_defers_inactive_accounts_and_resumes_on_activation() {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let first = cluster_node("oi", store.clone(), 8, |c| c.spaces = true).await;
     let w = SpaceClient::new(&first, "oiw", FULL_SCOPE).await;
-    let space = format!("at://{}/space/{TEST_SPACE_TYPE}/inactive", host.did);
+    let space = format!("at:space/{}/{TEST_SPACE_TYPE}/inactive", host.did);
     write(&w, &space, W::new()).await.ok();
     host.await_calls(NOTIFY_WRITE, 1, Duration::from_secs(10)).await.expect("first send");
     let session = Auth::Bearer(w.session_jwt.clone());

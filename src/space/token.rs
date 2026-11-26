@@ -352,7 +352,7 @@ mod tests {
     use sha2::Digest;
     use vlatproto::crypto::Keypair;
 
-    const SPACE: &str = "at://did:example:space/space/app.bsky.group/test";
+    const SPACE: &str = "at:space/did:example:space/app.bsky.group/test";
     const USER: &str = "did:example:alice";
     const AUTHORITY: &str = "did:example:space";
     const NOW: i64 = 1_790_000_000;
@@ -503,7 +503,7 @@ mod tests {
                 &user.did_key(),
                 NOW,
                 Some(&host),
-                Some("at://did:example:space/space/app.bsky.group/other")
+                Some("at:space/did:example:space/app.bsky.group/other")
             )),
             "BadJwtSub"
         );
@@ -528,9 +528,11 @@ mod tests {
         let t = parse(TokenType::Delegation, &mint(TokenType::Delegation, &not_did, &user, NOW)).unwrap();
         assert_eq!(check_delegation(&t).unwrap_err().code, "BadJwtIss");
         for sub in [
-            "at://did:example:space/space/app.bsky.group/test/did:example:alice/app.bsky.feed.post/1",
-            "at://did:example:space/space/app.bsky.group/test#/x",
+            "at:space/did:example:space/app.bsky.group/test/did:example:alice/app.bsky.feed.post/1",
+            "at:space/did:example:space/app.bsky.group/test#/x",
             "at://did:example:space/app.bsky.group/test",
+            // a token a host before the Nov 24 alpha minted: subs compare exactly
+            "at://did:example:space/space/app.bsky.group/test",
         ] {
             let t = parse(TokenType::Delegation, &mint(TokenType::Delegation, &Mint { sub, ..m }, &user, NOW)).unwrap();
             assert_eq!(check_delegation(&t).unwrap_err().code, "BadJwtSub", "{sub}");

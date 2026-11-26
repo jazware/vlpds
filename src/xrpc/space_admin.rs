@@ -55,10 +55,11 @@ fn record_json(uri: &str, v: &[u8], takendown: bool) -> XResult<J> {
 /// The CID of the space record `uri` names, None when there is none (or
 /// Spaces is off). A taken-down record still has one.
 pub(super) async fn record_cid(app: &App, uri: &str) -> XResult<Option<String>> {
-    let Some(u) = vlatproto::syntax::parse_space_uri(uri) else { return Ok(None) };
+    // a moderation subject may name a record in the form before Nov 24
+    let Some(u) = vlatproto::syntax::parse_space_uri_lenient(uri) else { return Ok(None) };
     let Some((author, collection, rkey)) = u.record else { return Ok(None) };
     let Ok(sp) = spaces(app) else { return Ok(None) };
-    let space = Space::parse(&format!("at://{}/space/{}/{}", u.authority, u.space_type, u.skey))?;
+    let space = Space::parse(&u.space())?;
     let p = app.partition(author)?;
     if load_head(sp, &p, author, &space).await?.is_none() {
         return Ok(None);
@@ -85,7 +86,7 @@ async fn get_space_repo(
     ClientIp(ip): ClientIp,
     Query(q): Query<RepoQ>,
 ) -> XResult<Json<J>> {
-    let space = Space::parse(&q.space)?;
+    let space = Space::parse_any(&q.space)?;
     let who = Who::of(&creds, q.actor.as_deref(), ip);
     let subject = SubjectRef::space_repo(&space.uri, &q.repo);
     let detail = json!({"space": space.uri, "repo": q.repo});
@@ -126,7 +127,7 @@ async fn list_space_records(
     ClientIp(ip): ClientIp,
     Query(q): Query<ListQ>,
 ) -> XResult<Json<J>> {
-    let space = Space::parse(&q.space)?;
+    let space = Space::parse_any(&q.space)?;
     if let Some(c) = &q.collection {
         super::repo::check_path(c, None)?;
     }
@@ -188,7 +189,7 @@ async fn get_space_record(
     ClientIp(ip): ClientIp,
     Query(q): Query<RecordQ>,
 ) -> XResult<Json<J>> {
-    let space = Space::parse(&q.space)?;
+    let space = Space::parse_any(&q.space)?;
     super::repo::check_path(&q.collection, Some(&q.rkey))?;
     let path = format!("{}/{}", q.collection, q.rkey);
     let uri = format!("{}/{}/{path}", space.uri, q.repo);

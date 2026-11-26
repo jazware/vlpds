@@ -1341,7 +1341,7 @@ async function main() {
   const rep = new Report(process.env.REPORT ?? 'e2e', {
     run: RUN,
     vlpds: process.env.VLPDS_REV ?? '(none)',
-    reference: 'bluesky-social/atproto 67476105 (@atproto/* 0.0.0-spaces-alpha-20261113224550)',
+    reference: 'bluesky-social/atproto 1f510f8e (@atproto/* 0.0.0-spaces-alpha-20261124235736)',
     cluster: !!process.env.CLUSTER,
     configs,
   })

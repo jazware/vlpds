@@ -77,7 +77,7 @@ impl Space {
         let u = vlatproto::syntax::parse_space_uri(s)
             .filter(|u| u.record.is_none())
             .ok_or_else(|| XrpcError::bad("InvalidRequest", format!("Not a space uri: {s}")))?;
-        let uri = format!("at://{}/space/{}/{}", u.authority, u.space_type, u.skey);
+        let uri = u.to_string();
         Ok(Space {
             sid: state::space_id(&uri),
             authority: u.authority.into(),
@@ -85,6 +85,12 @@ impl Space {
             skey: u.skey.into(),
             uri,
         })
+    }
+
+    /// Either form, for operator input, moderation subjects stored before
+    /// the Nov 24 alpha and the cluster's own calls.
+    pub fn parse_any(s: &str) -> XResult<Space> {
+        Space::parse(&state::current_space_uri(s))
     }
 
     pub fn target(&self) -> SpaceTarget<'_> {
@@ -242,7 +248,7 @@ async fn create_record_inner(app: &Arc<App>, creds: &Credentials, body: RecordBo
     let (repo, collection) = (req_str(&v, "repo")?, req_str(&v, "collection")?);
     let (rkey, validate) = (opt_str(&v, "rkey")?, opt_bool(&v, "validate")?);
     let record = take(&mut v, "record")?;
-    crate::ratelimit::check_repo_write(creds.did(), crate::ratelimit::CREATE_POINTS)?;
+    crate::ratelimit::check_space_write(creds.did(), crate::ratelimit::CREATE_POINTS)?;
     let did = writer(creds, &repo)?;
     refuse_published(&collection)?;
     creds.need_space(&space.target(), SpaceAccess::Write("create", &collection))?;
@@ -269,7 +275,7 @@ async fn put_record_inner(app: &Arc<App>, creds: &Credentials, body: RecordBody)
     let (repo, collection, rkey) = (req_str(&v, "repo")?, req_str(&v, "collection")?, req_str(&v, "rkey")?);
     let validate = opt_bool(&v, "validate")?;
     let record = take(&mut v, "record")?;
-    crate::ratelimit::check_repo_write(creds.did(), crate::ratelimit::UPDATE_POINTS)?;
+    crate::ratelimit::check_space_write(creds.did(), crate::ratelimit::UPDATE_POINTS)?;
     let did = writer(creds, &repo)?;
     refuse_published(&collection)?;
     // a create or an update by what the path holds: the worker asks for the
@@ -317,7 +323,7 @@ async fn delete_record(State(app): AppState, Auth(creds): Auth, Json(inp): Json<
 async fn delete_record_inner(app: &App, creds: &Credentials, inp: DeleteRecordIn) -> XResult<Json<J>> {
     spaces(app)?;
     let space = Space::parse(&inp.space)?;
-    crate::ratelimit::check_repo_write(creds.did(), crate::ratelimit::DELETE_POINTS)?;
+    crate::ratelimit::check_space_write(creds.did(), crate::ratelimit::DELETE_POINTS)?;
     let did = writer(creds, &inp.repo)?;
     refuse_published(&inp.collection)?;
     creds.need_space(&space.target(), SpaceAccess::Write("delete", &inp.collection))?;
@@ -358,7 +364,7 @@ async fn apply_writes_inner(app: &Arc<App>, creds: &Credentials, body: RecordBod
                 _ => DELETE_POINTS,
             })
             .sum();
-        check_repo_write(creds.did(), points)?;
+        check_space_write(creds.did(), points)?;
     }
     let did = writer(creds, &repo)?;
     if writes.len() > MAX_WRITES {
@@ -857,9 +863,9 @@ async fn list_records(
         check_path(c, None)?;
     }
     let limit = super::extract::limit_param(q.limit, 50, 1, 1000)?;
-    if q.cursor
-        .as_deref()
-        .is_some_and(|c| !crate::lexicon::valid_at_uri(c) && crate::lexicon::space_at_uri(c).is_none())
+    // a page's cursor from before the Nov 24 alpha is in the old form
+    let cursor = q.cursor.as_deref().map(state::current_space_uri);
+    if cursor.as_deref().is_some_and(|c| !crate::lexicon::valid_at_uri(c) && crate::lexicon::space_at_uri(c).is_none())
     {
         return Err(XrpcError::bad("InvalidCursor", "Malformed cursor"));
     }
@@ -879,7 +885,7 @@ async fn list_records(
     };
     let end = vlsync_store::keys::prefix_end(&prefix);
     let repo_uri = space.record_uri(&q.repo, "");
-    let hi = match q.cursor.as_deref() {
+    let hi = match cursor.as_deref() {
         None => end,
         Some(c) => match c.strip_prefix(&repo_uri) {
             Some(after) => [&base[..], after.as_bytes()].concat().min(end),
@@ -1493,7 +1499,8 @@ async fn list_spaces(State(app): AppState, Auth(creds): Auth, Query(q): Query<Li
     if q.space_did.as_deref().is_some_and(|d| !vlatproto::syntax::valid_did(d)) {
         return Err(XrpcError::bad("InvalidRequest", "spaceDid must be a DID"));
     }
-    if q.cursor.as_deref().is_some_and(|c| vlatproto::syntax::parse_space_uri(c).is_none()) {
+    // a page's cursor from before the Nov 24 alpha is in the old form
+    if q.cursor.as_deref().is_some_and(|c| vlatproto::syntax::parse_space_uri_lenient(c).is_none()) {
         return Err(XrpcError::bad("InvalidCursor", "Malformed cursor"));
     }
     let limit = super::extract::limit_param(q.limit, 50, 1, 100)?;
@@ -1544,7 +1551,7 @@ async fn space_view(app: &App, p: &crate::partition::Partition, did: &str, uri: 
 }
 
 fn authority_of(uri: &str) -> Option<&str> {
-    uri.strip_prefix("at://")?.split('/').next()
+    vlatproto::syntax::parse_space_uri(uri).map(|u| u.authority)
 }
 
 /// listSpaces charges a further `space-read-account` point per this many
@@ -1570,8 +1577,10 @@ async fn list_space_uris(
     };
     let lo = [&base[..], narrow.as_bytes()].concat();
     let hi = vlsync_store::keys::prefix_end(&lo);
+    // keys hold the stored form, which sorts as the wire form does
+    let cursor = q.cursor.as_deref().map(state::stored_space_uri);
     // every key of the cursor's URI is `{uri}\0..`, below `{uri}\x01`
-    let start = match q.cursor.as_deref() {
+    let start = match cursor.as_deref() {
         Some(c) => std::cmp::max(lo.clone(), [&base[..], c.as_bytes(), b"\x01"].concat()),
         None => lo,
     };
@@ -1585,10 +1594,11 @@ async fn list_space_uris(
     while let Some(kv) = iter.next().await? {
         scanned += 1;
         let uri = state::space_list_uri(&kv.key, &base).ok_or_else(|| anyhow::anyhow!("bad space list key"))?;
-        if uris.last().is_some_and(|l| l == uri) || q.cursor.as_deref().is_some_and(|c| uri <= c) {
+        if uris.last().is_some_and(|l| state::stored_space_uri(l) == uri) || cursor.as_deref().is_some_and(|c| uri <= c)
+        {
             continue;
         }
-        let Some(u) = vlatproto::syntax::parse_space_uri(uri) else { continue };
+        let Some(u) = vlatproto::syntax::parse_space_uri_lenient(uri) else { continue };
         if let Some(t) = q.space_type.as_deref().filter(|t| *t != u.space_type) {
             let want = [&base[..], format!("at://{}/space/{t}/", u.authority).as_bytes()].concat();
             let next = match want[..] > kv.key[..] {
@@ -1602,7 +1612,7 @@ async fn list_space_uris(
             iter.seek(next).await?;
             continue;
         }
-        uris.push(uri.to_string());
+        uris.push(u.to_string());
         if uris.len() == limit {
             break;
         }
@@ -1728,7 +1738,8 @@ async fn notify_credentials_revoked(
 async fn aud_holds_repo(app: &App, sp: &Spaces, space: &Space, aud: &str) -> bool {
     let held = match app.remote_owner(aud) {
         Some(owner) => {
-            let q = [("did", aud), ("space", space.uri.as_str())];
+            let stored = state::stored_space_uri(&space.uri);
+            let q = [("did", aud), ("space", &*stored)];
             super::internal::owner_get(app, &owner, "/internal/v1/space/holdsRepo", &q)
                 .await
                 .map(|v| v["holds"].as_bool() != Some(false))
@@ -1754,7 +1765,7 @@ struct HoldsQ {
 async fn internal_holds_repo(State(app): AppState, headers: HeaderMap, Query(q): Query<HoldsQ>) -> XResult<Json<J>> {
     super::internal::check(&app, &headers)?;
     let sp = spaces(&app)?;
-    let space = Space::parse(&q.space)?;
+    let space = Space::parse_any(&q.space)?;
     let p = app.partition(&q.did)?;
     Ok(Json(json!({"holds": load_head(sp, &p, &q.did, &space).await?.is_some()})))
 }
@@ -1804,8 +1815,9 @@ async fn nudge_revocation_peer(app: &App, addr: &str, block: Option<&str>) -> re
         .post(format!("{}/internal/v1/space/revocations/reload", addr.trim_end_matches('/')))
         .header(super::internal::HDR, &app.config.internal_token)
         .timeout(REVOKE_NUDGE_TIMEOUT);
+    // peers of an older build in a rolling upgrade read only the stored form
     if let Some(b) = block {
-        req = req.query(&[("block", b)]);
+        req = req.query(&[("block", &*state::stored_space_uri(b))]);
     }
     req.send().await.and_then(|r| r.error_for_status()).map(|_| ())
 }
@@ -1823,6 +1835,7 @@ async fn internal_reload_revocations(
     super::internal::check(&app, &headers)?;
     let sp = spaces(&app)?;
     if let Some(space) = &q.block {
+        let space = &*state::current_space_uri(space);
         let local = match crate::space::revocations::authority_of(space) {
             Some(a) => authority_hosted(&app, a).await.unwrap_or(true),
             None => false,
@@ -1948,8 +1961,10 @@ pub async fn deliver(app: &App, p: &Pending) -> Outcome {
     let sent = req.bearer_auth(jwt).timeout(NOTIFY_TIMEOUT).json(&body).send().await;
     match sent {
         Ok(r) if r.status().is_success() => Outcome::Delivered,
-        Ok(r) if retryable_status(r.status().as_u16()) => Outcome::Retry(format!("{} from {url}", r.status())),
-        Ok(r) => Outcome::Refused(format!("{} from {url}", r.status())),
+        Ok(r) if retryable_status(r.status().as_u16()) => {
+            Outcome::Retry(format!("{} from {url}", crate::space::host::describe_response(r).await))
+        }
+        Ok(r) => Outcome::Refused(format!("{} from {url}", crate::space::host::describe_response(r).await)),
         Err(e) => Outcome::Retry(crate::space::host::http_error(&url, e)),
     }
 }
@@ -1973,8 +1988,9 @@ async fn notify_owner(
     p: &Pending,
     hash: [u8; 32],
 ) -> XResult<Option<XResult<()>>> {
+    // an owner of an older build in a rolling upgrade reads only the stored form
     let body = InternalNotify {
-        space: space.uri.clone(),
+        space: state::stored_space_uri(&space.uri).into_owned(),
         repo: p.did.to_string(),
         repo_rev: p.repo_rev.to_string(),
         hash: base64::engine::general_purpose::STANDARD_NO_PAD.encode(hash),
@@ -2014,7 +2030,7 @@ async fn internal_notify(
     super::internal::check(&app, &headers)?;
     let sp = spaces(&app)?;
     sp.peer_notifies.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let space = Space::parse(&inp.space)?;
+    let space = Space::parse_any(&inp.space)?;
     let bad = |m: &str| XrpcError::bad("InvalidRequest", m.to_string());
     let repo_rev = Tid::parse(&inp.repo_rev).ok_or_else(|| bad("repoRev must be a valid TID"))?;
     let hash: [u8; 32] = base64::engine::general_purpose::STANDARD_NO_PAD
@@ -2289,7 +2305,10 @@ async fn notify_repo_update_inner(app: &App, headers: &HeaderMap, inp: &J) -> XR
     if auth.iss != repo {
         return Err(forbidden("Notification iss does not match the repo"));
     }
-    crate::ratelimit::check(&[&crate::ratelimit::SPACE_NOTIFY_IN], &auth.iss, 1)?;
+    {
+        use crate::ratelimit::*;
+        check(&[&SPACE_NOTIFY_IN, &SPACE_NOTIFY_IN_HOUR, &SPACE_NOTIFY_IN_DAY], &auth.iss, 1)?;
+    }
     if auth.aud != space.authority && auth.aud != token::space_host_aud(&space.authority) {
         return Err(forbidden("Notification aud does not match the space authority"));
     }

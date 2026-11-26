@@ -4,6 +4,7 @@
 
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { ACCOUNT_CALLBACK_PATH, beginSignIn, finishSignIn, forgetAll, OAuthSession, sweepKeys } from './oauth'
+import { spaceUri, spaceUriParts } from './spaceUri'
 import { call, XrpcError } from './xrpc'
 
 export const SESSION = 'spaces'
@@ -93,14 +94,15 @@ export function holdsSession(): boolean {
 
 // ---------------------------------------------------------------- spaces
 
+export { spaceUri, spaceUriParts }
+
 export type SpaceRef = { uri: string; authority: string; type: string; skey: string }
 
 export function parseSpace(uri: string): SpaceRef | null {
-  const m = /^at:\/\/([^/]+)\/space\/([^/]+)\/([^/]+)$/.exec(uri)
-  return m ? { uri, authority: m[1], type: m[2], skey: m[3] } : null
+  const p = spaceUriParts(uri)
+  return p && !p.record ? { uri: p.space, authority: p.authority, type: p.type, skey: p.skey } : null
 }
 
-export const spaceUri = (authority: string, type: string, skey: string) => `at://${authority}/space/${type}/${skey}`
 export const spacePath = (s: SpaceRef) => `/account/spaces/${encodeURIComponent(s.authority)}/${s.type}/${encodeURIComponent(s.skey)}`
 
 const S32 = '234567abcdefghijklmnopqrstuvwxyz'

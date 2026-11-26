@@ -1,4 +1,4 @@
-//! Ported from the reference's `tests/space/auth.test.ts` (67476105): who
+//! Ported from the reference's `tests/space/auth.test.ts` (1f510f8e): who
 //! may read what, and on whose authority. Each test names its reference
 //! case.
 //!

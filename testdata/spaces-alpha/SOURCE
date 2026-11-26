@@ -2,14 +2,14 @@ Test vectors for vlpds's Spaces primitives (src/space), from the reference
 implementation:
 
   repo:   https://github.com/bluesky-social/atproto
-  branch: permissioned-data (PR #5187)
-  commit: 6747610566eee1b6d743617bd8eb1136adccb362
+  branch: permissioned-data-alpha (PR #5187; the published Nov 24 alpha)
+  commit: 1f510f8e36a973f6fd055da349b586918805ae66
 
-packages/space/src (outside its tests) is unchanged between 16bfeba7 and
-67476105, and so is @atproto/space's code between the npm releases
-0.0.0-spaces-alpha-20261113224550 and -20261117141222. So vectors.json,
-export.star and export.json, generated at 16bfeba7, hold at the pin and
-weren't regenerated.
+vectors.json, export.star and export.json were regenerated at this commit,
+since every space URI in them moved to the at:space/ form.
+export-pre-nov24.star and export-pre-nov24.json are export.star and
+export.json as generated at 16bfeba7 (unchanged through 67476105, the Nov 17
+alpha), kept to check that an archive in the old form is refused.
 
 vectors.json was generated, not copied: the reference's own tests use
 random keys and check round trips. gen-vectors.mjs produced it by running the

@@ -204,7 +204,7 @@ async fn backup_restores_on_a_new_host() {
     let h = two_hosts().await;
     fill_bob(&h).await;
     // bob's own space too, alice writing in it
-    let own = format!("at://{}/space/{TEST_SPACE_TYPE}/{}", h.bob.did, unique_name("own"));
+    let own = format!("at:space/{}/{TEST_SPACE_TYPE}/{}", h.bob.did, unique_name("own"));
     h.bob
         .post(
             "com.atproto.space.createSpace",

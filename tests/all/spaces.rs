@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 const METHODS: &[(&str, bool)] = &[
     ("com.atproto.space.getRecord?repo=did:plc:x", false),
-    ("com.atproto.space.getDelegationToken?space=at://did:plc:x/space/com.example.group/default", false),
+    ("com.atproto.space.getDelegationToken?space=at:space/did:plc:x/com.example.group/default", false),
     ("com.atproto.space.createRecord", true),
     ("com.atproto.space.notifyRepoUpdate", true),
     ("com.atproto.space.createSpace", true),
@@ -122,8 +122,8 @@ async fn public_records_may_reference_spaces() {
         let s = TestServer::spawn_with(|c| c.spaces = spaces).await;
         let a = s.create_account("spr").await;
         for uri in [
-            "at://did:plc:asdf123/space/com.example.group/default/did:plc:user1/app.bsky.feed.post/3jui7kd54zh2y",
-            "at://did:plc:asdf123/space/com.example.group/default",
+            "at:space/did:plc:asdf123/com.example.group/default/did:plc:user1/app.bsky.feed.post/3jui7kd54zh2y",
+            "at:space/did:plc:asdf123/com.example.group/default",
         ] {
             let like = json!({
                 "$type": "app.bsky.feed.like",
@@ -138,7 +138,7 @@ async fn public_records_may_reference_spaces() {
         let like = json!({
             "$type": "app.bsky.feed.like",
             "createdAt": "2026-10-01T00:00:00.000Z",
-            "subject": {"uri": "at://user.test/space/com.example.group/default", "cid": "bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm"},
+            "subject": {"uri": "at:space/user.test/com.example.group/default", "cid": "bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm"},
         });
         let body = json!({"repo": a.did, "collection": "app.bsky.feed.like", "record": like});
         let r = s.xrpc.post("com.atproto.repo.createRecord", &body, &a.auth()).await;

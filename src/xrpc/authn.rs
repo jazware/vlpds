@@ -852,7 +852,7 @@ async fn check_space_credential(app: &App, headers: &HeaderMap) -> XResult<Crede
             verify_space_token(app, &t).await?;
             let space = token::check_credential(&t).map_err(token_err)?;
             let v = Arc::new(crate::space::credcache::Verified {
-                space: format!("at://{}/space/{}/{}", space.authority, space.space_type, space.skey),
+                space: space.space(),
                 iss: t.claims.iss.clone(),
                 jti: t.claims.jti.clone(),
                 exp: t.claims.exp,
@@ -916,7 +916,7 @@ pub async fn verify_delegation(app: &App, tok: &str) -> XResult<Delegation> {
     verify_space_token(app, &t).await.map_err(invalid)?;
     let space = token::check_delegation(&t).map_err(token_err).map_err(invalid)?;
     let authority = space.authority.to_string();
-    let space = format!("at://{authority}/space/{}/{}", space.space_type, space.skey);
+    let space = space.space();
     // before the claim, which a refused exchange would otherwise spend
     let limit_key = private_limit_key(app, &format!("{} {authority}", t.claims.iss));
     crate::ratelimit::check(&[&crate::ratelimit::SPACE_CREDENTIAL], &limit_key, 1)?;

@@ -195,7 +195,7 @@ impl Default for Outbox {
 
 /// A space URI's authority.
 fn authority(uri: &str) -> &str {
-    uri.strip_prefix("at://").and_then(|r| r.split('/').next()).unwrap_or(uri)
+    uri.strip_prefix(vlatproto::syntax::SPACE_URI_PREFIX).and_then(|r| r.split('/').next()).unwrap_or(uri)
 }
 
 impl Outbox {
@@ -567,7 +567,7 @@ mod tests {
     }
 
     fn uri(authority: usize) -> String {
-        format!("at://did:web:a{authority}.example/space/t.t/k")
+        format!("at:space/did:web:a{authority}.example/t.t/k")
     }
 
     #[test]
