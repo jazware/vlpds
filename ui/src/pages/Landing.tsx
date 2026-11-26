@@ -1,5 +1,6 @@
 import { Fragment } from 'react'
 import { Topbar, CopyText, Status } from '../components/ui'
+import { brand } from '../lib/brand'
 import { useLoad, useSession } from '../lib/hooks'
 import { Link } from '../lib/router'
 import { call } from '../lib/xrpc'
@@ -128,11 +129,19 @@ export function Landing() {
         <span title={health.data?.version ? `vlpds ${health.data.version}` : undefined}>
           vlpds{health.data?.version ? <span className="mono muted"> {health.data.version.replace(/\+(.{0,12}).*/, '+$1')}</span> : null}
         </span>
-        <Link to="/docs">Docs</Link>
+        {/* a full load, so the docs come up in vlpds's own colors */}
+        {brand.custom ? <a href="/docs">Docs</a> : <Link to="/docs">Docs</Link>}
         <a href="/xrpc/_health">Health</a>
         <a href="/.well-known/oauth-authorization-server">OAuth metadata</a>
         {info?.links?.privacyPolicy && <a href={info.links.privacyPolicy}>Privacy</a>}
         {info?.links?.termsOfService && <a href={info.links.termsOfService}>Terms</a>}
+        {brand.links
+          .filter((l) => l.label === 'Home' || l.label === 'Support')
+          .map((l) => (
+            <a key={l.label} href={l.url}>
+              {l.label}
+            </a>
+          ))}
         {info?.contact?.email && (
           <span>
             Report abuse: <Email address={info.contact.email} />

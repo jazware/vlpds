@@ -77,7 +77,7 @@ export function DocsApp({ path }: { path: string }) {
 
   return (
     <>
-      <Topbar where="docs" />
+      <Topbar where="docs" own />
       <div className="docs">
         <aside className={`docs-nav${navOpen ? ' open' : ''}`} aria-label="Documentation">
           <button className="docs-nav-toggle btn sm" aria-expanded={navOpen} onClick={() => setNavOpen((o) => !o)}>

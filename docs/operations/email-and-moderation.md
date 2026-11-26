@@ -63,10 +63,8 @@ edges:
 | `--moderation-email-smtp-url` | `PDS_MODERATION_EMAIL_SMTP_URL` | admin `sendEmail` only. Unset, moderation mail goes through the main mailer |
 | `--moderation-email-api-url` | | the same over the REST API. Its token is `--moderation-email-api-token-file`, or the main one when that's unset |
 | `--moderation-email-address` | `PDS_MODERATION_EMAIL_ADDRESS` | required with a moderation URL |
-| `--email-brand-name` | `PDS_SERVICE_NAME` | default "{hostname} PDS" |
-| `--email-home-url` | `PDS_HOME_URL` | footer link (default https://bsky.app) |
-| `--email-logo-url` | `PDS_LOGO_URL` | header logo and footer mark (default the Bluesky logo). vlpds serves its own as a PNG at `/og/email-logo.png` (mail clients don't render SVG) |
-| `--email-primary-color` | `PDS_PRIMARY_COLOR` | default `#067df7` |
+| `--brand-name`, `--home-url`, `--primary-color`, `--support-url`, `--logo-file` | `PDS_SERVICE_NAME`, `PDS_HOME_URL`, `PDS_PRIMARY_COLOR`, `PDS_SUPPORT_URL` | the name, footer links, accent and logo in email, as on the pages: see [Branding](branding.md). Unset, email uses "{hostname} PDS", https://bsky.app, `#067df7` and the Bluesky logo, as the reference does. `--email-brand-name`, `--email-home-url` and `--email-primary-color` are their old names |
+| `--email-logo-url` | `PDS_LOGO_URL` | email's logo instead of the served `--logo-file`. vlpds serves its own mark as a PNG at `/og/email-logo.png` (mail clients don't render SVG) |
 | `--email-disable-confirmation-link` | `PDS_EMAIL_DISABLE_CONFIRMATION_LINK` | drops the bsky.app "click here" link |
 | `--mail-daily-budget` | | account mails per UTC day for the whole cluster (default 900). Keep it under the provider's daily quota ([Mail budgets](#mail-budgets)) |
 

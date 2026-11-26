@@ -1,6 +1,8 @@
 // Screenshots of the server-rendered consent page for the testdata/oauth apps:
 // `npm run consent-shots <pagesDir> [outDir]`, where pagesDir holds the pages
-// `VLPDS_ROLLUP_DUMP=<pagesDir> cargo test --lib oauth::rollup::tests::dump_rows` writes.
+// `VLPDS_ROLLUP_DUMP=<pagesDir> cargo test --lib oauth::rollup::tests::dump_rows` writes, or the
+// branded pages `VLPDS_BRAND_DUMP=<pagesDir> cargo test --lib brand::tests::dump_brand` writes
+// (their logo and favicon at /brand/*).
 // Serves them with the page's fonts, shoots 1280 and 390 px wide in light and dark, as
 // loaded and with every row opened, and exits 1 on page errors or sideways scroll.
 
@@ -22,6 +24,10 @@ const server = createServer((req, res) => {
     if (path.startsWith('/fonts/')) {
       res.setHeader('content-type', 'font/woff2')
       return res.end(readFileSync(join(fonts, path.slice(7).replace(/\.\./g, ''))))
+    }
+    if (path === '/brand/logo' || path === '/brand/favicon') {
+      res.setHeader('content-type', 'image/png')
+      return res.end(readFileSync(join(pages, path.slice(1))))
     }
     res.setHeader('content-type', 'text/html; charset=utf-8')
     res.end(readFileSync(join(pages, path.slice(1).replace(/\.\./g, '') + '.html')))

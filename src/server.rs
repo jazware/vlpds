@@ -88,12 +88,15 @@ pub struct Config {
     pub mailer: Option<crate::mail::SharedMailer>,
     /// None: `mailer`.
     pub moderation_mailer: Option<crate::mail::SharedMailer>,
-    pub email_branding: crate::mail::Branding,
+    /// Name, logo, accent and links on the user-facing pages and in email
+    /// (`crate::brand`).
+    pub brand: crate::brand::Brand,
+    /// `--email-logo-url`: email's logo instead of the served one.
+    pub email_logo_url: Option<String>,
+    pub email_disable_confirmation_link: bool,
     pub max_blob_size: u64,
     /// The most a per-account `maxBlobBytes` may be (`--max-blob-override-mb`).
     pub max_blob_override: u64,
-    pub privacy_policy_url: Option<String>,
-    pub terms_of_service_url: Option<String>,
     pub contact_email_address: Option<String>,
     pub blob_gc_grace: Duration,
     /// None: [`crate::xrpc::blobs::default_gc_interval`] of the grace.
@@ -315,12 +318,12 @@ impl Default for Config {
             kek: Default::default(),
             mailer: None,
             moderation_mailer: None,
-            email_branding: Default::default(),
+            brand: Default::default(),
+            email_logo_url: None,
+            email_disable_confirmation_link: false,
             cluster: None,
             max_blob_size: 100 << 20,
             max_blob_override: 100 << 20,
-            privacy_policy_url: None,
-            terms_of_service_url: None,
             contact_email_address: None,
             blob_gc_grace: Duration::from_secs(6 * 3600),
             blob_gc_interval: None,

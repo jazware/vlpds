@@ -36,32 +36,13 @@ pub struct Branding {
     pub primary_color: Option<String>,
     /// Drops confirm-email's "click here" link to bsky.app/intent/verify-email.
     pub disable_confirmation_link: bool,
+    /// (title, url) after the home link in the footer: the operator's
+    /// support, terms and privacy links (vlpds's own; the reference has
+    /// only the home link).
+    pub links: Vec<(String, String)>,
 }
 
 impl Branding {
-    /// Each flag falls back to the reference PDS's variable.
-    pub fn from_flags(
-        name: Option<String>,
-        home_url: Option<String>,
-        logo_url: Option<String>,
-        primary_color: Option<String>,
-        disable_confirmation_link: bool,
-    ) -> Branding {
-        let pick = super::pick;
-        let env_bool = |k: &str| {
-            std::env::var(k)
-                .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
-                .unwrap_or(false)
-        };
-        Branding {
-            name: pick(name, "PDS_SERVICE_NAME"),
-            home_url: pick(home_url, "PDS_HOME_URL"),
-            logo_url: pick(logo_url, "PDS_LOGO_URL"),
-            primary_color: pick(primary_color, "PDS_PRIMARY_COLOR"),
-            disable_confirmation_link: disable_confirmation_link || env_bool("PDS_EMAIL_DISABLE_CONFIRMATION_LINK"),
-        }
-    }
-
     /// Defaults to "{hostname} PDS", as the reference.
     pub fn service_name(&self, public_url: &str) -> String {
         if let Some(n) = &self.name {
@@ -322,6 +303,12 @@ impl Email<'_> {
         let home = b.home_url.as_deref().unwrap_or(DEFAULT_HOME_URL);
         let logo = b.logo_url.as_deref().unwrap_or(DEFAULT_LOGO_URL);
         let mark = b.logo_url.as_deref().unwrap_or(DEFAULT_MARK_URL);
+        let footer_links: String = b
+            .links
+            .iter()
+            .map(|(t, u)| format!(" &middot; <a\n                                        href='{}'\n                                        style='{LINK_STYLE}'\n                                        target='_blank'\n                                      >{}</a>", esc(u), esc(t)))
+            .collect();
+        let links_txt: String = b.links.iter().map(|(t, u)| format!("\n{t}: {u}")).collect();
         let (token_block, token_txt) = match &details {
             Some(lines) => (
                 format!(
@@ -347,9 +334,10 @@ impl Email<'_> {
             "home_url" => Some(esc(home)),
             "logo_url" => Some(esc(logo)),
             "mark_url" => Some(esc(mark)),
+            "footer_links" => Some(Cow::Borrowed(footer_links.as_str())),
             _ => None,
         });
-        let text = format!("{title}\n\n{intro_txt}\n\n{token_txt}\n\n{outro_txt}\n\n--\n{name} ({home})\n");
+        let text = format!("{title}\n\n{intro_txt}\n\n{token_txt}\n\n{outro_txt}\n\n--\n{name} ({home}){links_txt}\n");
         Rendered { subject: self.subject().to_string(), text, html }
     }
 }
@@ -660,13 +648,36 @@ mod tests {
             logo_url: Some("x' onload='y".into()),
             primary_color: Some("red'><i>".into()),
             disable_confirmation_link: false,
+            links: vec![("Su<p>".into(), "https://s/'><u>".into())],
         };
         let r = Email::ResetPassword { handle: "a.test", token: TOKEN }.render(&b, URL);
         assert!(r.html.contains("alt='Evil&#x27; onerror=&#x27;x'"));
         assert!(r.html.contains("href='https://h/&quot;&gt;&lt;b&gt;'"));
         assert!(r.html.contains("src='x&#x27; onload=&#x27;y'"));
         assert!(r.html.contains("style='color:red&#x27;&gt;&lt;i&gt;'"));
-        assert!(!r.html.contains("<b>") && !r.html.contains("<i>"));
+        assert!(r.html.contains("href='https://s/&#x27;&gt;&lt;u&gt;'") && r.html.contains(">Su&lt;p&gt;</a>"));
+        assert!(!r.html.contains("<b>") && !r.html.contains("<i>") && !r.html.contains("<u>"));
+    }
+
+    #[test]
+    fn footer_links_only_when_set() {
+        let r = Email::DeleteAccount { token: TOKEN }.render(&Branding::default(), URL);
+        assert!(!r.html.contains("&middot;") && !r.html.contains("{{"), "{}", r.html);
+        let b = Branding {
+            links: vec![
+                ("Support".into(), "mailto:help@x.example".into()),
+                ("Privacy Policy".into(), "https://x.example/p".into()),
+            ],
+            ..Default::default()
+        };
+        let r = Email::DeleteAccount { token: TOKEN }.render(&b, URL);
+        assert!(r.html.contains(" &middot; <a\n"), "{}", r.html);
+        assert!(r.html.contains("href='mailto:help@x.example'") && r.html.contains(">Privacy Policy</a>"));
+        assert!(
+            r.text.ends_with("\nSupport: mailto:help@x.example\nPrivacy Policy: https://x.example/p\n"),
+            "{}",
+            r.text
+        );
     }
 
     #[test]

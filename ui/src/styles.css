@@ -223,6 +223,26 @@ code,
 .wordmark svg {
   color: var(--accent);
 }
+.wordmark img.logo {
+  display: block;
+  height: 28px;
+  width: auto;
+  max-width: 180px;
+  object-fit: contain;
+}
+/* the operator's links (BrandFooter) */
+.brand-links {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 8px 18px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin: 32px 0 8px;
+  font-size: 13px;
+}
+.brand-links a {
+  color: var(--ink2);
+}
 .wordmark .where {
   font-weight: 500;
   color: var(--ink2);

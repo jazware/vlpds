@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { CopyText, DomainAffix, ErrorNotice, Field, Notice, Spinner, Status, Topbar } from '../../components/ui'
+import { BrandFooter, CopyText, DomainAffix, ErrorNotice, Field, Notice, Spinner, Status, Topbar } from '../../components/ui'
 import { RecoveryKeyExplainer, RecoveryKeyPicker, type RecoveryKeyChoice } from '../../components/RecoveryKey'
 import { BackupBox } from '../../components/Backup'
 import { canStreamToDisk, type BackupSource } from '../../lib/backup'
@@ -207,6 +207,7 @@ export function Migrate() {
           {!!oauthError && !(saved?.activated && !saved.spaces) && <Problem error={oauthError} />}
           {body}
         </section>
+        <BrandFooter />
       </main>
     </Adv.Provider>
   )

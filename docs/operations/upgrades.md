@@ -219,6 +219,17 @@ list with no members, and a `managedspace` asks its app about both sides. Rollin
 redeploy. A row an older build then changes loses its new policy fields and converts again on the
 way forward.
 
+## Branding
+
+Branding ([Branding](branding.md)) is boot config. Nothing of it is written to the bucket, so it
+has no feature level and doesn't affect rolling back.
+
+Builds before branding read `--email-brand-name`, `--email-home-url` and `--email-primary-color`
+(and their `PDS_*` variables) for email only. Builds with it use them on the account and OAuth
+pages too, and check them at startup. So before you upgrade, make sure the color is `#rrggbb` and
+the home link is https, or the node won't start. A name you set shows in the page headers, and
+`--primary-color` recolors dark mode too unless you also set `--primary-color-dark`.
+
 ## Upgrading from builds before 2026-10-06
 
 Builds from 2026-10-06 on store more in each repo's stats row (40 bytes, up from 24) and keep

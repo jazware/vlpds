@@ -30,6 +30,7 @@ mod backlinks;
 mod blob_deletes;
 mod blob_gc_race;
 mod blobs;
+mod branding;
 mod bulk_create;
 mod cache_caps;
 mod cbor_transcode;

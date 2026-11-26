@@ -16,8 +16,12 @@ use std::sync::Arc;
 async fn ref_describe_server_links_contact_and_blob_limit() {
     let s = TestServer::spawn_with(|c| {
         c.max_blob_size = 123_456;
-        c.privacy_policy_url = Some("https://example.com/privacy-policy".into());
-        c.terms_of_service_url = Some("https://example.com/tos".into());
+        let parts = vlpds::brand::Parts {
+            privacy_policy_url: Some("https://example.com/privacy-policy".into()),
+            terms_of_service_url: Some("https://example.com/tos".into()),
+            ..Default::default()
+        };
+        c.brand = vlpds::brand::Brand::new(parts, &c.public_url).unwrap();
         c.contact_email_address = Some("abuse@example.com".into());
     })
     .await;

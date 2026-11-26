@@ -132,7 +132,11 @@ async fn public_pages_have_link_preview_tags() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn head_values_are_escaped() {
-    let s = TestServer::spawn_with(|c| c.email_branding.name = Some("Tom & Jerry's \"PDS\" <b>".into())).await;
+    let s = TestServer::spawn_with(|c| {
+        let parts = vlpds::brand::Parts { name: Some("Tom & Jerry's \"PDS\" <b>".into()), ..Default::default() };
+        c.brand = vlpds::brand::Brand::new(parts, &c.public_url).unwrap();
+    })
+    .await;
     let r = s.xrpc.send(s.xrpc.http.get(format!("{}/", s.url))).await;
     let html = body(&r);
     assert_eq!(meta(&html, "property", "og:site_name").unwrap(), "Tom &amp; Jerry&#39;s &quot;PDS&quot; &lt;b&gt;");

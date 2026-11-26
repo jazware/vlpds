@@ -580,21 +580,43 @@ struct Args {
     /// --email-api-url.
     #[arg(long, env = "VLPDS_EMAIL_FROM_ADDRESS")]
     email_from_address: Option<String>,
-    /// Service name in email (falls back to PDS_SERVICE_NAME; default
-    /// "{hostname} PDS").
-    #[arg(long, env = "VLPDS_EMAIL_BRAND_NAME")]
-    email_brand_name: Option<String>,
-    /// Footer link in email (falls back to PDS_HOME_URL; default
-    /// https://bsky.app, as the reference).
-    #[arg(long, env = "VLPDS_EMAIL_HOME_URL")]
-    email_home_url: Option<String>,
-    /// Logo image URL in email (falls back to PDS_LOGO_URL; default the
-    /// reference's Bluesky logo).
+    /// The server's name on its landing, account, sign-up, /migrate and
+    /// OAuth pages and in email (falls back to VLPDS_EMAIL_BRAND_NAME, then
+    /// PDS_SERVICE_NAME). Unset: vlpds's own on the pages, "{hostname} PDS"
+    /// in email. docs/operations/branding.md.
+    #[arg(long, env = "VLPDS_BRAND_NAME", alias = "email-brand-name")]
+    brand_name: Option<String>,
+    /// Logo file (PNG, JPEG or WebP, at most 256 KiB; never SVG), read at
+    /// startup and served at /brand/logo. Shown beside --brand-name in the
+    /// header, and email's logo unless --email-logo-url is set.
+    #[arg(long, env = "VLPDS_LOGO_FILE")]
+    logo_file: Option<std::path::PathBuf>,
+    /// Favicon file (PNG, JPEG or WebP, at most 256 KiB), served at
+    /// /brand/favicon. Unset: vlpds's.
+    #[arg(long, env = "VLPDS_FAVICON_FILE")]
+    favicon_file: Option<std::path::PathBuf>,
+    /// Accent color, #rrggbb: buttons, links and focus marks on the branded
+    /// pages, and email's (falls back to VLPDS_EMAIL_PRIMARY_COLOR, then
+    /// PDS_PRIMARY_COLOR; email's default #067df7). Text on it is black or
+    /// white, whichever contrasts more.
+    #[arg(long, env = "VLPDS_PRIMARY_COLOR", alias = "email-primary-color")]
+    primary_color: Option<String>,
+    /// Accent color in dark mode, #rrggbb (default --primary-color).
+    #[arg(long, env = "VLPDS_PRIMARY_COLOR_DARK", requires = "primary_color")]
+    primary_color_dark: Option<String>,
+    /// Home link (https) under the branded pages and email's footer link
+    /// (falls back to VLPDS_EMAIL_HOME_URL, then PDS_HOME_URL; email's
+    /// default https://bsky.app, as the reference).
+    #[arg(long, env = "VLPDS_HOME_URL", alias = "email-home-url")]
+    home_url: Option<String>,
+    /// Support link (https or mailto:) under the branded pages and in email
+    /// (falls back to PDS_SUPPORT_URL).
+    #[arg(long, env = "VLPDS_SUPPORT_URL")]
+    support_url: Option<String>,
+    /// Logo image URL in email instead of the served --logo-file (falls back
+    /// to PDS_LOGO_URL; default the reference's Bluesky logo).
     #[arg(long, env = "VLPDS_EMAIL_LOGO_URL")]
     email_logo_url: Option<String>,
-    /// Accent color in email (falls back to PDS_PRIMARY_COLOR; default #067df7).
-    #[arg(long, env = "VLPDS_EMAIL_PRIMARY_COLOR")]
-    email_primary_color: Option<String>,
     /// Drop the bsky.app "click here" link from email confirmation mail
     /// (or PDS_EMAIL_DISABLE_CONFIRMATION_LINK=true).
     #[arg(long, env = "VLPDS_EMAIL_DISABLE_CONFIRMATION_LINK")]
@@ -629,10 +651,12 @@ struct Args {
     /// default --max-blob-mb, so raising one is opt-in). At most 4768 (5 GB).
     #[arg(long, env = "VLPDS_MAX_BLOB_OVERRIDE_MB")]
     max_blob_override_mb: Option<u64>,
-    /// describeServer links.privacyPolicy (falls back to PDS_PRIVACY_POLICY_URL).
+    /// Privacy policy link (https): describeServer links.privacyPolicy and
+    /// under the branded pages (falls back to PDS_PRIVACY_POLICY_URL).
     #[arg(long, env = "VLPDS_PRIVACY_POLICY_URL")]
     privacy_policy_url: Option<String>,
-    /// describeServer links.termsOfService (falls back to PDS_TERMS_OF_SERVICE_URL).
+    /// Terms of service link (https): describeServer links.termsOfService
+    /// and under the branded pages (falls back to PDS_TERMS_OF_SERVICE_URL).
     #[arg(long, env = "VLPDS_TERMS_OF_SERVICE_URL")]
     terms_of_service_url: Option<String>,
     /// describeServer contact.email (falls back to PDS_CONTACT_EMAIL_ADDRESS).
@@ -1594,17 +1618,13 @@ async fn run(args: Args) -> anyhow::Result<()> {
             from: args.moderation_email_address.clone(),
             ca_file: args.email_smtp_ca_file.as_deref(),
         })?,
-        email_branding: vlpds::mail::Branding::from_flags(
-            args.email_brand_name.clone(),
-            args.email_home_url.clone(),
-            args.email_logo_url.clone(),
-            args.email_primary_color.clone(),
-            args.email_disable_confirmation_link,
-        ),
+        brand: brand_settings(&args).load(&args.public_url)?,
+        email_logo_url: flag_or_env(&args.email_logo_url, "PDS_LOGO_URL"),
+        email_disable_confirmation_link: args.email_disable_confirmation_link
+            || std::env::var("PDS_EMAIL_DISABLE_CONFIRMATION_LINK")
+                .is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")),
         max_blob_size,
         max_blob_override,
-        privacy_policy_url: flag_or_env(&args.privacy_policy_url, "PDS_PRIVACY_POLICY_URL"),
-        terms_of_service_url: flag_or_env(&args.terms_of_service_url, "PDS_TERMS_OF_SERVICE_URL"),
         contact_email_address: flag_or_env(&args.contact_email_address, "PDS_CONTACT_EMAIL_ADDRESS"),
         blob_gc_grace: Duration::from_secs(args.blob_gc_grace_secs),
         blob_gc_interval: args.blob_gc_interval_secs.map(Duration::from_secs),
@@ -1797,7 +1817,53 @@ async fn shutdown_signal() {
     }
 }
 
+fn brand_settings(args: &Args) -> vlpds::brand::Settings {
+    vlpds::brand::Settings {
+        name: args.brand_name.clone(),
+        logo_file: args.logo_file.clone(),
+        favicon_file: args.favicon_file.clone(),
+        primary_color: args.primary_color.clone(),
+        primary_color_dark: args.primary_color_dark.clone(),
+        home_url: args.home_url.clone(),
+        support_url: args.support_url.clone(),
+        terms_of_service_url: args.terms_of_service_url.clone(),
+        privacy_policy_url: args.privacy_policy_url.clone(),
+    }
+    .with_fallbacks(|k| std::env::var(k).ok())
+}
+
 /// Else the reference PDS's environment variable.
 fn flag_or_env(v: &Option<String>, k: &str) -> Option<String> {
     v.clone().filter(|v| !v.is_empty()).or_else(|| std::env::var(k).ok().filter(|v| !v.is_empty()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The email-only names still work, as aliases of the server-wide ones.
+    #[test]
+    fn old_email_flags_are_aliases() {
+        let a = Args::try_parse_from([
+            "vlpds",
+            "--email-brand-name",
+            "Acme",
+            "--email-home-url",
+            "https://acme.example",
+            "--email-primary-color",
+            "#123456",
+            "--support-url",
+            "mailto:help@acme.example",
+        ])
+        .unwrap();
+        let s = brand_settings(&a);
+        assert_eq!(s.name.as_deref(), Some("Acme"));
+        assert_eq!(s.home_url.as_deref(), Some("https://acme.example"));
+        assert_eq!(s.primary_color.as_deref(), Some("#123456"));
+        assert_eq!(s.support_url.as_deref(), Some("mailto:help@acme.example"));
+        let a = Args::try_parse_from(["vlpds", "--brand-name", "New", "--primary-color", "#abcdef"]).unwrap();
+        assert_eq!(a.brand_name.as_deref(), Some("New"));
+        assert!(Args::try_parse_from(["vlpds", "--brand-name", "a", "--email-brand-name", "b"]).is_err());
+        assert!(Args::try_parse_from(["vlpds", "--primary-color-dark", "#000000"]).is_err());
+    }
 }

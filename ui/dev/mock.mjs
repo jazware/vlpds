@@ -3,6 +3,7 @@
 // VLPDS_MOCK_LEVEL=1 shows the sign-in providers page below feature level 2.
 
 import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 const env = (k) => (typeof process !== 'undefined' ? process.env[k] : undefined)
 const now = Date.now()
@@ -182,12 +183,31 @@ function handle(nsid, body, method) {
   }
 }
 
+// VLPDS_MOCK_BRAND=<dir>: the branding `VLPDS_BRAND_DUMP=<dir> cargo test --lib brand::tests::dump_brand`
+// wrote, in the head (as the server renders it) and at /brand/*.
+const brandDir = env('VLPDS_MOCK_BRAND')
+const DEFAULT_ICON = '<link rel="icon" type="image/svg+xml" href="/favicon.svg" />'
+
 export function vlpdsMock() {
   return {
     name: 'vlpds-mock',
     apply: 'serve',
+    transformIndexHtml(html, ctx) {
+      if (env('VLPDS_MOCK') !== '1' || !brandDir) return html
+      const path = ctx.originalUrl ?? ctx.path ?? '/'
+      if (path.startsWith('/admin') || path.startsWith('/docs')) return html
+      return html.replace(DEFAULT_ICON, readFileSync(join(brandDir, 'brand', 'head.txt'), 'utf8'))
+    },
     configureServer(server) {
       if (env('VLPDS_MOCK') !== '1') return
+      if (brandDir)
+        server.middlewares.use('/brand', (req, res) => {
+          const name = (req.url ?? '').split('?')[0].replace(/^\//, '')
+          const types = { logo: 'image/png', favicon: 'image/png', 'brand.css': 'text/css' }
+          if (!types[name]) return ((res.statusCode = 404), res.end())
+          res.setHeader('content-type', types[name])
+          res.end(readFileSync(join(brandDir, 'brand', name)))
+        })
       server.middlewares.use('/xrpc', (req, res) => {
         const nsid = (req.url ?? '').split('?')[0].replace(/^\//, '')
         let raw = ''

@@ -415,7 +415,7 @@ fn dump_rows() {
             loopback: false,
             server_name: "vlpds",
         };
-        let html = crate::oauth::ui::consent(&ctx, "did:plc:abc", "alice.example.com", &rows);
+        let html = crate::oauth::ui::consent(&Default::default(), &ctx, "did:plc:abc", "alice.example.com", &rows);
         std::fs::write(format!("{dir}/{name}.html"), html).unwrap();
     }
     let j = serde_json::to_string_pretty(&sessions).unwrap() + "\n";

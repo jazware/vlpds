@@ -684,7 +684,9 @@ pub(super) async fn mail_permit(
 
 pub(super) fn deliver(app: &App, permit: MailPermit, to: &str, email: crate::mail::Email<'_>) {
     debug_assert_eq!(permit.0, email.purpose());
-    let r = email.render(&app.config.email_branding, &app.public_url);
+    let c = &app.config;
+    let branding = c.brand.email(c.email_logo_url.clone(), c.email_disable_confirmation_link, &app.public_url);
+    let r = email.render(&branding, &app.public_url);
     let mail = Mail {
         to: to.to_string(),
         subject: r.subject,
@@ -1356,10 +1358,10 @@ pub(super) async fn session_info(app: &App, a: &Account, include_email: bool) ->
 async fn describe_server(State(app): AppState) -> Json<J> {
     // As the reference: unset links and contact fields are omitted.
     let mut links = serde_json::Map::new();
-    if let Some(u) = &app.config.privacy_policy_url {
+    if let Some(u) = &app.config.brand.privacy_policy_url {
         links.insert("privacyPolicy".into(), json!(u));
     }
-    if let Some(u) = &app.config.terms_of_service_url {
+    if let Some(u) = &app.config.brand.terms_of_service_url {
         links.insert("termsOfService".into(), json!(u));
     }
     let mut contact = serde_json::Map::new();

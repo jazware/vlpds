@@ -5,6 +5,7 @@ pub mod appview_override;
 pub mod asn;
 pub mod auth;
 pub mod backlinks;
+pub mod brand;
 pub mod build;
 pub mod caches;
 pub mod chan;

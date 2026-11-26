@@ -2,6 +2,8 @@
 // and Connected apps sections against the mock (dev/mock.mjs): `npm run shots [outDir]` (default shots/, gitignored).
 // Starts two dev servers (feature level 2, and level 1 for the not-available state), shoots
 // desktop and phone, and exits 1 on page errors or console errors.
+// VLPDS_SHOTS_BRAND=<dir> adds a branded run (outDir/brand/): the landing and account pages with the
+// made-up brand `VLPDS_BRAND_DUMP=<dir> cargo test --lib brand::tests::dump_brand` writes.
 
 import { chromium } from 'playwright'
 import { spawn } from 'node:child_process'
@@ -22,7 +24,9 @@ function serve(port, extra = {}) {
   })
 }
 
+const brandDir = process.env.VLPDS_SHOTS_BRAND
 const servers = [await serve(5731), await serve(5732, { VLPDS_MOCK_LEVEL: '1' })]
+if (brandDir) servers.push(await serve(5733, { VLPDS_MOCK_BRAND: resolve(brandDir) }))
 const browser = await chromium.launch()
 const stop = () => servers.forEach((s) => s.kill())
 process.on('exit', stop)
@@ -156,6 +160,32 @@ for (const [w, theme, tag] of [[1280, 'light', 'desktop'], [1280, 'dark', 'deskt
   const wideOpen = await pg.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   if (wideOpen > 0) (failures++, console.error(`apps-${tag}-open: ${wideOpen} px of sideways scroll`))
   await pg.context().close()
+}
+
+if (brandDir) {
+  mkdirSync(`${out}/brand`, { recursive: true })
+  for (const [w, theme, tag] of [[1280, 'light', 'desktop-light'], [1280, 'dark', 'desktop-dark'], [390, 'light', 'phone-light'], [390, 'dark', 'phone-dark']]) {
+    for (const [path, name, account] of [['/account', 'account', true], ['/', 'landing', false]]) {
+      const pg = await page('', { w, theme, account })
+      await pg.goto(`http://localhost:5733${path}`)
+      await pg.locator('.wordmark img.logo').waitFor()
+      if (account) await pg.getByText('@alice.example.com').first().waitFor({ state: 'attached' })
+      await pg.evaluate(() => document.fonts.ready)
+      await pg.waitForTimeout(300)
+      const got = await pg.evaluate(() => ({
+        name: document.querySelector('.wordmark')?.textContent,
+        accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
+        links: document.querySelectorAll('.brand-links a, .footer a[href^="mailto:"]').length,
+      }))
+      const want = theme === 'dark' ? '#fb923c' : '#c2410c'
+      if (!got.name?.startsWith('Tidepool Social') || got.accent !== want) (failures++, console.error(`brand ${name}-${tag}`, got))
+      if (account && got.links !== 4) (failures++, console.error(`brand ${name}-${tag}: ${got.links} links`))
+      const f = `${out}/brand/${name}-${tag}.png`
+      await pg.screenshot({ path: f, fullPage: true })
+      console.log(f)
+      await pg.context().close()
+    }
+  }
 }
 
 await browser.close()

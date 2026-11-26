@@ -141,7 +141,7 @@ function AdminLogin() {
   if (proxy.checking)
     return (
       <>
-        <Topbar where="Operator console" />
+        <Topbar where="Operator console" own />
         <main className="signin">
           <Spinner />
         </main>
@@ -149,7 +149,7 @@ function AdminLogin() {
     )
   return (
     <>
-      <Topbar where="Operator console" />
+      <Topbar where="Operator console" own />
       <main className="signin">
         <div className="card">
           <div className="inner">

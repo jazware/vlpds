@@ -3,6 +3,7 @@ import { errText } from '../lib/xrpc'
 import { setTheme, useTheme, type Theme } from '../lib/hooks'
 import { Link } from '../lib/router'
 import * as I from './icons'
+import { brand as operatorBrand, VLPDS } from '../lib/brand'
 
 export function Notice({ kind = 'info', children }: { kind?: 'info' | 'ok' | 'warn' | 'err'; children: ReactNode }) {
   const Icon = kind === 'ok' ? I.Check : kind === 'info' ? I.Info : I.Alert
@@ -407,13 +408,15 @@ export function ThemeToggle() {
   )
 }
 
-export function Topbar({ where, children }: { where?: string; children?: ReactNode }) {
+/** `own`: the operator console and the docs, which keep vlpds's name whatever the branding. */
+export function Topbar({ where, own, children }: { where?: string; own?: boolean; children?: ReactNode }) {
+  const b = own ? VLPDS : operatorBrand
   return (
     <>
       <header className="topbar">
-        <Link to="/" className="wordmark" aria-label="vlpds home">
-          <I.Mark />
-          vlpds
+        <Link to="/" className="wordmark" aria-label={`${b.label} home`}>
+          {b.logo ? <img className="logo" src={b.logo} alt={b.name ? '' : b.label} /> : !b.custom && <I.Mark />}
+          {b.custom ? b.name : 'vlpds'}
           {where && <span className="where">{where}</span>}
         </Link>
         <div className="spacer" />
@@ -427,6 +430,20 @@ export function Topbar({ where, children }: { where?: string; children?: ReactNo
 }
 
 const SOURCE_URL = 'https://github.com/jazware/vlpds'
+
+/** The operator's links (home, terms, privacy, support) under the page; nothing when unbranded. */
+export function BrandFooter() {
+  if (!operatorBrand.links.length) return null
+  return (
+    <nav className="brand-links" aria-label={operatorBrand.label}>
+      {operatorBrand.links.map((l) => (
+        <a key={l.label} href={l.url}>
+          {l.label}
+        </a>
+      ))}
+    </nav>
+  )
+}
 
 // ---------------------------------------------------------------- JSON
 

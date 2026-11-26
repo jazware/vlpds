@@ -14,7 +14,8 @@ const PLACEHOLDER: &str = "<!doctype html><html lang=\"en\"><head><meta charset=
 /// process anyway, and serving only names found here rules out traversal.
 pub struct WebUi {
     files: HashMap<String, UiFile>,
-    /// index.html cut around its `<title>`, where the page's head goes.
+    /// index.html cut around its icon link and `<title>`, where the page's
+    /// head goes.
     shell: (String, String),
     og: Option<OgManifest>,
 }
@@ -87,7 +88,13 @@ fn walk(root: &Path, dir: &Path, out: &mut HashMap<String, UiFile>) -> anyhow::R
 
 fn split_shell(html: &str) -> (String, String) {
     let (start, end) = match (html.find("<title>"), html.find("</title>")) {
-        (Some(a), Some(b)) if b > a => (a, b + "</title>".len()),
+        (Some(a), Some(b)) if b > a => {
+            // the icon link right before the title is rendered with the head,
+            // so a branded shell can name its own
+            let before = html[..a].trim_end();
+            let a = before.strip_suffix(crate::brand::DEFAULT_ICON).map_or(a, str::len);
+            (a, b + "</title>".len())
+        }
         _ => {
             let at = html.find("</head>").unwrap_or(0);
             (at, at)
@@ -115,6 +122,9 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/fonts/{*path}", get(asset))
         .route("/og/{*path}", get(asset))
         .route("/favicon.svg", get(asset))
+        .route(crate::brand::LOGO_PATH, get(brand_logo))
+        .route(crate::brand::FAVICON_PATH, get(brand_favicon))
+        .route(crate::brand::CSS_PATH, get(brand_css))
         .route("/robots.txt", get(robots))
         .route("/sitemap.xml", get(sitemap))
         .route("/xrpc/vlpds.admin.getClusterStatus", get(cluster_status))
@@ -172,6 +182,9 @@ struct PageHead<'a> {
     card: Option<&'a Card>,
     og_type: &'static str,
     noindex: bool,
+    /// The operator's branding (landing, account, sign-up, /migrate); the
+    /// console and the docs stay vlpds's.
+    branded: bool,
 }
 
 fn esc(s: &str) -> String {
@@ -205,7 +218,7 @@ fn origin_and_host(public_url: &str) -> (String, String) {
 }
 
 fn site_name(app: &App, host: &str) -> String {
-    app.config.email_branding.name.clone().unwrap_or_else(|| host.to_string())
+    app.config.brand.name.clone().unwrap_or_else(|| host.to_string())
 }
 
 impl PageHead<'_> {
@@ -213,7 +226,8 @@ impl PageHead<'_> {
         let (origin, host) = origin_and_host(&app.config.public_url);
         let site = esc(&site_name(app, &host));
         let (title, desc, url) = (esc(&self.title), esc(&self.description), esc(&format!("{origin}{}", self.path)));
-        let mut h = format!("<title>{title}</title>\n    <meta name=\"description\" content=\"{desc}\" />\n    <link rel=\"canonical\" href=\"{url}\" />\n");
+        let icon = if self.branded { app.config.brand.spa_head() } else { crate::brand::DEFAULT_ICON.to_string() };
+        let mut h = format!("{icon}\n    <title>{title}</title>\n    <meta name=\"description\" content=\"{desc}\" />\n    <link rel=\"canonical\" href=\"{url}\" />\n");
         if self.noindex {
             h.push_str("    <meta name=\"robots\" content=\"noindex, nofollow\" />\n");
         }
@@ -240,7 +254,7 @@ async fn landing_shell(State(app): AppState) -> Response {
     let (_, host) = origin_and_host(&app.config.public_url);
     let site = site_name(&app, &host);
     let head = PageHead {
-        title: format!("{site} · vlpds"),
+        title: if app.config.brand.name.is_some() { site.clone() } else { format!("{site} · vlpds") },
         description: format!(
             "{site} is a personal data server for the AT Protocol: Bluesky accounts whose posts, likes and follows live here as signed repositories. \
 Sign in, create an account, or move an existing Bluesky account here."
@@ -249,6 +263,7 @@ Sign in, create an account, or move an existing Bluesky account here."
         card: app.ui.og.as_ref().map(|m| &m.site),
         og_type: "website",
         noindex: false,
+        branded: true,
     };
     shell_with(&app, StatusCode::OK, &head, SPA_CSP)
 }
@@ -256,7 +271,7 @@ Sign in, create an account, or move an existing Bluesky account here."
 async fn account_shell(State(app): AppState) -> Response {
     let (_, host) = origin_and_host(&app.config.public_url);
     let head = PageHead {
-        title: "Account · vlpds".into(),
+        title: format!("Account · {}", app.config.brand.name.as_deref().unwrap_or("vlpds")),
         description: format!(
             "Manage your AT Protocol account on {host}: sign-in security, app passwords, your repository and data."
         ),
@@ -264,6 +279,7 @@ async fn account_shell(State(app): AppState) -> Response {
         card: app.ui.og.as_ref().map(|m| &m.site),
         og_type: "website",
         noindex: true,
+        branded: true,
     };
     shell_with(&app, StatusCode::OK, &head, SPA_CSP)
 }
@@ -277,6 +293,7 @@ async fn admin_shell(State(app): AppState) -> Response {
         card: None,
         og_type: "website",
         noindex: true,
+        branded: false,
     };
     shell_with(&app, StatusCode::OK, &head, SPA_CSP)
 }
@@ -293,6 +310,7 @@ Your handle, followers and posts come with you."
         card: app.ui.og.as_ref().map(|m| &m.migrate),
         og_type: "website",
         noindex: false,
+        branded: true,
     };
     shell_with(&app, StatusCode::OK, &head, if app.config.dev_mode { MIGRATE_CSP_DEV } else { MIGRATE_CSP })
 }
@@ -319,6 +337,7 @@ async fn docs_shell(State(app): AppState, uri: axum::http::Uri) -> Response {
             card: None,
             og_type: "website",
             noindex: true,
+            branded: false,
         };
         return shell_with(&app, status, &head, SPA_CSP);
     };
@@ -329,6 +348,7 @@ async fn docs_shell(State(app): AppState, uri: axum::http::Uri) -> Response {
         card: Some(&doc.card),
         og_type: "article",
         noindex: doc.status == "stub",
+        branded: false,
     };
     shell_with(&app, StatusCode::OK, &head, SPA_CSP)
 }
@@ -392,6 +412,61 @@ async fn asset(State(app): AppState, uri: axum::http::Uri) -> Response {
         f.data.clone(),
     )
         .into_response()
+}
+
+/// Immutable under the `?v=` the pages use, an hour otherwise.
+fn brand_cache(uri: &axum::http::Uri, tag: &str) -> &'static str {
+    if uri.query().is_some_and(|q| q.split('&').any(|kv| kv.strip_prefix("v=") == Some(tag))) {
+        "public, max-age=31536000, immutable"
+    } else {
+        "public, max-age=3600"
+    }
+}
+
+fn brand_file(uri: &axum::http::Uri, headers: &HeaderMap, mime: &'static str, tag: &str, body: Bytes) -> Response {
+    let etag = format!("\"{tag}\"");
+    let mut h = HeaderMap::new();
+    h.insert(header::CONTENT_TYPE, header::HeaderValue::from_static(mime));
+    h.insert(header::CACHE_CONTROL, header::HeaderValue::from_static(brand_cache(uri, tag)));
+    h.insert(header::ETAG, header::HeaderValue::from_str(&etag).expect("hex"));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, header::HeaderValue::from_static("nosniff"));
+    // opened directly it is still only a file; mail clients and other sites may embed it
+    h.insert(header::CONTENT_SECURITY_POLICY, header::HeaderValue::from_static("default-src 'none'; sandbox"));
+    h.insert(
+        header::HeaderName::from_static("cross-origin-resource-policy"),
+        header::HeaderValue::from_static("cross-origin"),
+    );
+    let fresh = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.split(',').any(|t| t.trim() == etag));
+    if fresh {
+        return (StatusCode::NOT_MODIFIED, h).into_response();
+    }
+    (h, body).into_response()
+}
+
+fn brand_image(img: &Option<crate::brand::Image>, uri: &axum::http::Uri, headers: &HeaderMap) -> Response {
+    match img {
+        Some(i) => brand_file(uri, headers, i.mime, &i.tag, i.bytes.clone()),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn brand_logo(State(app): AppState, uri: axum::http::Uri, headers: HeaderMap) -> Response {
+    brand_image(&app.config.brand.logo, &uri, &headers)
+}
+
+async fn brand_favicon(State(app): AppState, uri: axum::http::Uri, headers: HeaderMap) -> Response {
+    brand_image(&app.config.brand.favicon, &uri, &headers)
+}
+
+async fn brand_css(State(app): AppState, uri: axum::http::Uri, headers: HeaderMap) -> Response {
+    let b = &app.config.brand;
+    match b.spa_css() {
+        Some(css) => brand_file(&uri, &headers, "text/css; charset=utf-8", b.css_tag(), css.clone()),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 /// Peers' own durable ordinal and lease state come from their

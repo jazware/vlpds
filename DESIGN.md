@@ -3642,10 +3642,10 @@ outbound SMTP, Cloudflare Email Sending's REST API, when configured:
 | `--moderation-email-api-url` | `VLPDS_MODERATION_EMAIL_API_URL` | |
 | `--moderation-email-api-token[-file]` | `VLPDS_MODERATION_EMAIL_API_TOKEN[_FILE]` | |
 | `--moderation-email-address` | `VLPDS_MODERATION_EMAIL_ADDRESS` | `PDS_MODERATION_EMAIL_ADDRESS` |
-| `--email-brand-name` | `VLPDS_EMAIL_BRAND_NAME` | `PDS_SERVICE_NAME` |
-| `--email-home-url` | `VLPDS_EMAIL_HOME_URL` | `PDS_HOME_URL` |
+| `--brand-name` (alias `--email-brand-name`) | `VLPDS_BRAND_NAME`, `VLPDS_EMAIL_BRAND_NAME` | `PDS_SERVICE_NAME` |
+| `--home-url` (alias `--email-home-url`) | `VLPDS_HOME_URL`, `VLPDS_EMAIL_HOME_URL` | `PDS_HOME_URL` |
 | `--email-logo-url` | `VLPDS_EMAIL_LOGO_URL` | `PDS_LOGO_URL` |
-| `--email-primary-color` | `VLPDS_EMAIL_PRIMARY_COLOR` | `PDS_PRIMARY_COLOR` |
+| `--primary-color` (alias `--email-primary-color`) | `VLPDS_PRIMARY_COLOR`, `VLPDS_EMAIL_PRIMARY_COLOR` | `PDS_PRIMARY_COLOR` |
 | `--email-disable-confirmation-link` | `VLPDS_EMAIL_DISABLE_CONFIRMATION_LINK` | `PDS_EMAIL_DISABLE_CONFIRMATION_LINK` |
 
 **Templates** (`src/mail/templates.rs`, `src/mail/layout.html`). The account
@@ -3664,7 +3664,9 @@ branding; only the intro and outro fragments, built in Rust from escaped
 pieces, go in raw. Branding follows the reference's `BrandingConfig`: the
 service name defaults to "{hostname} PDS" (from `--public-url`), and the home
 URL, logo and color default to the reference's (bsky.app, the Bluesky logo,
-`#067df7`). The sign-in mail's "changing your password" link is
+`#067df7`). The name, home link and color are the server-wide branding flags
+(`src/brand.rs`, docs/operations/branding.md), checked at startup, and email's
+logo is the served `--logo-file` unless `--email-logo-url` is set. The sign-in mail's "changing your password" link is
 `{public_url}/.well-known/change-password` (the reference uses its OAuth
 issuer, which is the same URL). The layout and wording come from
 bluesky-social/atproto (MIT / Apache-2.0); `src/mail/NOTICE` carries its MIT
